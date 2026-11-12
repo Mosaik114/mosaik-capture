@@ -136,8 +136,16 @@ pub fn pick_folder(owner: HWND, initial: &str) -> Option<String> {
     let mut options = 0;
     // SAFETY: `dialog` is a live IFileOpenDialog; all pointers outlive the calls.
     unsafe {
-        (vtbl.get_options)(dialog.this(), &raw mut options);
-        (vtbl.set_options)(dialog.this(), options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        // Keep the dialog's defaults if they can be read; without FOS_PICKFOLDERS the
+        // dialog would pick files, so failing to set it means not showing it at all.
+        if (vtbl.get_options)(dialog.this(), &raw mut options) < 0 {
+            options = 0;
+        }
+        let picks_folders =
+            (vtbl.set_options)(dialog.this(), options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        if picks_folders < 0 {
+            return None;
+        }
         (vtbl.set_title)(dialog.this(), title.as_ptr());
         if let Some(folder) = shell_item(initial) {
             (vtbl.set_folder)(dialog.this(), folder.this());

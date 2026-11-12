@@ -19,17 +19,19 @@ use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, FillRect, HDC, InvalidateRect, PAINTSTRUCT, SetBkColor, SetTextColor,
 };
 use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, SetWindowTheme};
+use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOD_NOREPEAT, RegisterHotKey, SetFocus, UnregisterHotKey,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::BN_CLICKED;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BS_AUTOCHECKBOX, BS_OWNERDRAW, CBS_DROPDOWNLIST, CreateWindowExW, DestroyWindow,
     ES_AUTOHSCROLL, HMENU, IDCANCEL, IDOK, IsWindowVisible, KillTimer, PostQuitMessage,
     RegisterWindowMessageW, SHOW_WINDOW_CMD, SM_CXSMICON, SW_HIDE, SW_RESTORE, SWP_NOACTIVATE,
     SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_PAINT,
-    WM_RBUTTONUP, WM_TIMER, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_HOTKEY, WM_PAINT, WM_TIMER, WS_CHILD,
+    WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use windows_sys::w;
 
@@ -40,11 +42,11 @@ use super::icons::{OwnedIcon, WindowIcons};
 use super::layout::{CONTROLS, ControlKind, ControlSpec, Dpi, EDIT_LIMIT, FontRole, id};
 use super::strings::status;
 use super::theme::{self, Brushes, Fonts};
-use super::tray::{self, MenuCommand};
+use super::tray::{self, MenuCommand, TrayEvent};
 use crate::autostart;
 use crate::cli::Action;
 use crate::config::{Config, ConfigError, Countdown, FrameRate};
-use crate::engine::{self, CaptureMode, Launcher};
+use crate::engine::{CaptureMode, Engine};
 use crate::hotkey::Hotkey;
 use crate::hotkey::ParseHotkeyError;
 use crate::ipc::{self, AudioSettings, ProbeResponse};
@@ -76,7 +78,7 @@ pub struct App {
     brushes: Brushes,
     /// Caption and taskbar icons for the current DPI.
     window_icons: RefCell<Option<WindowIcons>>,
-    /// Notification-area icon for the current DPI.
+    /// Notification-area icon, sized for the taskbar (system DPI).
     tray_icon: RefCell<OwnedIcon>,
     /// Remaining attempts to add the tray icon.
     tray_retries: Cell<u32>,
@@ -84,7 +86,7 @@ pub struct App {
     children: RefCell<Vec<(HWND, &'static ControlSpec)>>,
     store: SettingsStore,
     exe: PathBuf,
-    launcher: Launcher,
+    engine: Engine,
     /// Preview mode: separate settings file, autostart untouched.
     preview: bool,
     /// The saved settings (the window may show unsaved edits).
@@ -97,6 +99,10 @@ pub struct App {
     taskbar_created: Cell<u32>,
     /// Start-up has finished; requests from outside are handled only from then on.
     started: Cell<bool>,
+    /// Number of modal loops (folder picker, tray menu) currently running.
+    modal_depth: Cell<u32>,
+    /// A capture requested while a modal loop ran; started when it ends.
+    pending_capture: Cell<Option<CaptureMode>>,
 }
 
 impl App {
@@ -118,18 +124,25 @@ impl App {
             fonts: RefCell::new(Fonts::new(dpi)),
             brushes: Brushes::new(),
             window_icons: RefCell::new(None),
-            tray_icon: RefCell::new(OwnedIcon::load(instance, SM_CXSMICON, dpi)),
+            // SAFETY: no arguments.
+            tray_icon: RefCell::new(OwnedIcon::load(
+                instance,
+                SM_CXSMICON,
+                Dpi::new(unsafe { GetDpiForSystem() }),
+            )),
             tray_retries: Cell::new(TRAY_RETRIES),
             children: RefCell::new(Vec::new()),
             store,
             exe,
-            launcher: Launcher::new(&exe_dir, preview),
+            engine: Engine::new(&exe_dir, preview),
             preview: preview.is_some(),
             config: RefCell::new(config),
             hotkeys: Cell::new(ProbeResponse::default()),
             status_ok: Cell::new(true),
             taskbar_created: Cell::new(0),
             started: Cell::new(false),
+            modal_depth: Cell::new(0),
+            pending_capture: Cell::new(None),
         }
     }
 
@@ -223,16 +236,31 @@ impl App {
         }
     }
 
-    /// Loads the window and tray icons for the current DPI and hands them over.
+    /// Loads the caption and taskbar icons for the window's DPI and hands them over.
+    /// The tray icon is not affected: the taskbar draws at the system DPI.
     pub fn refresh_icons(&self) {
         let icons = WindowIcons::load(self.instance, self.dpi());
         icons.apply(self.window());
         // The previous icons are dropped only after the window has the new ones.
         drop(self.window_icons.replace(Some(icons)));
+    }
 
-        let tray_icon = OwnedIcon::load(self.instance, SM_CXSMICON, self.dpi());
-        tray::update(self.window(), tray_icon.handle());
-        drop(self.tray_icon.replace(tray_icon));
+    /// Runs a modal loop (folder picker, tray menu). Meanwhile captures are queued and
+    /// quitting is refused (see [`while_modal`]); a queued capture starts afterwards.
+    fn run_modal<T>(&self, modal: impl FnOnce() -> T) -> T {
+        self.modal_depth.set(self.modal_depth.get() + 1);
+        let result = modal();
+        self.modal_depth.set(self.modal_depth.get() - 1);
+        if self.modal_depth.get() == 0 {
+            if let Some(mode) = self.pending_capture.take() {
+                self.capture(mode);
+            }
+        }
+        result
+    }
+
+    fn in_modal(&self) -> bool {
+        self.modal_depth.get() > 0
     }
 
     /// Lays the window out for `dpi`: new fonts, scaled and repositioned controls and,
@@ -301,9 +329,10 @@ impl App {
                 0
             }
             WM_DPICHANGED => {
-                // SAFETY: for WM_DPICHANGED, lParam points to the suggested window RECT.
-                let frame = unsafe { *(lparam as *const RECT) };
-                self.apply_dpi(Dpi::new(low_word(wparam)), Some(frame));
+                // SAFETY: for WM_DPICHANGED, lParam is null or points to the suggested
+                // window RECT, valid for the duration of the message.
+                let frame = unsafe { (lparam as *const RECT).as_ref() }.copied();
+                self.apply_dpi(Dpi::new(low_word(wparam)), frame);
                 0
             }
             WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
@@ -318,17 +347,28 @@ impl App {
                 self.brushes.field() as LRESULT
             }
             WM_DRAWITEM => {
-                // SAFETY: for WM_DRAWITEM, lParam points to a DRAWITEMSTRUCT that is
-                // valid for the duration of the message.
-                let item = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
+                // SAFETY: for WM_DRAWITEM, lParam is null or points to a DRAWITEMSTRUCT
+                // that is valid for the duration of the message.
+                let item = unsafe { (lparam as *const DRAWITEMSTRUCT).as_ref() }?;
                 let font = self.fonts.borrow().get(FontRole::Body);
                 theme::draw_button(item, font, self.dpi());
                 1
             }
             WM_COMMAND => {
-                self.command(low_word(wparam).cast_signed());
+                if let Some(control) = clicked_command(wparam, lparam) {
+                    self.command(control);
+                }
                 0
             }
+            _ => return self.handle_request(message, wparam, lparam),
+        };
+        Some(result)
+    }
+
+    /// Handles hotkeys and requests from other processes and the tray; `None` for
+    /// anything else.
+    fn handle_request(&self, message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+        let result = match message {
             WM_HOTKEY => {
                 match i32::try_from(wparam) {
                     Ok(HOTKEY_SCREENSHOT) => self.capture(CaptureMode::Screenshot),
@@ -354,8 +394,11 @@ impl App {
                 1
             }
             ipc::QUIT => {
-                self.quit();
-                1
+                if self.quit() {
+                    ipc::QUIT_ACCEPTED
+                } else {
+                    ipc::QUIT_REFUSED
+                }
             }
             ipc::PROBE => self.hotkeys.get().to_lresult(),
             ipc::AUDIO_SETTINGS => {
@@ -363,7 +406,9 @@ impl App {
                 1
             }
             ipc::TRAY_CALLBACK => {
-                self.tray_event(lparam);
+                if let Some(event) = TrayEvent::decode(wparam, lparam) {
+                    self.tray_event(event);
+                }
                 0
             }
             _ => return None,
@@ -579,7 +624,9 @@ impl App {
     /// Lets the user pick a folder for the given edit field.
     fn browse(&self, edit: i32) {
         let edit = self.child(edit);
-        if let Some(folder) = folder_picker::pick_folder(self.window(), &controls::text(edit)) {
+        let initial = controls::text(edit);
+        if let Some(folder) = self.run_modal(|| folder_picker::pick_folder(self.window(), &initial))
+        {
             controls::set_text(edit, &folder);
         }
     }
@@ -601,25 +648,36 @@ impl App {
         let _ = explorer_command(&folder).spawn();
     }
 
-    /// Hides the window and hands the capture to the engine.
+    /// Hides the window and hands the capture to the engine. While a modal loop runs,
+    /// the request is queued instead: hiding the window would orphan the dialog.
     fn capture(&self, mode: CaptureMode) {
+        if while_modal(Request::Capture, self.in_modal()) == Handling::Defer {
+            self.pending_capture.set(Some(mode));
+            return;
+        }
         self.show(SW_HIDE);
-        if !self.launcher.start_capture(mode) {
+        if self.engine.start_capture(mode).failed() {
             self.show_settings(mode == CaptureMode::Recording);
             self.set_status(status::ENGINE_FAILED, false);
         }
     }
 
-    /// Quits app and engine, unless the engine is in the middle of a capture.
-    fn quit(&self) {
-        if engine::is_busy() {
+    /// Quits app and engine. Refused (returns `false`, with a status message) while
+    /// a dialog of this app is open or the engine is in the middle of a capture.
+    fn quit(&self) -> bool {
+        if while_modal(Request::Quit, self.in_modal()) == Handling::Refuse {
+            self.set_status(status::DIALOG_OPEN, false);
+            return false;
+        }
+        if self.engine.is_busy() {
             self.show_settings(true);
             self.set_status(status::BUSY, false);
-            return;
+            return false;
         }
-        engine::request_quit();
+        self.engine.request_quit();
         // SAFETY: destroys our own window; WM_DESTROY then ends the message loop.
         unsafe { DestroyWindow(self.window()) };
+        true
     }
 
     /// Stores audio options changed in the engine's recording toolbar. The new values
@@ -638,17 +696,21 @@ impl App {
         self.show_audio_settings(&current);
     }
 
-    fn tray_event(&self, event: LPARAM) {
-        match u32::try_from(event) {
-            Ok(WM_RBUTTONUP) => match tray::show_menu(self.window()) {
-                Some(MenuCommand::Screenshot) => self.capture(CaptureMode::Screenshot),
-                Some(MenuCommand::Recording) => self.capture(CaptureMode::Recording),
-                Some(MenuCommand::Settings) => self.show_settings(false),
-                Some(MenuCommand::Quit) => self.quit(),
-                None => {}
-            },
-            Ok(WM_LBUTTONUP | WM_LBUTTONDBLCLK) => self.show_settings(false),
-            _ => {}
+    fn tray_event(&self, event: TrayEvent) {
+        match event {
+            TrayEvent::Select => self.show_settings(false),
+            TrayEvent::ContextMenu { x, y } => {
+                match self.run_modal(|| tray::show_menu(self.window(), x, y)) {
+                    Some(MenuCommand::Screenshot) => self.capture(CaptureMode::Screenshot),
+                    Some(MenuCommand::Recording) => self.capture(CaptureMode::Recording),
+                    Some(MenuCommand::Settings) => self.show_settings(false),
+                    Some(MenuCommand::Quit) => {
+                        // A refusal is shown in the window's status line.
+                        let _ = self.quit();
+                    }
+                    None => {}
+                }
+            }
         }
     }
 
@@ -663,6 +725,48 @@ impl App {
             EndPaint(self.window(), &raw const paint);
         }
     }
+}
+
+/// A request that may arrive while a modal loop runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Request {
+    /// Hide the window and capture.
+    Capture,
+    /// Quit the app.
+    Quit,
+}
+
+/// What to do with a [`Request`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handling {
+    /// Handle it right away.
+    Now,
+    /// Remember it and handle it when the modal loop ends.
+    Defer,
+    /// Do not handle it.
+    Refuse,
+}
+
+/// The policy while a modal loop (folder picker, tray menu) is running: hiding the
+/// window or destroying it would pull the dialog's owner away, so a capture waits
+/// until the dialog is closed and quitting is refused.
+const fn while_modal(request: Request, modal: bool) -> Handling {
+    match (request, modal) {
+        (_, false) => Handling::Now,
+        (Request::Capture, true) => Handling::Defer,
+        (Request::Quit, true) => Handling::Refuse,
+    }
+}
+
+/// The command id of a `WM_COMMAND` that means "do it": a click (`BN_CLICKED`, which
+/// is also what menus and the dialog manager's `IDOK`/`IDCANCEL` send) or an
+/// accelerator (notification 1 without a control). Other notifications, such as
+/// `BN_DOUBLECLICKED` from owner-drawn buttons or `EN_CHANGE`, are not commands.
+fn clicked_command(wparam: WPARAM, lparam: LPARAM) -> Option<i32> {
+    const ACCELERATOR: u32 = 1;
+    let notification = u32::try_from((wparam >> 16) & 0xFFFF).ok()?;
+    let is_command = notification == BN_CLICKED || (notification == ACCELERATOR && lparam == 0);
+    is_command.then(|| low_word(wparam).cast_signed())
 }
 
 /// The status-line text explaining why settings cannot be applied.
@@ -722,6 +826,31 @@ mod tests {
         assert_eq!(config_error_message(unknown), status::INVALID_HOTKEY);
         assert_eq!(config_error_message(ConfigError::DuplicateHotkey), status::DUPLICATE_HOTKEY);
         assert_eq!(config_error_message(ConfigError::InvalidFolder), status::INVALID_FOLDER);
+    }
+
+    #[test]
+    fn only_clicks_and_accelerators_are_commands() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{BN_DOUBLECLICKED, EN_CHANGE};
+        let button: LPARAM = 0x1234; // any control handle
+        let packed = |notification: u32, id: i32| {
+            (usize::try_from(notification).unwrap() << 16) | usize::try_from(id).unwrap()
+        };
+        assert_eq!(clicked_command(packed(BN_CLICKED, id::SAVE), button), Some(id::SAVE));
+        assert_eq!(clicked_command(packed(BN_CLICKED, IDOK), 0), Some(IDOK), "Enter");
+        assert_eq!(clicked_command(packed(BN_CLICKED, IDCANCEL), 0), Some(IDCANCEL), "Escape");
+        assert_eq!(clicked_command(packed(1, id::SAVE), 0), Some(id::SAVE), "accelerator");
+        assert_eq!(clicked_command(packed(BN_DOUBLECLICKED, id::SAVE), button), None);
+        assert_eq!(clicked_command(packed(1, id::SAVE), button), None, "BN_PAINT, not a key");
+        let edit_change = packed(EN_CHANGE, id::SCREENSHOT_HOTKEY);
+        assert_eq!(clicked_command(edit_change, button), None);
+    }
+
+    #[test]
+    fn modal_loops_defer_captures_and_refuse_quitting() {
+        assert_eq!(while_modal(Request::Capture, false), Handling::Now);
+        assert_eq!(while_modal(Request::Quit, false), Handling::Now);
+        assert_eq!(while_modal(Request::Capture, true), Handling::Defer);
+        assert_eq!(while_modal(Request::Quit, true), Handling::Refuse);
     }
 
     #[test]

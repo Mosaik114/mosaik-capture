@@ -3,6 +3,11 @@
 //!
 //! The file is UTF-16LE with a BOM. It is shared with the capture engine, which locates
 //! it the same way (or through [`PREVIEW_CONFIG_VAR`] in preview mode).
+//!
+//! Saving runs on the UI thread. It normally takes a few milliseconds; while another
+//! process holds the file open, each of the two steps (write, replace) is retried at
+//! most [`SHARING_ATTEMPTS`] times, so the window can block for at most about
+//! 2 × 3 × [`SHARING_RETRY_DELAY`] = 0.3 s before the error is reported.
 
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -40,7 +45,7 @@ const LEGACY_APP_FOLDER: &str = "Mosaiks-Aufnahme";
 const FILE_NAME: &str = "settings.ini";
 /// How often a write is attempted while another process (e.g. the engine reading the
 /// settings) briefly holds the file open.
-const SHARING_ATTEMPTS: u32 = 5;
+const SHARING_ATTEMPTS: u32 = 4;
 /// Pause between two attempts.
 const SHARING_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// Byte-order mark that makes the profile API treat the file as UTF-16LE.

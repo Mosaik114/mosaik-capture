@@ -11,7 +11,7 @@ mod tray;
 
 use std::{env, mem, ptr};
 
-use windows_sys::Win32::Foundation::{FALSE, HWND, LPARAM, LRESULT, RECT, TRUE, WPARAM};
+use windows_sys::Win32::Foundation::{FALSE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, TRUE, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -23,9 +23,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW, IDC_ARROW, IsDialogMessageW,
     LoadCursorW, MSG, RegisterClassW, SPI_GETWORKAREA, SetWindowLongPtrW, SystemParametersInfoW,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
-    WS_CAPTION, WS_EX_APPWINDOW, WS_MINIMIZEBOX, WS_SYSMENU,
+    TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_NCCREATE, WM_NCDESTROY,
+    WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW, WS_MINIMIZEBOX, WS_SYSMENU,
 };
+
+use windows_sys::core::PCWSTR;
 
 use crate::cli::Invocation;
 use crate::ipc;
@@ -77,9 +79,10 @@ pub fn run(invocation: &Invocation) -> Result<(), UiError> {
     // Boxed: the window procedure keeps the address, so it must never move.
     let app = Box::new(App::new(instance, dpi, store, config, exe, preview));
 
-    let class_name = to_wide(ipc::WINDOW_CLASS);
-    register_class(&app, &class_name)?;
-    let window = create_window(&app, &class_name)?;
+    // Declared after `app`, so the class is unregistered before the App (and with it
+    // the class background brush) is dropped.
+    let class = register_class(&app, ipc::WINDOW_CLASS)?;
+    let window = create_window(&app, &class)?;
 
     let result = app.start(invocation.action).and_then(|()| run_message_loop(window));
     if result.is_err() {
@@ -120,7 +123,31 @@ impl Drop for ComApartment {
     }
 }
 
-fn register_class(app: &App, class_name: &[u16]) -> Result<(), UiError> {
+/// A registered window class, unregistered on drop.
+#[derive(Debug)]
+struct WindowClass {
+    name: Vec<u16>,
+    instance: HINSTANCE,
+}
+
+impl WindowClass {
+    fn name(&self) -> PCWSTR {
+        self.name.as_ptr()
+    }
+}
+
+impl Drop for WindowClass {
+    fn drop(&mut self) {
+        // SAFETY: the name is NUL-terminated; fails harmlessly if a window of the class
+        // still exists.
+        unsafe { UnregisterClassW(self.name.as_ptr(), self.instance) };
+    }
+}
+
+/// Registers the window class. The returned guard must be dropped before `app`,
+/// whose background brush the class refers to.
+fn register_class(app: &App, name: &str) -> Result<WindowClass, UiError> {
+    let class_name = to_wide(name);
     let class = WNDCLASSW {
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(window_proc),
@@ -138,7 +165,7 @@ fn register_class(app: &App, class_name: &[u16]) -> Result<(), UiError> {
     if unsafe { RegisterClassW(&raw const class) } == 0 {
         return Err(UiError::RegisterClass);
     }
-    Ok(())
+    Ok(WindowClass { name: class_name, instance: app.instance() })
 }
 
 /// Outer window size for the settings window's client area at `dpi`.
@@ -163,7 +190,7 @@ fn centered_frame(dpi: Dpi) -> RECT {
 }
 
 /// Creates the (hidden) settings window, sized for the DPI of the monitor it lands on.
-fn create_window(app: &App, class_name: &[u16]) -> Result<HWND, UiError> {
+fn create_window(app: &App, class: &WindowClass) -> Result<HWND, UiError> {
     let frame = centered_frame(app.dpi());
     let title = to_wide(strings::WINDOW_TITLE);
     // SAFETY: class name and title are NUL-terminated and outlive the call. `app`
@@ -171,7 +198,7 @@ fn create_window(app: &App, class_name: &[u16]) -> Result<HWND, UiError> {
     let window = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE,
-            class_name.as_ptr(),
+            class.name(),
             title.as_ptr(),
             WINDOW_STYLE,
             frame.left,
@@ -240,8 +267,10 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_NCCREATE {
-        // SAFETY: for WM_NCCREATE, lParam points to the window's CREATESTRUCTW.
-        let params = unsafe { (*(lparam as *const CREATESTRUCTW)).lpCreateParams };
+        // SAFETY: for WM_NCCREATE, lParam is null or points to the window's
+        // CREATESTRUCTW, valid for the duration of the message.
+        let create = unsafe { (lparam as *const CREATESTRUCTW).as_ref() };
+        let params = create.map_or(ptr::null_mut(), |create| create.lpCreateParams);
         // SAFETY: `create_window` passes the boxed `App`, which outlives the window;
         // a null parameter (someone else creating our class) is simply not attached.
         if let Some(app) = unsafe { params.cast::<App>().as_ref() } {
@@ -274,8 +303,8 @@ mod tests {
     use layout::id;
     use std::path::PathBuf;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetClientRect, ICON_SMALL, IDCANCEL, IDOK, IsWindowVisible, SendMessageW, WM_CLOSE,
-        WM_COMMAND, WM_DPICHANGED, WM_GETICON,
+        BN_DOUBLECLICKED, GetClientRect, ICON_SMALL, IDCANCEL, IDOK, IsWindow, IsWindowVisible,
+        SendMessageW, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_GETICON,
     };
 
     fn send(window: HWND, message: u32, wparam: WPARAM) -> LRESULT {
@@ -347,9 +376,8 @@ mod tests {
             env::current_exe().unwrap(),
             Some(&ini),
         ));
-        let class_name = to_wide("MosaikCapture.Host.Test");
-        register_class(&app, &class_name).unwrap();
-        let window = create_window(&app, &class_name).unwrap();
+        let class = register_class(&app, "MosaikCapture.Host.Test").unwrap();
+        let window = create_window(&app, &class).unwrap();
         let _cleanup = Cleanup { window, dir: dir.clone() };
         // Whatever monitor the window landed on, lay it out for 96 DPI first.
         app.apply_dpi(Dpi::new(96), None);
@@ -357,6 +385,7 @@ mod tests {
         // Requests from outside are not handled before start-up has finished.
         assert_eq!(send(window, ipc::PROBE, 0), 0, "probe before start");
         assert_eq!(send(window, ipc::SHOW_SETTINGS, 0), 0);
+        assert_eq!(send(window, ipc::QUIT, 0), ipc::QUIT_REFUSED, "quit before start");
         assert!(!is_visible(window), "show request before start is ignored");
 
         app.start(Action::Background).unwrap();
@@ -386,6 +415,16 @@ mod tests {
         command(window, IDOK); // Enter
         assert_eq!(status(window), strings::status::SAVED);
         assert_eq!(source.string("recording_hotkey", ""), "Strg+Alt+Shift+F22");
+
+        // Owner-drawn buttons also report double clicks; those must not save again.
+        controls::set_text(hotkey_edit, "Alt+");
+        let save_button = controls::child(window, id::SAVE);
+        let double_click =
+            (usize::try_from(BN_DOUBLECLICKED).unwrap() << 16) | usize::try_from(id::SAVE).unwrap();
+        // SAFETY: WM_COMMAND carries the button handle, no pointers to memory.
+        unsafe { SendMessageW(window, WM_COMMAND, double_click, save_button as LPARAM) };
+        assert_eq!(status(window), strings::status::SAVED, "double click is not a save");
+        controls::set_text(hotkey_edit, "Strg+Alt+Shift+F22");
         assert_eq!(source.int("countdown", 0), 5);
         assert_eq!(send(window, ipc::PROBE, 0), ipc::ProbeResponse::HEALTHY);
 
@@ -424,5 +463,10 @@ mod tests {
         );
         send(window, WM_CLOSE, 0);
         assert!(!is_visible(window), "closing only hides");
+
+        // No engine runs next to the test executable, so nothing blocks quitting.
+        assert_eq!(send(window, ipc::QUIT, 0), ipc::QUIT_ACCEPTED);
+        // SAFETY: no pointer arguments.
+        assert_eq!(unsafe { IsWindow(window) }, 0, "quit destroys the window");
     }
 }

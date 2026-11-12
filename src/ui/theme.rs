@@ -40,6 +40,10 @@ pub const ERROR: COLORREF = rgb(0xF0, 0x90, 0x80);
 const FONT_FACE: &str = "Segoe UI";
 
 /// An owned GDI object (font, brush, pen), deleted on drop.
+///
+/// Creation can fail (e.g. when the process runs out of GDI handles); the handle is
+/// then null, which every user tolerates: controls fall back to the system font, a
+/// null `WM_CTLCOLOR*` brush means default colours, and drawing with it is a no-op.
 #[derive(Debug)]
 pub struct GdiObject(HGDIOBJ);
 
@@ -52,9 +56,11 @@ impl GdiObject {
 
 impl Drop for GdiObject {
     fn drop(&mut self) {
-        // SAFETY: the object was created by this module, is owned exclusively and is
-        // no longer selected into a device context when dropped.
-        unsafe { DeleteObject(self.0) };
+        if !self.0.is_null() {
+            // SAFETY: the object was created by this module, is owned exclusively and
+            // is no longer selected into a device context when dropped.
+            unsafe { DeleteObject(self.0) };
+        }
     }
 }
 

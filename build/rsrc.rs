@@ -315,8 +315,14 @@ const FILE_HEADER: usize = 20;
 const SECTION_HEADER: usize = 40;
 const RELOCATION: usize = 10;
 const SECTION_NAME: [u8; 8] = *b".rsrc\0\0\0";
-/// `IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ`.
-const SECTION_FLAGS: u32 = 0x4000_0040;
+/// `IMAGE_SCN_CNT_INITIALIZED_DATA`.
+const SCN_INITIALIZED_DATA: u32 = 0x0000_0040;
+/// `IMAGE_SCN_ALIGN_8BYTES`: the resource data blobs inside are 8-byte aligned.
+const SCN_ALIGN_8BYTES: u32 = 0x0040_0000;
+/// `IMAGE_SCN_MEM_READ`.
+const SCN_MEM_READ: u32 = 0x4000_0000;
+/// Flags of the `.rsrc` section.
+const SECTION_FLAGS: u32 = SCN_INITIALIZED_DATA | SCN_ALIGN_8BYTES | SCN_MEM_READ;
 
 /// Wraps the `.rsrc` section into a relocatable COFF object with one section symbol.
 pub fn coff_object(machine: Machine, resources: &Resources) -> Vec<u8> {
@@ -571,7 +577,7 @@ mod tests {
         assert_eq!(to_usize(read_u32(&object, 40)), raw);
         assert_eq!(to_usize(read_u32(&object, 44)), relocations);
         assert_eq!(read_u16(&object, 52), 1, "one relocation");
-        assert_eq!(read_u32(&object, 56), SECTION_FLAGS);
+        assert_eq!(read_u32(&object, 56), 0x4040_0040, "data, 8-byte aligned, read-only");
 
         let section = &object[raw..raw + section_size];
         assert_eq!(read_u16(section, 14), 1, "root: one type");

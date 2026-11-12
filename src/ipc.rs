@@ -17,8 +17,13 @@ pub const SHOW_RECORDING_SETTINGS: u32 = WM_APP + 2;
 pub const TAKE_SCREENSHOT: u32 = WM_APP + 3;
 /// Start or stop a recording.
 pub const TOGGLE_RECORDING: u32 = WM_APP + 4;
-/// Quit the app (refused while the engine is busy).
+/// Quit the app. Answered with [`QUIT_ACCEPTED`], or [`QUIT_REFUSED`] while the
+/// engine is busy, a dialog is open or start-up is not finished.
 pub const QUIT: u32 = WM_APP + 9;
+/// Reply to [`QUIT`]: the app is shutting down.
+pub const QUIT_ACCEPTED: isize = 1;
+/// Reply to [`QUIT`]: the app keeps running.
+pub const QUIT_REFUSED: isize = 0;
 /// Liveness probe; answered with a [`ProbeResponse`] bit set.
 pub const PROBE: u32 = WM_APP + 10;
 /// Sent by the engine: new audio settings in `wParam` (see [`AudioSettings`]).

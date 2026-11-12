@@ -29,7 +29,7 @@ const VERSION_ID: u16 = 1;
 
 fn main() -> Result<(), String> {
     for path in ["build.rs", RSRC_PATH, ICON_PATH, MANIFEST_PATH] {
-        println!("cargo:rerun-if-changed={path}");
+        println!("cargo::rerun-if-changed={path}");
     }
 
     if env_var("CARGO_CFG_TARGET_OS")? != "windows" {
@@ -63,7 +63,7 @@ fn main() -> Result<(), String> {
     fs::write(&out, object).map_err(|error| format!("{}: {error}", out.display()))?;
     // All linked targets, not just the binary: the unit tests then run with the same
     // manifest (Common Controls v6, PerMonitorV2) and icon as the shipped exe.
-    println!("cargo:rustc-link-arg={}", out.display());
+    println!("cargo::rustc-link-arg={}", out.display());
     Ok(())
 }
 

@@ -51,6 +51,9 @@ enum Exit {
     ForwardFailed = 9,
     /// The message loop failed (`GetMessageW` returned -1).
     MessageLoopFailed = 10,
+    /// `--quit` was refused: the engine is recording or selecting a region, a dialog
+    /// of the running instance is open, or it is still starting.
+    QuitRefused = 11,
 }
 
 impl From<Exit> for ExitCode {
@@ -108,6 +111,7 @@ fn forwarded_exit(action: Action, outcome: Forwarded) -> Exit {
         {
             Exit::ProbeFailed
         }
+        Forwarded::Delivered(ipc::QUIT_REFUSED) if action == Action::Quit => Exit::QuitRefused,
         Forwarded::Delivered(_) => Exit::Success,
     }
 }
@@ -128,6 +132,7 @@ mod tests {
             (Exit::WindowCreationFailed, 8),
             (Exit::ForwardFailed, 9),
             (Exit::MessageLoopFailed, 10),
+            (Exit::QuitRefused, 11),
         ];
         for (exit, code) in codes {
             assert_eq!(exit as u8, code);
@@ -142,6 +147,12 @@ mod tests {
         assert_eq!(forwarded_exit(Action::Probe, Forwarded::Delivered(3)), Exit::ProbeFailed);
         assert_eq!(forwarded_exit(Action::Probe, Forwarded::Failed), Exit::ForwardFailed);
         assert_eq!(forwarded_exit(Action::Quit, Forwarded::Delivered(1)), Exit::Success);
+        assert_eq!(forwarded_exit(Action::Quit, Forwarded::Delivered(0)), Exit::QuitRefused);
+        assert_eq!(
+            forwarded_exit(Action::ShowSettings, Forwarded::Delivered(0)),
+            Exit::Success,
+            "only quit has a refusal answer"
+        );
         assert_eq!(forwarded_exit(Action::Quit, Forwarded::Failed), Exit::ForwardFailed);
         assert_eq!(forwarded_exit(Action::Background, Forwarded::Delivered(0)), Exit::Success);
         assert_eq!(

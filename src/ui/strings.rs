@@ -48,6 +48,9 @@ pub mod status {
     pub const ENGINE_FAILED: &str = "Das Aufnahmeprogramm konnte nicht gestartet werden.";
     /// "Open folder" was clicked, but the folder has not been created yet.
     pub const FOLDER_MISSING: &str = "Der Ordner existiert noch nicht.";
+    /// Quitting is blocked by an open dialog of this app ("Please close the open
+    /// dialog first.").
+    pub const DIALOG_OPEN: &str = "Bitte zuerst den offenen Dialog schließen.";
     /// Quitting is blocked by a running capture.
     pub const BUSY: &str = "Bitte die laufende Aufnahme oder Bereichsauswahl zuerst beenden.";
 }
