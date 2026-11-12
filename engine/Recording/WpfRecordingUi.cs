@@ -54,15 +54,20 @@ internal sealed class WpfRecordingUi : IRecordingUi
     public void ShowProblem(string heading, string reason, RECT work) => Card.Problem(heading, reason, work);
     public void ShowRecording(RecordedVideo video, string heading, RECT work) => Card.Present(video, heading, work);
 
-    // As a file on the clipboard: pasting into chat, mail or Explorer attaches the video.
-    public void CopyFileToClipboard(string path)
+    public Task<bool> CopyFileToClipboardAsync(string path) => ClipboardWriter.SetFileAsync(path);
+
+    public void CloseLiveWindows()
     {
-        var files = new System.Collections.Specialized.StringCollection { path };
-        for (int attempt = 0; attempt < 6; attempt++)
-        {
-            try { Clipboard.SetFileDropList(files); return; }
-            catch (ExternalException) { Thread.Sleep(40); }   // clipboard briefly held by another app
-        }
+        Attempt("Stopping the countdown", () => countdown?.Stop());
+        Attempt("Stopping the click highlights", () => clicks?.Stop());
+        Attempt("Hiding the toolbar", () => toolbar?.Hide());
+        Attempt("Hiding the frame", () => frame?.Hide());
+    }
+
+    static void Attempt(string what, Action action)
+    {
+        try { action(); }
+        catch (Exception ex) { ErrorLog.Write(what, ex); }   // recovery continues with the next window
     }
 
     public void Post(Action action) => Application.Current.Dispatcher.BeginInvoke(action);
@@ -93,7 +98,7 @@ internal sealed class RecordingBackend : IRecordingBackend
         return UniqueFile.Next(Path.Combine(folder, FileName(begun)));
     }
 
-    /// <summary>"Mosaiks-Aufnahme 2026-09-26 14-03-12.mp4"</summary>
+    /// <summary><see cref="UiText.Files.RecordingPrefix"/> plus the start time, e.g. "&lt;prefix&gt;2026-09-26 14-03-12.mp4".</summary>
     internal static string FileName(DateTime begun) =>
         UiText.Files.RecordingPrefix + begun.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.CurrentCulture) + ".mp4";
 

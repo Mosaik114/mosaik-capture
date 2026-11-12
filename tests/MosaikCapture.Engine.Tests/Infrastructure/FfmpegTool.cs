@@ -13,7 +13,7 @@ internal static class FfmpegTool
 
     public static void Run(params string[] args)
     {
-        int code = Ffmpeg.Run(Ffmpeg.Exe, FfmpegArgs.Quiet().Add(args), null, out _, out string error);
+        int code = Ffmpeg.Run(Ffmpeg.Exe, FfmpegArgs.Quiet().Add(args), FfmpegTimeouts.ForMedia(60), out _, out string error);
         if (code != 0) throw new InvalidOperationException("ffmpeg " + code + ": " + error);
     }
 

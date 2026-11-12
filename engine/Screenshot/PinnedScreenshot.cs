@@ -49,7 +49,7 @@ internal sealed class PinnedScreenshot : Window
         closeButton = BuildCloseButton();
         chipText = new TextBlock { FontSize = 11.5, FontFamily = Palette.UiFont, FontWeight = FontWeights.SemiBold };
         chip = BuildChip();
-        chipTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1100) };
+        chipTimer = new DispatcherTimer { Interval = Motion.FeedbackChip };
         chipTimer.Tick += delegate { chipTimer.Stop(); chip.Visibility = Visibility.Collapsed; };
 
         var layers = new Grid();
@@ -206,7 +206,7 @@ internal sealed class PinnedScreenshot : Window
     }
 
     void FadeCloseButton(double opacity) =>
-        closeButton.BeginAnimation(OpacityProperty, new DoubleAnimation(opacity, new Duration(TimeSpan.FromMilliseconds(120))));
+        closeButton.BeginAnimation(OpacityProperty, new DoubleAnimation(opacity, Motion.HoverFade));
 
     // ---------- Placement and zoom ----------
 
@@ -225,7 +225,7 @@ internal sealed class PinnedScreenshot : Window
         int shadow = (int)Math.Round(ShadowRoom * scale);
         NativeMethods.MoveTopmost(hwnd, x - shadow, y - shadow);
         frame.Opacity = 0;
-        frame.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(140))));
+        frame.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, Motion.FadeIn));
     }
 
     // 100 % = one image pixel per screen pixel, as captured.
@@ -281,10 +281,10 @@ internal sealed class PinnedScreenshot : Window
         chipTimer.Start();
     }
 
-    void Copy()
+    async void Copy()
     {
-        Screenshots.ToClipboard(image, Screenshots.Encode(image, false));
-        ShowFeedback(UiText.Pin.Copied);
+        bool copied = await ClipboardWriter.SetImageAsync(image, Screenshots.Encode(image, false));
+        ShowFeedback(copied ? UiText.Pin.Copied : UiText.Common.CopyFailed);
     }
 
     void SaveAs()

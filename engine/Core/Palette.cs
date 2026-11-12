@@ -37,6 +37,8 @@ static class Palette
     public static readonly SolidColorBrush Dimming = Frozen(0xA6, 0x14, 0x14, 0x13);
     /// <summary>Darkened chip on top of an image (size, duration, play button).</summary>
     public static readonly SolidColorBrush ImageChip = Frozen(0xD9, 0x26, 0x26, 0x24);
+    /// <summary>Translucent accent filling the circle of a left click in recordings.</summary>
+    public static readonly SolidColorBrush ClickFill = Frozen(0x40, 0xD9, 0x77, 0x57);
 
     internal static bool? Force;   // tests only: light/dark regardless of the Windows setting
 

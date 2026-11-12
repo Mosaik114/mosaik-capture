@@ -18,7 +18,7 @@ internal sealed partial class ScreenshotEditor
         ToolWindows.TakeFocus(this, hwnd);
         UpdateLayout();
         LayoutCrop();
-        var reveal = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(30) };
+        var reveal = new DispatcherTimer(DispatcherPriority.Render) { Interval = Motion.RevealDelay };
         reveal.Tick += delegate { reveal.Stop(); if (IsVisible) NativeMethods.Cloak(hwnd, false); };
         reveal.Start();
     }

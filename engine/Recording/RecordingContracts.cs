@@ -81,7 +81,10 @@ internal interface IRecordingUi
     void ShowSaving(double seconds, RECT work);
     void ShowProblem(string heading, string reason, RECT work);
     void ShowRecording(RecordedVideo video, string heading, RECT work);
-    void CopyFileToClipboard(string path);
+    /// <summary>Puts the file on the clipboard; false if another app held the clipboard too long.</summary>
+    Task<bool> CopyFileToClipboardAsync(string path);
+    /// <summary>After an unexpected error: closes every live recording window (each step on its own).</summary>
+    void CloseLiveWindows();
     /// <summary>Runs <paramref name="action"/> on the UI thread.</summary>
     void Post(Action action);
 }

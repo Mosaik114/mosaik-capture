@@ -14,7 +14,13 @@ internal sealed class RecordingToolbar : Window
     readonly Shapes.Ellipse dot;
     readonly Canvas captionRow;
     readonly ScaleTransform levelScale = new(0, 1);
-    readonly DispatcherTimer refreshTimer, confirmTimer;
+    /// <summary>Time and microphone level refresh.</summary>
+    static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(80);
+    /// <summary>How long the discard button waits for the confirming second click.</summary>
+    static readonly TimeSpan DiscardConfirmTime = TimeSpan.FromSeconds(3);
+
+    readonly DispatcherTimer refreshTimer = new() { Interval = RefreshInterval };
+    readonly DispatcherTimer confirmTimer = new() { Interval = DiscardConfirmTime };
     readonly Dictionary<Border, Func<string>> captions = new();
     bool dragging;
     int dragStartX, dragStartY, windowStartX, windowStartY;
@@ -40,17 +46,7 @@ internal sealed class RecordingToolbar : Window
             delegate { ScreenRecorder.SetClicks(!ScreenRecorder.Clicks); Refresh(); });
         pauseGlyph = ToolWindows.Glyph("", 16);
         pauseButton = AddButton(pauseGlyph, () => ScreenRecorder.Paused ? UiText.Toolbar.Resume : UiText.Toolbar.Pause, ScreenRecorder.TogglePause);
-        var square = new Shapes.Rectangle
-        {
-            Width = 12,
-            Height = 12,
-            RadiusX = 2.5,
-            RadiusY = 2.5,
-            Fill = Palette.Light,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        stopButton = AddButton(square, () => UiText.Toolbar.Stop, ScreenRecorder.Stop);
+        stopButton = AddButton(BuildStopSquare(), () => UiText.Toolbar.Stop, ScreenRecorder.Stop);
         stopButton.Background = Palette.RecordingRed;
         discardGlyph = ToolWindows.Glyph(IconGlyphs.Delete, 16);
         DiscardButton = AddButton(discardGlyph, () => ConfirmingDiscard ? UiText.Toolbar.ConfirmDiscard : UiText.Toolbar.Discard, Discard);
@@ -65,11 +61,21 @@ internal sealed class RecordingToolbar : Window
 
         Handle = ToolWindows.Handle(this, NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOOLWINDOW);
         ToolWindows.ExcludeFromCapture(Handle);
-        refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
         refreshTimer.Tick += delegate { UpdateTimeAndLevel(); };
-        confirmTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         confirmTimer.Tick += delegate { confirmTimer.Stop(); ConfirmingDiscard = false; Refresh(); };
     }
+
+    /// <summary>The white square on the red stop button.</summary>
+    static Shapes.Rectangle BuildStopSquare() => new()
+    {
+        Width = 12,
+        Height = 12,
+        RadiusX = 2.5,
+        RadiusY = 2.5,
+        Fill = Palette.Light,
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center
+    };
 
     public IntPtr Handle { get; }
 
@@ -272,7 +278,7 @@ internal sealed class RecordingToolbar : Window
         dot.Fill = Palette.RecordingRed;
         TimeText.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
         if (IsVisible && !dot.HasAnimatedProperties)
-            dot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0.3, new Duration(TimeSpan.FromMilliseconds(800)))
+            dot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0.3, Motion.RecordingPulse)
             {
                 AutoReverse = true,
                 RepeatBehavior = RepeatBehavior.Forever,

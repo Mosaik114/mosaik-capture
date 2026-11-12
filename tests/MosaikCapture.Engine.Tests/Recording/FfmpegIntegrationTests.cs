@@ -32,7 +32,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     static List<double> Beeps(string video)
     {
         var args = new FfmpegArgs().Add("-hide_banner", "-nostats", "-i", video, "-map", "0:a", "-af", "silencedetect=noise=-30dB:d=0.1", "-f", "null", "-");
-        Ffmpeg.Run(Ffmpeg.Exe, args, null, out _, out string error);
+        Ffmpeg.Run(Ffmpeg.Exe, args, FfmpegTimeouts.Quick, out _, out string error);
         var beeps = new List<double>();
         double end = -1;
         foreach (Match m in Regex.Matches(error, @"silence_(start|end): ([\d.]+)"))
@@ -58,7 +58,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     static void Assemble(List<string> segments, List<string> tracks, string target)
     {
         var args = RecordingSession.Assemble(Path.GetDirectoryName(segments[0])!, segments, tracks, new List<double> { 1.0, 5.5 }, new List<double> { 2.0, 3.0 }, target);
-        Assert.True(Ffmpeg.Run(Ffmpeg.Exe, args, null, out _, out string error) == 0, "ffmpeg: " + error);
+        Assert.True(Ffmpeg.Run(Ffmpeg.Exe, args, FfmpegTimeouts.Quick, out _, out string error) == 0, "ffmpeg: " + error);
     }
 
     [Fact]
@@ -186,6 +186,38 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
         Assert.False(File.Exists(work.File("kaputt gekürzt.mp4")), "partial output file is left behind");
     }
 
+    [Fact]
+    public void LoadFailsForAFileFfprobeCannotRead()
+    {
+        FfmpegTool.SkipIfMissing();
+        string broken = work.File("broken.mp4");
+        File.WriteAllBytes(broken, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 });
+
+        var error = Assert.Throws<InvalidOperationException>(() => RecordedVideo.Load(broken));
+
+        Assert.False(string.IsNullOrWhiteSpace(error.Message));
+    }
+
+    [Fact]
+    public void CancelledExportKillsFfmpegReportsNothingAndLeavesNoFile()
+    {
+        var source = WpfThread.Run(() => RecordedVideo.Load(probe.CopyTo(work)));
+
+        bool reported = WpfThread.Run(() =>
+        {
+            bool done = false;
+            using var cancellation = new CancellationTokenSource();
+            VideoExport.Export(source, 0, 6, sound: true, gif: true, _ => { }, (_, _) => done = true, cancellation.Token);
+            WpfThread.Pump(100);
+            cancellation.Cancel();
+            WpfThread.Pump(3000);
+            return done;
+        });
+
+        Assert.False(reported, "a cancelled export must not report back");
+        Assert.False(File.Exists(work.File("probe.gif")), "the partial GIF is left behind");
+    }
+
     // ---------- Thumbnails ----------
 
     [Fact]
@@ -193,7 +225,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     {
         string video = probe.Path;
 
-        var (strip, frame, missing) = WpfThread.Run(() => (RecordedVideo.Strip(video, 6, 8, 60), RecordedVideo.Frame(video, 3, 640), RecordedVideo.Frame(work.File("gibt-es-nicht.mp4"), 1, 640)));
+        var (strip, frame, missing) = WpfThread.Run(() => (RecordedVideo.Strip(video, 6, 8, 60), RecordedVideo.Frame(video, 3, 640), RecordedVideo.Frame(work.File("missing.mp4"), 1, 640)));
 
         Assert.NotNull(strip);
         Assert.Equal(8 * 106, strip!.PixelWidth);   // 8 frames of 106 px (16:9 at 60 px height)

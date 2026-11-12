@@ -74,7 +74,7 @@ internal static class ScreenGrabber
         NativeMethods.EnumWindows((hwnd, lParam) =>
         {
             if (!NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd)) return true;
-            int styles = NativeMethods.GetWindowLong(hwnd, NativeMethods.GWL_EXSTYLE);
+            long styles = NativeMethods.GetExtendedStyle(hwnd);
             if ((styles & (NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_TOOLWINDOW)) != 0) return true;
             _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint process);
             if (process == ownProcess) return true;

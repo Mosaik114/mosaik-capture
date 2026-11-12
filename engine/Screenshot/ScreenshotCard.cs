@@ -182,6 +182,7 @@ internal sealed class ScreenshotCard : Window
         path = capture.Path;
         saved = false;
         generation++;
+        thumbnailBox.Visibility = Visibility.Visible;
         ShowThumbnail(image);
         sizeText.Text = UiText.Common.Size(image.PixelWidth, image.PixelHeight);
         title.Text = heading;
@@ -218,7 +219,7 @@ internal sealed class ScreenshotCard : Window
         double scale = ToolWindows.Scale(hwnd);
         int width = (int)Math.Round(ActualWidth * scale), height = (int)Math.Round(ActualHeight * scale);
         NativeMethods.MoveTopmost(hwnd, workArea.right - width, workArea.bottom - height);
-        var duration = new Duration(TimeSpan.FromMilliseconds(200));
+        var duration = Motion.SlideIn;
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
         var fade = new DoubleAnimation(1, duration) { EasingFunction = ease };
         var rise = new DoubleAnimation(0, duration) { EasingFunction = ease };
@@ -228,6 +229,31 @@ internal sealed class ScreenshotCard : Window
     }
 
     public void Saved() => saved = true;
+
+    /// <summary>Saved, but the clipboard was busy: the heading must not claim it was copied.</summary>
+    public void SavedNotCopied()
+    {
+        saved = true;
+        title.Text = UiText.ScreenshotCard.SavedNotCopied;
+    }
+
+    /// <summary>An unexpected error in the screenshot flow, shown without an image.</summary>
+    public void ShowProblem(string heading, string detail, RECT workArea)
+    {
+        Palette.Apply(Resources);
+        path = "";
+        saved = false;
+        generation++;
+        thumbnail.Source = null;
+        shownImage = null;
+        thumbnailBox.Visibility = Visibility.Collapsed;
+        title.Text = heading;
+        subtitle.Text = detail;
+        statusGlyph.Text = IconGlyphs.Cancel;
+        buttons.Visibility = Visibility.Collapsed;
+        SlideIn(workArea);
+        if (!card.IsMouseOver) StartLifetime();
+    }
 
     // Recognizes and copies the text in the image; the result is shown on the card.
     async void ReadText()
@@ -243,8 +269,9 @@ internal sealed class ScreenshotCard : Window
             title.Text = result.FailureMessage;
             return;
         }
-        TextRecognition.ToClipboard(result.Text);
-        title.Text = UiText.Common.TextCopied;
+        bool copied = await ClipboardWriter.SetTextAsync(result.Text);
+        if (startedAt != generation) return;
+        title.Text = copied ? UiText.Common.TextCopied : UiText.Common.CopyFailed;
         subtitle.Text = TextRecognition.Summary(result.Text);
     }
 
@@ -282,7 +309,7 @@ internal sealed class ScreenshotCard : Window
         statusGlyph.Text = IconGlyphs.Delete;
         buttons.Visibility = Visibility.Collapsed;
         generation++;
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
+        var timer = new DispatcherTimer { Interval = Motion.LingerAfterLeave };
         timer.Tick += delegate { timer.Stop(); FadeOut(); };
         timer.Start();
     }
@@ -291,7 +318,7 @@ internal sealed class ScreenshotCard : Window
     {
         int fadingAt = ++generation;
         lifetimeBar.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        var fade = new DoubleAnimation(0, new Duration(TimeSpan.FromMilliseconds(260))) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } };
+        var fade = new DoubleAnimation(0, Motion.FadeOut) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } };
         fade.Completed += delegate
         {
             if (fadingAt != generation) return;

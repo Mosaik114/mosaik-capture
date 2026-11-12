@@ -13,7 +13,9 @@ public sealed class RecordingControllerTests
     readonly FakeBackend backend = new();
     readonly RecordingController controller;
 
-    public RecordingControllerTests() => controller = new RecordingController(ui, backend);
+    public RecordingControllerTests() => controller = new RecordingController(ui, backend, _ => saveTimeout);
+
+    TimeSpan saveTimeout = TimeSpan.FromSeconds(10);
 
     static async Task Within(Task task)
     {
@@ -296,6 +298,126 @@ public sealed class RecordingControllerTests
     }
 
     [Fact]
+    public async Task BusyClipboardIsNotHiddenBehindASuccessHeading()
+    {
+        var session = await StartRunning();
+        session.Video = new RecordedVideo { Path = "C:\\x.mp4" };
+        ui.ClipboardWorks = false;
+
+        await Within(controller.StopAsync());
+
+        Assert.Equal("ShowRecording Aufnahme gespeichert, nicht kopiert", ui.Calls.Last());
+    }
+
+    [Fact]
+    public async Task SavingThatHangsEndsAfterTheTimeoutAndBusyRecovers()
+    {
+        saveTimeout = TimeSpan.FromMilliseconds(200);
+        var session = await StartRunning();
+        session.HoldFinish();
+
+        await Within(controller.StopAsync());
+
+        Assert.Equal(RecordingPhase.Idle, controller.Phase);
+        Assert.False(controller.Busy);
+        Assert.Equal("ShowProblem Aufnahme fehlgeschlagen | " + UiText.Common.FfmpegTimedOut, ui.Calls.Last());
+        session.ReleaseFinish();
+    }
+
+    [Fact]
+    public void WindowErrorWhilePickingResetsToIdleAndTellsTheUser()
+    {
+        ui.FailOn = "ShowFrame";
+        controller.Toggle();
+
+        ui.Pick!(Picked, Monitor, Work);
+
+        Assert.Equal(RecordingPhase.Idle, controller.Phase);
+        Assert.Equal(new[] { "CloseLiveWindows", "ShowProblem Aufnahme abgebrochen | window broke" }, ui.Calls.Skip(ui.Calls.Count - 2));
+    }
+
+    [Fact]
+    public async Task WindowErrorWhenTheToolbarAppearsSavesWhatWasRecorded()
+    {
+        ui.FailOn = "ShowToolbar";
+        controller.Toggle();
+        ui.Pick!(Picked, Monitor, Work);
+        var session = backend.Sessions.Single();
+        session.Video = new RecordedVideo { Path = "C:\\x.mp4" };
+        await controller.LaunchAsync();
+
+        ui.CountdownFinished!();
+
+        await Within(ui.Finished.Task);
+        Assert.Equal(RecordingPhase.Idle, controller.Phase);
+        Assert.Contains("CloseLiveWindows", ui.Calls);
+        Assert.Equal("ShowRecording Aufnahme gespeichert", ui.Calls.Last());
+    }
+
+    [Fact]
+    public async Task WindowErrorDuringTheCountdownDiscardsTheSession()
+    {
+        controller.Toggle();
+        ui.FailOn = "StartCountdown";
+        ui.Pick!(Picked, Monitor, Work);
+        var session = backend.Sessions.Single();
+
+        Assert.Equal(RecordingPhase.Idle, controller.Phase);
+        Assert.Contains("CloseLiveWindows", ui.Calls);
+        await Within(session.Discarded.Task);
+    }
+
+    [Fact]
+    public async Task WindowErrorWhileRecordingStillSavesTheVideo()
+    {
+        var session = await StartRunning();
+        session.Video = new RecordedVideo { Path = "C:\\x.mp4" };
+        ui.FailOn = "SetFramePaused";
+
+        controller.TogglePause();
+
+        await Within(ui.Finished.Task);
+        Assert.Equal(RecordingPhase.Idle, controller.Phase);
+        Assert.Equal("C:\\Videos\\out.mp4", session.FinishedInto);
+        Assert.Equal("ShowRecording Aufnahme gespeichert", ui.Calls.Last());
+        Assert.False(session.Discarded.Task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task HotkeyWorksAgainAfterAnError()
+    {
+        ui.FailOn = "ShowFrame";
+        controller.Toggle();
+        ui.Pick!(Picked, Monitor, Work);
+        ui.FailOn = null;
+
+        await StartRunningAgain();
+
+        Assert.Equal(RecordingPhase.Running, controller.Phase);
+    }
+
+    async Task StartRunningAgain()
+    {
+        controller.Toggle();
+        ui.Pick!(Picked, Monitor, Work);
+        await controller.LaunchAsync();
+        ui.CountdownFinished!();
+    }
+
+    [Fact]
+    public async Task HidingWindowsFailsButSavingGoesOn()
+    {
+        var session = await StartRunning();
+        session.Video = new RecordedVideo { Path = "C:\\x.mp4" };
+        ui.FailOn = "HideToolbar";
+
+        await Within(controller.StopAsync());
+
+        Assert.Contains("CloseLiveWindows", ui.Calls);
+        Assert.Equal("ShowRecording Aufnahme gespeichert", ui.Calls.Last());
+    }
+
+    [Fact]
     public void MicrophoneLevelOnlyWhileTheMicrophoneIsOn()
     {
         Assert.Equal(0, controller.MicrophoneLevel);
@@ -312,9 +434,13 @@ public sealed class RecordingControllerTests
         public Action<Int32Rect, RECT, RECT>? Pick;
         public Action? PickCancelled, Launch, CountdownFinished, CountdownCancelled;
 
+        public string? FailOn;
+        public bool ClipboardWorks = true;
+
         void Log(string call)
         {
             lock (Calls) Calls.Add(call);
+            if (FailOn != null && call.StartsWith(FailOn, StringComparison.Ordinal)) throw new InvalidOperationException("window broke");
         }
 
         public RECT WorkAreaAtCursor() => Work;
@@ -358,7 +484,13 @@ public sealed class RecordingControllerTests
             Finished.TrySetResult(true);
         }
 
-        public void CopyFileToClipboard(string path) => Log("CopyFileToClipboard " + path);
+        public Task<bool> CopyFileToClipboardAsync(string path)
+        {
+            Log("CopyFileToClipboard " + path);
+            return Task.FromResult(ClipboardWorks);
+        }
+
+        public void CloseLiveWindows() => Log("CloseLiveWindows");
 
         public void Post(Action action) => action();
     }

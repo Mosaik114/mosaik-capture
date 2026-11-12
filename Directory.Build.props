@@ -24,6 +24,11 @@
          packages.lock.json. CI (GitHub Actions sets CI=true) fails if a lock file is out of date. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
+    <!-- Both projects are x64 Windows executables. On Windows the SDK infers the runtime win-x64 for them,
+         on Linux (Dependabot) it does not, and the lock files then lack the win-x64 section (NU1004 in CI).
+         Naming it explicitly makes every restore, on any OS, produce the same lock file. Restore only:
+         the output paths stay bin/<Configuration>/net48. -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <!-- Compile against the reference assemblies package instead of whatever targeting pack happens to be

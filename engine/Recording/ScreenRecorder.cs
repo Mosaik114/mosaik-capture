@@ -31,7 +31,7 @@ internal static class ScreenRecorder
     /// <summary>Toggles after a short delay so that whatever triggered it has left the screen.</summary>
     public static void ToggleSoon()
     {
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
+        var timer = new DispatcherTimer { Interval = Motion.TriggerDelay };
         timer.Tick += delegate { timer.Stop(); Toggle(); };
         timer.Start();
     }
@@ -57,13 +57,17 @@ internal static class ScreenRecorder
         VideoExport.Export(video, 0, video.Duration, false, true, ui.Card.Progress, (result, error) =>
         {
             if (result == null) ui.Card.Problem(UiText.Recording.GifFailed, error ?? UiText.Common.UnknownError, work);
-            else Exported(result, UiText.Recording.GifSaved, work);
+            else Exported(result, gif: true, work);
         });
     }
 
-    public static void Exported(RecordedVideo video, string heading, RECT work)
+    /// <summary>A trimmed video or GIF is done: copy it and show it on the card.</summary>
+    public static async void Exported(RecordedVideo video, bool gif, RECT work)
     {
-        ui.CopyFileToClipboard(video.Path);
+        bool copied = await ui.CopyFileToClipboardAsync(video.Path);
+        string heading = gif
+            ? copied ? UiText.Recording.GifSaved : UiText.Recording.GifSavedNotCopied
+            : copied ? UiText.Recording.TrimmedAndCopied : UiText.Recording.TrimmedNotCopied;
         ui.Card.Present(video, heading, work);
     }
 

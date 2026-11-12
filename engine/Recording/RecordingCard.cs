@@ -39,21 +39,47 @@ internal sealed class RecordingCard : Window
         thumbnailBox = BuildThumbnailBox();
 
         statusGlyph = ToolWindows.Glyph(IconGlyphs.Accept, 11);
-        statusGlyph.SetResourceReference(TextBlock.ForegroundProperty, Palette.Accent);
-        statusChip = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Margin = new Thickness(0, 1, 10, 0), VerticalAlignment = VerticalAlignment.Top, Child = statusGlyph };
-        statusChip.SetResourceReference(Border.BackgroundProperty, Palette.AccentSoft);
-        title = new TextBlock { FontFamily = Palette.TitleFont, FontSize = 17 };
-        title.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
-        subtitle = new TextBlock { FontFamily = Palette.UiFont, FontSize = 12, Margin = new Thickness(0, 3, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
-        subtitle.SetResourceReference(TextBlock.ForegroundProperty, Palette.Muted);
+        statusChip = BuildStatusChip(statusGlyph);
+        title = BuildTitle();
+        subtitle = BuildSubtitle();
         buttons = new UniformGrid { Rows = 1, Margin = new Thickness(0, 12, 0, 0) };
+        card = BuildCard();
+        Content = card;
 
+        HookUpMouse();
+        hwnd = ToolWindows.Handle(this, NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOOLWINDOW);
+    }
+
+    static Border BuildStatusChip(TextBlock glyph)
+    {
+        glyph.SetResourceReference(TextBlock.ForegroundProperty, Palette.Accent);
+        var chip = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Margin = new Thickness(0, 1, 10, 0), VerticalAlignment = VerticalAlignment.Top, Child = glyph };
+        chip.SetResourceReference(Border.BackgroundProperty, Palette.AccentSoft);
+        return chip;
+    }
+
+    static TextBlock BuildTitle()
+    {
+        var text = new TextBlock { FontFamily = Palette.TitleFont, FontSize = 17 };
+        text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
+        return text;
+    }
+
+    static TextBlock BuildSubtitle()
+    {
+        var text = new TextBlock { FontFamily = Palette.UiFont, FontSize = 12, Margin = new Thickness(0, 3, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
+        text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Muted);
+        return text;
+    }
+
+    Border BuildCard()
+    {
         var layout = new StackPanel();
         layout.Children.Add(thumbnailBox);
         layout.Children.Add(BuildHeader());
         layout.Children.Add(buttons);
         layout.Children.Add(BuildProgressTrack());
-        card = new Border
+        var border = new Border
         {
             Width = ContentWidth + 26,
             Margin = new Thickness(24),
@@ -65,12 +91,9 @@ internal sealed class RecordingCard : Window
             RenderTransform = slide,
             Effect = ToolWindows.Shadow(28, 8, 0.35)
         };
-        card.SetResourceReference(Border.BackgroundProperty, Palette.Background);
-        card.SetResourceReference(Border.BorderBrushProperty, Palette.Line);
-        Content = card;
-
-        HookUpMouse();
-        hwnd = ToolWindows.Handle(this, NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOOLWINDOW);
+        border.SetResourceReference(Border.BackgroundProperty, Palette.Background);
+        border.SetResourceReference(Border.BorderBrushProperty, Palette.Line);
+        return border;
     }
 
     /// <summary>Tests: build the content but never show the window.</summary>
@@ -323,7 +346,7 @@ internal sealed class RecordingCard : Window
         double scale = ToolWindows.Scale(hwnd);
         int width = (int)Math.Round(ActualWidth * scale), height = (int)Math.Round(ActualHeight * scale);
         NativeMethods.MoveTopmost(hwnd, workArea.right - width, workArea.bottom - height);
-        var duration = new Duration(TimeSpan.FromMilliseconds(200));
+        var duration = Motion.SlideIn;
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
         var fade = new DoubleAnimation(1, duration) { EasingFunction = ease };
         var rise = new DoubleAnimation(0, duration) { EasingFunction = ease };
@@ -338,7 +361,7 @@ internal sealed class RecordingCard : Window
         barScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         barScale.ScaleX = 0.3;
         double trackWidth = ContentWidth - 6;
-        barMove.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(-0.3 * trackWidth, trackWidth, new Duration(TimeSpan.FromMilliseconds(1100)))
+        barMove.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(-0.3 * trackWidth, trackWidth, Motion.IndeterminateSweep)
         {
             RepeatBehavior = RepeatBehavior.Forever,
             EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
@@ -367,7 +390,7 @@ internal sealed class RecordingCard : Window
         statusGlyph.Text = IconGlyphs.Delete;
         buttons.Visibility = Visibility.Collapsed;
         int deletedAt = ++generation;
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
+        var timer = new DispatcherTimer { Interval = Motion.LingerAfterLeave };
         timer.Tick += delegate { timer.Stop(); if (deletedAt == generation) FadeOut(); };
         timer.Start();
     }
@@ -377,7 +400,7 @@ internal sealed class RecordingCard : Window
         int fadingAt = ++generation;
         counting = false;
         barScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        var fade = new DoubleAnimation(0, new Duration(TimeSpan.FromMilliseconds(260))) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } };
+        var fade = new DoubleAnimation(0, Motion.FadeOut) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } };
         fade.Completed += delegate
         {
             if (fadingAt != generation) return;

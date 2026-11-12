@@ -79,8 +79,13 @@ internal sealed partial class ScreenshotEditor : Window
     readonly List<Shapes.Ellipse> colorRings = new();
     readonly List<Border> widthButtons = new();
     readonly List<Step> undo = new(), redo = new();
-    readonly DispatcherTimer holdTimer;           // pen/highlighter held still
-    readonly DispatcherTimer noticeTimer;
+    /// <summary>Pen or highlighter held still this long: the stroke snaps to a shape.</summary>
+    static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
+    /// <summary>How long a notice (copied, saved, ...) stays.</summary>
+    static readonly TimeSpan NoticeDuration = TimeSpan.FromMilliseconds(1800);
+
+    readonly DispatcherTimer holdTimer = new() { Interval = HoldDelay };           // pen/highlighter held still
+    readonly DispatcherTimer noticeTimer = new() { Interval = NoticeDuration };
     ToolGroup? openMenuGroup;
     Point holdPoint;
     bool snapped;                                 // the stroke has already snapped to a clean shape
@@ -116,15 +121,7 @@ internal sealed partial class ScreenshotEditor : Window
         this.onDone = onDone;
         this.onCancelled = onCancelled;
         this.onPinned = onPinned;
-        Title = UiText.Titles.Editor;
-        WindowStyle = WindowStyle.None;
-        ResizeMode = ResizeMode.NoResize;
-        ShowInTaskbar = false;
-        Topmost = true;
-        Background = Brushes.Black;
-        UseLayoutRounding = true;
-        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
-        Palette.Apply(Resources);
+        ConfigureWindow();
 
         root = new Canvas { ClipToBounds = true };
         frozenImage = new Image { Stretch = Stretch.Fill };
@@ -142,7 +139,29 @@ internal sealed partial class ScreenshotEditor : Window
         toolMenu = BuildToolMenu();
         noticeText = new TextBlock { FontSize = 12.5, FontFamily = Palette.UiFont, FontWeight = FontWeights.SemiBold };
         notice = BuildNotice();
+        ComposeSurface();
 
+        hwnd = new WindowInteropHelper(this).EnsureHandle();
+        NativeMethods.AddExtendedStyle(hwnd, NativeMethods.WS_EX_TOOLWINDOW);
+        HookInput();
+    }
+
+    void ConfigureWindow()
+    {
+        Title = UiText.Titles.Editor;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
+        ShowInTaskbar = false;
+        Topmost = true;
+        Background = Brushes.Black;
+        UseLayoutRounding = true;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
+        Palette.Apply(Resources);
+    }
+
+    // Layers from bottom to top: screenshot, dimming, markup, crop frame and handles, then the controls.
+    void ComposeSurface()
+    {
         root.Children.Add(frozenImage);
         root.Children.Add(dimming);
         root.Children.Add(markup);
@@ -154,21 +173,39 @@ internal sealed partial class ScreenshotEditor : Window
         root.Children.Add(tooltip);
         root.Children.Add(notice);
         Content = root;
+    }
 
-        holdTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
-        holdTimer.Tick += delegate { holdTimer.Stop(); PenHeld(); };
-        noticeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1800) };
+    // Every input handler is guarded: an error in one command must not leave the editor half-changed.
+    void HookInput()
+    {
+        holdTimer.Tick += delegate { holdTimer.Stop(); Guarded("Snapping a stroke", PenHeld); };
         noticeTimer.Tick += delegate { noticeTimer.Stop(); notice.Visibility = Visibility.Hidden; discardArmed = false; };
-
-        hwnd = new WindowInteropHelper(this).EnsureHandle();
-        NativeMethods.AddExtendedStyle(hwnd, NativeMethods.WS_EX_TOOLWINDOW);
-
-        MouseLeftButtonDown += (_, e) => PointerDown(e.GetPosition(root));
-        MouseMove += (_, e) => PointerMoved(e.GetPosition(root));
-        MouseLeftButtonUp += (_, _) => PointerUp();
+        MouseLeftButtonDown += (_, e) => Guarded("Pressing in the editor", () => PointerDown(e.GetPosition(root)));
+        MouseMove += (_, e) => Guarded("Moving in the editor", () => PointerMoved(e.GetPosition(root)));
+        MouseLeftButtonUp += (_, _) => Guarded("Releasing in the editor", PointerUp);
         MouseLeave += delegate { pointer = Offscreen; UpdateNumberPreview(); };
-        MouseWheel += (_, e) => { if (textBox == null && mode == Mode.None) StepWidth(e.Delta > 0 ? 1 : -1); };
-        PreviewKeyDown += (_, e) => OnKey(e);
+        MouseWheel += (_, e) => Guarded("Changing the width", () => { if (textBox == null && mode == Mode.None) StepWidth(e.Delta > 0 ? 1 : -1); });
+        PreviewKeyDown += (_, e) => Guarded("Editor command " + e.Key, () => OnKey(e));
+    }
+
+    /// <summary>Runs an input handler; on an unexpected error the current gesture is dropped and the user told.</summary>
+    void Guarded(string what, Action action)
+    {
+        try { action(); }
+        catch (Exception ex)   // last line of defence for one command: the editor stays usable
+        {
+            ErrorLog.Write(what, ex);
+            if (IsMouseCaptured) ReleaseMouseCapture();
+            holdTimer.Stop();
+            mode = Mode.None;
+            ShowNotice(UiText.Editor.CommandFailed);
+        }
+    }
+
+    /// <summary>After an error elsewhere in the screenshot flow: closes without reporting back.</summary>
+    internal void Abandon()
+    {
+        if (IsVisible) HideAndReset();
     }
 
     // ---------- Building ----------
@@ -310,7 +347,7 @@ internal sealed partial class ScreenshotEditor : Window
         return chip;
     }
 
-    // Short messages above or below the toolbar ("Gespeichert", "Größe: Dick", ...).
+    // Short messages above or below the toolbar (saved, the chosen width, ...).
     Border BuildNotice()
     {
         noticeText.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
@@ -365,7 +402,7 @@ internal sealed partial class ScreenshotEditor : Window
         if (primary) button.SetResourceReference(Border.BackgroundProperty, Palette.Accent);
         button.MouseEnter += delegate { Paint(button, true); ShowTooltip(button, label); };
         button.MouseLeave += delegate { Paint(button, false); tooltip.Visibility = Visibility.Hidden; };
-        button.MouseLeftButtonUp += delegate { click(); };
+        button.MouseLeftButtonUp += delegate { Guarded("Editor button " + label, click); };
         return button;
     }
 
@@ -456,7 +493,7 @@ internal sealed partial class ScreenshotEditor : Window
         Paint(entry, false);
         entry.MouseEnter += delegate { Paint(entry, true); };
         entry.MouseLeave += delegate { Paint(entry, false); };
-        entry.MouseLeftButtonUp += delegate { SetTool(entryTool); };
+        entry.MouseLeftButtonUp += delegate { Guarded("Choosing a tool", () => SetTool(entryTool)); };
         return entry;
     }
 

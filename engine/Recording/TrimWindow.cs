@@ -7,6 +7,7 @@ namespace MosaikCapture.Engine.Recording;
 /// Keys: Space play/pause, I/O set in/out to the playhead, arrows 0.1 s (1 s with Shift),
 /// Home/End jump, Enter saves, Esc closes.
 /// </summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "The export cancellation is disposed when the export ends or the window is dismissed; the window lives as long as the engine.")]
 internal sealed class TrimWindow : Window
 {
     const double ContentWidth = 880, HandleWidth = 14, TrackHeight = 64, StripTop = 4, StripHeight = 56;
@@ -24,21 +25,23 @@ internal sealed class TrimWindow : Window
     readonly Canvas track;
     readonly Shapes.Rectangle dimBefore, dimAfter, playheadLine;
     readonly ScaleTransform progressScale = new(0, 1);
-    readonly DispatcherTimer playbackTimer;
+    /// <summary>How often the playhead follows the playing video.</summary>
+    static readonly TimeSpan PlaybackTick = TimeSpan.FromMilliseconds(30);
+    /// <summary>Darkens the film strip outside the selection.</summary>
+    static readonly SolidColorBrush StripShade = Palette.Frozen(0xB8, 0x14, 0x14, 0x13);
+
+    readonly DispatcherTimer playbackTimer = new(DispatcherPriority.Render) { Interval = PlaybackTick };
     RecordedVideo? video;
     RECT workArea;
     double duration = 1, selectionStart, selectionEnd = 1, playhead, grabOffset;
     bool playing, withSound, exporting, exported;
+    CancellationTokenSource? exportCancellation;
     DragTarget dragging;
     int generation;
 
     public TrimWindow()
     {
-        ToolWindows.Setup(this, UiText.Titles.Trim);
-        ShowActivated = true;
-        Topmost = false;
-        ShowInTaskbar = true;
-        SizeToContent = SizeToContent.WidthAndHeight;
+        ConfigureWindow();
 
         subtitle = ToolWindows.Text(12, Palette.Muted);
         poster = new Image { Stretch = Stretch.Uniform };
@@ -53,9 +56,8 @@ internal sealed class TrimWindow : Window
 
         track = new Canvas { Width = ContentWidth, Height = TrackHeight, Margin = new Thickness(0, 16, 0, 0), Background = Brushes.Transparent, Cursor = Cursors.Hand };
         strip = new Image { Width = StripWidth, Height = StripHeight, Stretch = Stretch.UniformToFill, ClipToBounds = true };   // do not squash, crop the overflow
-        var shade = Palette.Frozen(0xB8, 0x14, 0x14, 0x13);
-        dimBefore = new Shapes.Rectangle { Height = StripHeight, Fill = shade };
-        dimAfter = new Shapes.Rectangle { Height = StripHeight, Fill = shade };
+        dimBefore = new Shapes.Rectangle { Height = StripHeight, Fill = StripShade };
+        dimAfter = new Shapes.Rectangle { Height = StripHeight, Fill = StripShade };
         selectionTop = SelectionEdge(0);
         selectionBottom = SelectionEdge(TrackHeight - StripTop);
         startHandle = TrimHandle(new CornerRadius(5, 0, 0, 5));
@@ -70,6 +72,24 @@ internal sealed class TrimWindow : Window
         progressText = ToolWindows.Text(12.5, Palette.Text);
         progressRow = BuildProgress();
 
+        Content = BuildCard();
+        PreviewKeyDown += (_, e) => OnKey(e);
+        hwnd = ToolWindows.Handle(this, 0);
+        playbackTimer.Tick += delegate { FollowPlayback(); };
+    }
+
+    // A normal window (taskbar, activation) unlike the other recording windows: the user works in it.
+    void ConfigureWindow()
+    {
+        ToolWindows.Setup(this, UiText.Titles.Trim);
+        ShowActivated = true;
+        Topmost = false;
+        ShowInTaskbar = true;
+        SizeToContent = SizeToContent.WidthAndHeight;
+    }
+
+    Border BuildCard()
+    {
         var layout = new StackPanel { Width = ContentWidth };
         layout.Children.Add(BuildHeader());
         layout.Children.Add(videoBox);
@@ -87,12 +107,7 @@ internal sealed class TrimWindow : Window
         };
         card.SetResourceReference(Border.BackgroundProperty, Palette.Background);
         card.SetResourceReference(Border.BorderBrushProperty, Palette.Line);
-        Content = card;
-
-        PreviewKeyDown += (_, e) => OnKey(e);
-        hwnd = ToolWindows.Handle(this, 0);
-        playbackTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(30) };
-        playbackTimer.Tick += delegate { FollowPlayback(); };
+        return card;
     }
 
     /// <summary>Tests: build the content but never show the window.</summary>
@@ -499,7 +514,7 @@ internal sealed class TrimWindow : Window
 
     void OnKey(KeyEventArgs e)
     {
-        if (exporting) { e.Handled = true; return; }
+        if (exporting && e.Key != Key.Escape) { e.Handled = true; return; }   // Esc cancels the export
         double step = (Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 1 : 0.1;
         switch (e.Key)
         {
@@ -532,6 +547,7 @@ internal sealed class TrimWindow : Window
         progressText.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
         progressScale.ScaleX = 0;
         var work = workArea;
+        exportCancellation = new CancellationTokenSource();
         VideoExport.Export(video!, selectionStart, selectionEnd, withSound, gif, fraction =>
         {
             progressScale.ScaleX = fraction;
@@ -539,6 +555,8 @@ internal sealed class TrimWindow : Window
         }, (result, error) =>
         {
             exporting = false;
+            exportCancellation?.Dispose();
+            exportCancellation = null;
             if (result == null)
             {
                 ShowExportError(error ?? UiText.Common.UnknownError);
@@ -546,8 +564,17 @@ internal sealed class TrimWindow : Window
             }
             exported = true;
             Dismiss();
-            ScreenRecorder.Exported(result, gif ? UiText.Recording.GifSaved : UiText.Recording.TrimmedAndCopied, work);
-        });
+            ScreenRecorder.Exported(result, gif, work);
+        }, exportCancellation.Token);
+    }
+
+    /// <summary>Closing the window while exporting kills ffmpeg and removes the partial file.</summary>
+    void CancelExport()
+    {
+        exportCancellation?.Cancel();
+        exportCancellation?.Dispose();
+        exportCancellation = null;
+        exporting = false;
     }
 
     // The error stays for 4 s, then the buttons return.
@@ -556,7 +583,7 @@ internal sealed class TrimWindow : Window
         progressText.Text = UiText.Trim.NotSaved(error);
         progressText.Foreground = Palette.RecordingRed;
         ShowProgressRow(true);
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        var timer = new DispatcherTimer { Interval = Motion.ErrorShown };
         timer.Tick += delegate { timer.Stop(); ShowProgressRow(false); };
         timer.Start();
     }
@@ -569,7 +596,7 @@ internal sealed class TrimWindow : Window
 
     void Dismiss()
     {
-        if (exporting) return;
+        if (exporting) CancelExport();
         generation++;
         playbackTimer.Stop();
         playing = false;

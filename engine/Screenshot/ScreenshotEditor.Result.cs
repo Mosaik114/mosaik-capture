@@ -122,16 +122,16 @@ internal sealed partial class ScreenshotEditor
             ShowNotice(result.FailureMessage);
             return;
         }
-        TextRecognition.ToClipboard(result.Text);
-        ShowNotice(UiText.Editor.TextCopied(TextRecognition.Summary(result.Text)));
+        bool copied = await ClipboardWriter.SetTextAsync(result.Text);
+        if (IsVisible) ShowNotice(copied ? UiText.Editor.TextCopied(TextRecognition.Summary(result.Text)) : UiText.Common.CopyFailed);
     }
 
-    void CopyNow()
+    async void CopyNow()
     {
         CommitText();
         var image = Render();
-        Screenshots.ToClipboard(image, Screenshots.Encode(image, false));
-        ShowNotice(UiText.Common.CopiedToClipboard);
+        bool copied = await ClipboardWriter.SetImageAsync(image, Screenshots.Encode(image, false));
+        if (IsVisible) ShowNotice(copied ? UiText.Common.CopiedToClipboard : UiText.Common.CopyFailed);
     }
 
     void SaveAs()

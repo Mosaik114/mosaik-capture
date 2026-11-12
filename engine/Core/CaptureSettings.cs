@@ -1,3 +1,4 @@
+using System.ComponentModel;
 namespace MosaikCapture.Engine.Core;
 
 /// <summary>
@@ -17,12 +18,15 @@ internal static class CaptureSettings
     public static readonly string RecordingWorkRoot = Path.Combine(Home, "recording");
 
     /// <summary>Where versions before 0.2 kept their work folders; cleaned up once.</summary>
-    public static readonly string LegacyRecordingWorkRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mosaiks-Aufnahme", "Aufnahme");
+    public static readonly string LegacyRecordingWorkRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), LegacyHomeName, LegacyWorkFolderName);
+
+    // Folder names of older versions (which used German names); only read to clean up their leftovers.
+    const string LegacyHomeName = "Mosaiks-Aufnahme", LegacyWorkFolderName = "Aufnahme";
 
     public static string FileName => Environment.GetEnvironmentVariable(TestConfigVariable) ?? Path.Combine(Home, "settings.ini");
 
-    public static string ScreenshotFolder => Read("screenshot_folder", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Mosaiks-Screenshots"));
-    public static string RecordingFolder => Read("recording_folder", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Mosaiks-Aufnahmen"));
+    public static string ScreenshotFolder => Read("screenshot_folder", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), UiText.Files.ScreenshotFolder));
+    public static string RecordingFolder => Read("recording_folder", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), UiText.Files.RecordingFolder));
     public static bool Microphone => Number("microphone", 0) != 0;
     public static bool SystemAudio => Number("system_audio", 1) != 0;
     public static bool Clicks => Number("show_clicks", 1) != 0;
@@ -42,7 +46,9 @@ internal static class CaptureSettings
     public static void SaveAudio(bool microphone, bool sound, bool clicks)
     {
         IntPtr host = NativeMethods.FindWindow(HostWindowClass, null);
-        if (host != IntPtr.Zero) NativeMethods.PostMessage(host, SaveAudioMessage, new IntPtr(AudioFlags(microphone, sound, clicks)), IntPtr.Zero);
+        if (host == IntPtr.Zero) return;   // no host (tests, or started by hand): nothing to persist
+        if (!NativeMethods.PostMessage(host, SaveAudioMessage, new IntPtr(AudioFlags(microphone, sound, clicks)), IntPtr.Zero))
+            ErrorLog.Write("Sending the audio settings to the host", new Win32Exception(Marshal.GetLastWin32Error()));
     }
 
     /// <summary>1 = microphone, 2 = system sound, 4 = show clicks.</summary>

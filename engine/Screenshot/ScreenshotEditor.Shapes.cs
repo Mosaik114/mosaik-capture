@@ -42,7 +42,7 @@ internal sealed partial class ScreenshotEditor
             Reshape(tool == Tool.Marker || snapShape == null ? holdPoint : LineEnd(snapShape));
         }
         else stroke.Data = snapShape;
-        var flash = new DoubleAnimation(0.35, 1, TimeSpan.FromMilliseconds(200));
+        var flash = new DoubleAnimation(0.35, 1, Motion.ShapeFlash);
         stroke.BeginAnimation(OpacityProperty, flash);
     }
 

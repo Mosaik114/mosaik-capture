@@ -17,17 +17,30 @@ internal enum RecordingPhase
 /// Cancelling the pick or the countdown returns to Idle; ffmpeg dying on its own ("broke") saves what
 /// was recorded. All methods run on the UI thread; the blocking work happens on background threads.
 /// </summary>
+/// <remarks>
+/// Every entry point is guarded: an unexpected error (for example in a window) closes the live
+/// windows, keeps what was recorded if possible, tells the user and returns to Idle, so the host's
+/// hotkey always works again. Saving is bounded by <see cref="saveTimeout"/>, so Busy always recovers.
+/// </remarks>
 internal sealed class RecordingController
 {
+    /// <summary>Saving after the ffmpeg calls themselves timed out: only a safety net.</summary>
+    static readonly TimeSpan SaveTimeoutMargin = TimeSpan.FromMinutes(5);
+
     readonly IRecordingUi ui;
     readonly IRecordingBackend backend;
+    readonly Func<double, TimeSpan> saveTimeout;
     IRecordingSession? session;
     RECT workArea;
 
-    public RecordingController(IRecordingUi ui, IRecordingBackend backend)
+    /// <param name="ui">The windows.</param>
+    /// <param name="backend">ffmpeg, monitors, settings.</param>
+    /// <param name="saveTimeout">Longest time saving may take for a recording of the given seconds (tests pass a short one).</param>
+    public RecordingController(IRecordingUi ui, IRecordingBackend backend, Func<double, TimeSpan>? saveTimeout = null)
     {
         this.ui = ui;
         this.backend = backend;
+        this.saveTimeout = saveTimeout ?? (seconds => FfmpegTimeouts.ForMedia(seconds) + SaveTimeoutMargin);
     }
 
     public RecordingPhase Phase { get; private set; }
@@ -44,7 +57,7 @@ internal sealed class RecordingController
     public float MicrophoneLevel => session != null && Microphone ? session.MicrophoneLevel : 0;
 
     /// <summary>The host's trigger: start, cancel during the countdown, stop while recording.</summary>
-    public void Toggle()
+    public void Toggle() => Guard("Starting or stopping a recording", () =>
     {
         switch (Phase)
         {
@@ -59,7 +72,7 @@ internal sealed class RecordingController
                 StopAsync().LogFailures("Saving a recording");
                 break;
         }
-    }
+    });
 
     void Pick()
     {
@@ -83,7 +96,9 @@ internal sealed class RecordingController
         if (Phase == RecordingPhase.Picking) Phase = RecordingPhase.Idle;
     }
 
-    internal void AreaPicked(Int32Rect area, RECT monitor, RECT work)
+    internal void AreaPicked(Int32Rect area, RECT monitor, RECT work) => Guard("Starting a recording", () => StartCounting(area, monitor, work));
+
+    void StartCounting(Int32Rect area, RECT monitor, RECT work)
     {
         workArea = work;
         area = RecordingArea.Fit(area, monitor);
@@ -114,27 +129,25 @@ internal sealed class RecordingController
     /// <summary>Shortly before zero: start ffmpeg so the first frame arrives exactly when the countdown ends.</summary>
     internal Task LaunchAsync() => session?.ResumeAsync() ?? Task.CompletedTask;
 
-    internal void CountdownFinished()
+    internal void CountdownFinished() => Guard("Showing the recording toolbar", () =>
     {
         if (Phase != RecordingPhase.Counting || session == null) return;
         Phase = RecordingPhase.Running;
         ui.ShowToolbar(session.Area, workArea);
         ui.StartClickHighlights(session.Area, ShowClicks);
-    }
+    });
 
     /// <summary>Esc during the countdown.</summary>
-    internal void CancelCountdown()
+    internal void CancelCountdown() => Guard("Cancelling the countdown", () =>
     {
         if (Phase != RecordingPhase.Counting) return;
         Phase = RecordingPhase.Idle;
         ui.HideFrame();
-        var cancelled = session;
-        session = null;
-        if (cancelled != null) Task.Run(cancelled.Discard).LogFailures("Discarding a recording");
-    }
+        DiscardInBackground(TakeSession());
+    });
 
     // ffmpeg exited on its own (e.g. graphics driver, locked screen): save what we have.
-    void OnSessionBroke() => ui.Post(() =>
+    void OnSessionBroke() => ui.Post(() => Guard("Saving after ffmpeg stopped", () =>
     {
         if (Phase == RecordingPhase.Counting)
         {
@@ -142,49 +155,81 @@ internal sealed class RecordingController
             Phase = RecordingPhase.Running;
         }
         StopAsync().LogFailures("Saving a recording");
-    });
+    }));
 
-    /// <summary>Stops and saves; completes when the video is saved (or failed).</summary>
+    /// <summary>Stops and saves; completes when the video is saved (or failed), at the latest after the save timeout.</summary>
     public async Task StopAsync()
     {
         if (Phase != RecordingPhase.Running) return;
         Phase = RecordingPhase.Saving;
-        HideLiveWindows();
-        var finished = session!;
-        session = null;
+        var finished = TakeSession()!;
         var work = workArea;
-        ui.ShowSaving(finished.Elapsed, work);
+        try
+        {
+            HideLiveWindows();
+            ui.ShowSaving(finished.Elapsed, work);
+        }
+        catch (Exception ex)   // the windows failed, the recording did not: keep saving
+        {
+            ErrorLog.Write("Hiding the recording windows", ex);
+            ui.CloseLiveWindows();
+        }
+        await SaveAsync(finished, work);
+    }
+
+    async Task SaveAsync(IRecordingSession finished, RECT work)
+    {
         RecordedVideo? video = null;
+        string reason;
         try
         {
             string path = backend.NewRecordingPath(finished.Begun);
-            video = await Task.Run(() => finished.Finish(path));
+            var saving = Task.Run(() => finished.Finish(path));
+            if (await Task.WhenAny(saving, Task.Delay(saveTimeout(finished.Elapsed))) == saving)
+            {
+                video = await saving;
+                reason = finished.Reason;
+            }
+            else
+            {
+                saving.LogFailures("Saving a recording (after the timeout)");
+                ErrorLog.Write("Saving a recording took too long", null);
+                reason = UiText.Common.FfmpegTimedOut;
+            }
         }
         catch (Exception ex)   // must always get back to Idle and tell the user
         {
             ErrorLog.Write("Saving a recording", ex);
+            reason = finished.Reason;
         }
         Phase = RecordingPhase.Idle;
-        if (video == null)
+        try
         {
-            ui.ShowProblem(UiText.Recording.Failed, finished.Reason, work);
-            return;
+            if (video == null)
+            {
+                ui.ShowProblem(UiText.Recording.Failed, reason, work);
+                return;
+            }
+            bool copied = await ui.CopyFileToClipboardAsync(video.Path);
+            string heading = finished.AudioLost ? UiText.Recording.SavedWithoutAudio : copied ? UiText.Recording.Saved : UiText.Recording.SavedNotCopied;
+            ui.ShowRecording(video, heading, work);
         }
-        ui.CopyFileToClipboard(video.Path);
-        ui.ShowRecording(video, finished.AudioLost ? UiText.Recording.SavedWithoutAudio : UiText.Recording.Saved, work);
+        catch (Exception ex)   // the card failed: the video is saved anyway
+        {
+            ErrorLog.Write("Showing a saved recording", ex);
+        }
     }
 
-    public void Discard()
+    public void Discard() => Guard("Discarding a recording", () =>
     {
         if (Phase != RecordingPhase.Running) return;
         Phase = RecordingPhase.Idle;
+        var discarded = TakeSession();
         HideLiveWindows();
-        var discarded = session!;
-        session = null;
-        Task.Run(discarded.Discard).LogFailures("Discarding a recording");
-    }
+        DiscardInBackground(discarded);
+    });
 
-    public void TogglePause()
+    public void TogglePause() => Guard("Pausing or resuming a recording", () =>
     {
         if (Phase != RecordingPhase.Running) return;
         var running = session!;
@@ -192,28 +237,28 @@ internal sealed class RecordingController
         else running.Pause();
         ui.SetFramePaused(running.Paused);
         ui.RefreshToolbar();
-    }
+    });
 
-    public void SetMicrophone(bool on)
+    public void SetMicrophone(bool on) => Guard("Switching the microphone", () =>
     {
         Microphone = on;
         session?.SetMicrophone(on);
         SaveSettings();
-    }
+    });
 
-    public void SetSystemSound(bool on)
+    public void SetSystemSound(bool on) => Guard("Switching the system sound", () =>
     {
         SystemSound = on;
         session?.SetSystemSound(on);
         SaveSettings();
-    }
+    });
 
-    public void SetShowClicks(bool on)
+    public void SetShowClicks(bool on) => Guard("Switching the click highlights", () =>
     {
         ShowClicks = on;
         ui.SetClickHighlights(on);
         SaveSettings();
-    }
+    });
 
     void SaveSettings() => backend.SaveSettings(new AudioSettings(Microphone, SystemSound, ShowClicks));
 
@@ -222,6 +267,45 @@ internal sealed class RecordingController
         ui.StopClickHighlights();
         ui.HideToolbar();
         ui.HideFrame();
+    }
+
+    IRecordingSession? TakeSession()
+    {
+        var taken = session;
+        session = null;
+        return taken;
+    }
+
+    static void DiscardInBackground(IRecordingSession? discarded)
+    {
+        if (discarded != null) Task.Run(discarded.Discard).LogFailures("Discarding a recording");
+    }
+
+    void Guard(string what, Action action)
+    {
+        try { action(); }
+        catch (Exception ex) { Recover(what, ex); }   // last line of defence for the flow: see Recover
+    }
+
+    // Unexpected error: close the live windows, keep what was recorded, tell the user, end in Idle.
+    void Recover(string what, Exception error)
+    {
+        ErrorLog.Write(what, error);
+        var phase = Phase;
+        var orphan = TakeSession();
+        try { ui.CloseLiveWindows(); }
+        catch (Exception ex) { ErrorLog.Write("Closing the recording windows", ex); }
+        if (phase == RecordingPhase.Saving) return;   // saving runs on and ends in Idle by itself
+        if (phase == RecordingPhase.Running && orphan != null)
+        {
+            Phase = RecordingPhase.Saving;
+            SaveAsync(orphan, workArea).LogFailures("Saving a recording after an error");
+            return;
+        }
+        Phase = RecordingPhase.Idle;
+        DiscardInBackground(orphan);
+        try { ui.ShowProblem(UiText.Recording.Aborted, error.Message, workArea); }
+        catch (Exception ex) { ErrorLog.Write("Showing a recording error", ex); }
     }
 }
 

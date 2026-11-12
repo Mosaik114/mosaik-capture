@@ -35,30 +35,26 @@ internal sealed class SelectionOverlay : Window
     string color = "";
     bool forRecording;                       // picking an area for a screen recording instead of a screenshot
 
+    static readonly SolidColorBrush GuideBrush = Palette.Frozen(0x66, 0xD9, 0x77, 0x57);
+    static readonly DoubleCollection GuideDashes = Freeze(new DoubleCollection(new double[] { 4, 4 }));
+
+    static DoubleCollection Freeze(DoubleCollection dashes)
+    {
+        dashes.Freeze();
+        return dashes;
+    }
+
     public SelectionOverlay(Action<ScreenCapture>? onCaptured)
     {
         captured = onCaptured;
-        Title = UiText.Titles.Overlay;
-        WindowStyle = WindowStyle.None;
-        ResizeMode = ResizeMode.NoResize;
-        ShowInTaskbar = false;
-        Topmost = true;
-        Background = Brushes.Black;
-        Cursor = Cursors.Cross;
-        UseLayoutRounding = true;
-        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
-        Palette.Apply(Resources);
+        ConfigureWindow();
 
         root = new Canvas();
         frozenScreen = new Image { Stretch = Stretch.Fill };
-        root.Children.Add(frozenScreen);
         decorations = new Canvas { IsHitTestVisible = false };
-        root.Children.Add(decorations);
-
         dimming = new Shapes.Path { Fill = Palette.Dimming };
-        var guide = Palette.Frozen(0x66, 0xD9, 0x77, 0x57);
-        horizontalGuide = new Shapes.Line { Stroke = guide, StrokeThickness = 1, StrokeDashArray = new DoubleCollection(new double[] { 4, 4 }) };
-        verticalGuide = new Shapes.Line { Stroke = guide, StrokeThickness = 1, StrokeDashArray = new DoubleCollection(new double[] { 4, 4 }) };
+        horizontalGuide = BuildGuide();
+        verticalGuide = BuildGuide();
         frame = new Shapes.Rectangle { StrokeThickness = 2 };
         frame.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Accent);
         sizeText = new TextBlock { FontSize = 12, FontWeight = FontWeights.SemiBold, FontFamily = Palette.UiFont };
@@ -73,10 +69,7 @@ internal sealed class SelectionOverlay : Window
         colorChip = BuildColorChip();
         hintText = new TextBlock { FontSize = 12.5, FontFamily = Palette.UiFont, Text = UiText.Overlay.ScreenshotHint };
         hint = BuildHint();
-
-        foreach (var element in new UIElement[] { dimming, horizontalGuide, verticalGuide, frame, sizeChip, loupe, colorChip, hint })
-            decorations.Children.Add(element);
-        Content = root;
+        ComposeLayers();
 
         hwnd = ToolWindows.Handle(this, NativeMethods.WS_EX_TOOLWINDOW);   // not in Alt+Tab
         scale = ToolWindows.Scale(hwnd);
@@ -179,6 +172,33 @@ internal sealed class SelectionOverlay : Window
 
     // ---------- Opening ----------
 
+    void ConfigureWindow()
+    {
+        Title = UiText.Titles.Overlay;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
+        ShowInTaskbar = false;
+        Topmost = true;
+        Background = Brushes.Black;
+        Cursor = Cursors.Cross;
+        UseLayoutRounding = true;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
+        Palette.Apply(Resources);
+    }
+
+    /// <summary>Dashed accent line through the pointer.</summary>
+    static Shapes.Line BuildGuide() => new() { Stroke = GuideBrush, StrokeThickness = 1, StrokeDashArray = GuideDashes };
+
+    // The frozen screen at the bottom, everything else above it and transparent to the mouse.
+    void ComposeLayers()
+    {
+        root.Children.Add(frozenScreen);
+        root.Children.Add(decorations);
+        foreach (var element in new UIElement[] { dimming, horizontalGuide, verticalGuide, frame, sizeChip, loupe, colorChip, hint })
+            decorations.Children.Add(element);
+        Content = root;
+    }
+
     public void Open() => Begin(recording: false);
 
     public void OpenForRecording() => Begin(recording: true);
@@ -226,13 +246,13 @@ internal sealed class SelectionOverlay : Window
         Show();
         NativeMethods.SetWindowPos(hwnd, NativeMethods.HWND_TOPMOST, virtualScreen.X, virtualScreen.Y, virtualScreen.Width, virtualScreen.Height, NativeMethods.SWP_SHOWWINDOW);
         ToolWindows.TakeFocus(this, hwnd);
-        var reveal = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(30) };
+        var reveal = new DispatcherTimer(DispatcherPriority.Render) { Interval = Motion.RevealDelay };
         reveal.Tick += delegate
         {
             reveal.Stop();
             if (!IsVisible) return;
             NativeMethods.Cloak(hwnd, false);
-            decorations.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(140)))
+            decorations.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, Motion.FadeIn)
             {
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
             });
@@ -368,12 +388,7 @@ internal sealed class SelectionOverlay : Window
                 Finish(selection);
                 break;
             case Key.C when !forRecording:
-                try
-                {
-                    Clipboard.SetText(color);
-                    colorText.Text = color + UiText.Overlay.ColorCopiedSuffix;
-                }
-                catch (COMException) { }   // clipboard busy: no confirmation
+                CopyColor(color);
                 break;
             case Key.LeftShift:
             case Key.RightShift:
@@ -418,7 +433,13 @@ internal sealed class SelectionOverlay : Window
         captured!(capture);
     }
 
-    void Cancel()
+    async void CopyColor(string color)
+    {
+        if (await ClipboardWriter.SetTextAsync(color) && IsVisible) colorText.Text = color + UiText.Overlay.ColorCopiedSuffix;
+    }
+
+    /// <summary>Closes the overlay; while picking a recording area this reports "aborted".</summary>
+    internal void Cancel()
     {
         Dismiss();
         if (forRecording) Aborted?.Invoke();

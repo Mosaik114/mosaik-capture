@@ -20,6 +20,9 @@ internal sealed class ClickHighlighter
     int nextRipple;
     volatile bool enabled;
 
+    /// <summary>Unhooking takes milliseconds; a hook thread that hangs longer is left behind (it is a background thread).</summary>
+    static readonly TimeSpan HookStopTimeout = TimeSpan.FromSeconds(2);
+
     public ClickHighlighter() => hookProc = OnMouseEvent;   // kept in a field so the delegate is not collected
 
     public bool Enabled { get => enabled; set => enabled = value; }
@@ -42,7 +45,7 @@ internal sealed class ClickHighlighter
         if (thread == null) return;
         hookThread = null;
         NativeMethods.PostThreadMessage(hookThreadId, NativeMethods.WM_QUIT, IntPtr.Zero, IntPtr.Zero);
-        thread.Join(TimeSpan.FromSeconds(2));
+        thread.Join(HookStopTimeout);
     }
 
     void RunHook(ManualResetEventSlim ready)
@@ -98,7 +101,9 @@ internal sealed class ClickHighlighter
     /// <summary>One expanding circle; a few are reused round robin.</summary>
     sealed class Ripple : Window
     {
-        const double Diameter = 64;
+        const double Diameter = 64, Inset = 2, RingThickness = 3, StartScale = 0.3;
+        static readonly Duration AnimationLength = new(TimeSpan.FromMilliseconds(480));
+        static readonly DoubleCollection RightClickDashes = new(new double[] { 2, 1.5 });
         readonly IntPtr hwnd;
         readonly Shapes.Ellipse ring;
         readonly ScaleTransform grow = new(1, 1, Diameter / 2, Diameter / 2);
@@ -108,30 +113,29 @@ internal sealed class ClickHighlighter
             ToolWindows.Setup(this, UiText.Titles.Click);
             IsHitTestVisible = false;
             Width = Height = Diameter;
-            ring = new Shapes.Ellipse { Width = Diameter - 4, Height = Diameter - 4, StrokeThickness = 3, RenderTransform = grow };
-            Canvas.SetLeft(ring, 2);
-            Canvas.SetTop(ring, 2);
+            ring = new Shapes.Ellipse { Width = Diameter - 2 * Inset, Height = Diameter - 2 * Inset, StrokeThickness = RingThickness, RenderTransform = grow };
+            Canvas.SetLeft(ring, Inset);
+            Canvas.SetTop(ring, Inset);
             ring.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Accent);
             var canvas = new Canvas();
             canvas.Children.Add(ring);
             Content = canvas;
-            grow.CenterX = grow.CenterY = (Diameter - 4) / 2;
+            grow.CenterX = grow.CenterY = (Diameter - 2 * Inset) / 2;
             hwnd = ToolWindows.Handle(this, NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_TRANSPARENT);
         }
 
         // Left: solid circle with a light fill; right: dashed.
         public void Play(int x, int y, bool right)
         {
-            ring.StrokeDashArray = right ? new DoubleCollection(new double[] { 2, 1.5 }) : null;
-            ring.Fill = right ? null : Palette.Frozen(0x40, 0xD9, 0x77, 0x57);
+            ring.StrokeDashArray = right ? RightClickDashes : null;
+            ring.Fill = right ? null : Palette.ClickFill;
             if (!IsVisible) Show();
             int half = (int)Math.Round(Diameter * ToolWindows.Scale(hwnd) / 2);
             NativeMethods.MoveTopmost(hwnd, x - half, y - half);
-            var duration = new Duration(TimeSpan.FromMilliseconds(480));
             var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-            grow.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.3, 1, duration) { EasingFunction = ease });
-            grow.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.3, 1, duration) { EasingFunction = ease });
-            BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0, duration) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } });
+            grow.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(StartScale, 1, AnimationLength) { EasingFunction = ease });
+            grow.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(StartScale, 1, AnimationLength) { EasingFunction = ease });
+            BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0, AnimationLength) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } });
         }
     }
 }

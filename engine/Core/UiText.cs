@@ -24,6 +24,10 @@ static class UiText
     /// <summary>Names of the files the user gets.</summary>
     public static class Files
     {
+        /// <summary>Default folder below Pictures (user-visible, so German).</summary>
+        public const string ScreenshotFolder = "Mosaiks-Screenshots";
+        /// <summary>Default folder below Videos.</summary>
+        public const string RecordingFolder = "Mosaiks-Aufnahmen";
         public const string ScreenshotPrefix = "Mosaiks-Screenshot ";
         public const string RecordingPrefix = "Mosaiks-Aufnahme ";
         public const string TrimmedSuffix = " gekürzt";
@@ -44,6 +48,8 @@ static class UiText
         public const string TextRecognitionUnavailable = "Texterkennung nicht möglich";
         public const string TextCopied = "Text kopiert";
         public const string UnknownError = "Unbekannter Fehler";
+        public const string CopyFailed = "Kopieren nicht möglich";
+        public const string FfmpegTimedOut = "ffmpeg hat nicht rechtzeitig geantwortet";
         public const string Saving = "Wird gespeichert …";
 
         public static string Size(int width, int height) => width + " × " + height;
@@ -66,6 +72,8 @@ static class UiText
         public const string Text = "Text";
         public const string EditedAndCopied = "Bearbeitet und kopiert";
         public const string NotSaved = "Nicht gespeichert";
+        public const string SavedNotCopied = "Gespeichert, nicht kopiert";
+        public const string Problem = "Screenshot fehlgeschlagen";
         public static string FolderNotWritable(string folder) => "Ordner nicht beschreibbar: " + folder;
     }
 
@@ -89,6 +97,7 @@ static class UiText
         public const string Pin = "Anpinnen   F3";
         public const string WidthHint = "   + / −";
         public const string ConfirmDiscard = "Nochmal Esc = Änderungen verwerfen";
+        public const string CommandFailed = "Das hat nicht geklappt";
 
         public static string ColorTip(int number) => "Farbe   " + number;
         public static string SizeNote(string widthName) => "Größe: " + widthName;
@@ -127,6 +136,10 @@ static class UiText
         public const string CreatingGif = "GIF wird erstellt …";
         public const string GifFailed = "GIF fehlgeschlagen";
         public const string GifSaved = "GIF gespeichert und kopiert";
+        public const string GifSavedNotCopied = "GIF gespeichert, nicht kopiert";
+        public const string TrimmedNotCopied = "Gekürzt gespeichert, nicht kopiert";
+        public const string SavedNotCopied = "Aufnahme gespeichert, nicht kopiert";
+        public const string Aborted = "Aufnahme abgebrochen";
         public const string TrimmedAndCopied = "Gekürzt und kopiert";
         public const string Trim = "Kürzen";
         public const string Gif = "GIF";

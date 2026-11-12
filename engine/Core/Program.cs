@@ -26,6 +26,14 @@ internal static class Program
         };
     }
 
+    static int CurrentProcessId()
+    {
+        using var self = Process.GetCurrentProcess();
+        return self.Id;
+    }
+
+    internal static string RestartArguments(int pid) => RestartArgument + " " + CaptureBridge.AfterArgument + " " + pid.ToString(CultureInfo.InvariantCulture);
+
     /// <summary>Restarts only if the engine has been running for a while; otherwise a crash at startup would loop.</summary>
     internal static void Restart()
     {
@@ -35,6 +43,7 @@ internal static class Program
             ErrorLog.Write("No restart: crashed within the first minute", null);
             return;
         }
-        Shell.Open(Assembly.GetEntryAssembly()!.Location, RestartArgument);
+        // The new engine waits for this process to be gone before it takes the single-instance mutex.
+        Shell.Open(Assembly.GetEntryAssembly()!.Location, RestartArguments(CurrentProcessId()));
     }
 }

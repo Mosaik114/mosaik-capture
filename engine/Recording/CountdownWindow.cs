@@ -43,7 +43,7 @@ internal sealed class CountdownWindow : Window
 
         hwnd = ToolWindows.Handle(this, NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_TRANSPARENT);
         ToolWindows.ExcludeFromCapture(hwnd);
-        timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(15) };
+        timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = Motion.CountdownFrame };
         timer.Tick += delegate { OnTick(); };
     }
 
@@ -130,7 +130,7 @@ internal sealed class CountdownWindow : Window
         {
             shownNumber = secondsLeft;
             number.Text = secondsLeft.ToString(CultureInfo.InvariantCulture);
-            var pulse = new Duration(TimeSpan.FromMilliseconds(260));
+            var pulse = Motion.CountdownPulse;
             var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
             pop.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1.28, 1, pulse) { EasingFunction = ease });
             pop.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1.28, 1, pulse) { EasingFunction = ease });

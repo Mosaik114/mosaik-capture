@@ -13,10 +13,13 @@ internal sealed class RecordedVideo
     public BitmapSource? Thumbnail { get; init; }
 
     /// <summary>Reads the key data with ffprobe and takes a thumbnail from the middle (blocking).</summary>
+    /// <exception cref="InvalidOperationException">ffprobe cannot read the file (message: its last error line).</exception>
+    /// <exception cref="TimeoutException">ffprobe did not answer in time.</exception>
     public static RecordedVideo Load(string path)
     {
         var probe = new FfmpegArgs().Add("-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "default=nw=1", path);
-        Ffmpeg.Run(Ffmpeg.Probe, probe, null, out string output, out _);
+        if (Ffmpeg.Run(Ffmpeg.Probe, probe, FfmpegTimeouts.Quick, out string output, out string error) != 0)
+            throw new InvalidOperationException(FfmpegOutput.LastLine(error));
         double duration = FfmpegOutput.Field(output, "duration");
         return new RecordedVideo
         {
@@ -64,8 +67,13 @@ internal sealed class RecordedVideo
         string png = System.IO.Path.Combine(System.IO.Path.GetTempPath(), prefix + Guid.NewGuid().ToString("N") + ".png");
         try
         {
-            if (Ffmpeg.Run(Ffmpeg.Exe, arguments(png), null, out _, out _) != 0 || !File.Exists(png)) return null;
+            if (Ffmpeg.Run(Ffmpeg.Exe, arguments(png), FfmpegTimeouts.Quick, out _, out _) != 0 || !File.Exists(png)) return null;
             return ToolWindows.LoadImage(png);
+        }
+        catch (TimeoutException ex)
+        {
+            ErrorLog.Write("Rendering a preview image", ex);
+            return null;
         }
         finally
         {

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 namespace MosaikCapture.Engine.Core;
 
 /// <summary>
@@ -5,7 +6,9 @@ namespace MosaikCapture.Engine.Core;
 /// </summary>
 /// <remarks>
 /// Command line: <c>--screenshot</c> (default), <c>--recording</c>, <c>--idle</c>,
-/// <c>--self-test &lt;report&gt;</c>, <c>--live-test &lt;dir&gt;</c>.
+/// <c>--self-test &lt;report&gt;</c>, <c>--live-test &lt;dir&gt;</c>. The engine adds
+/// <c>--after &lt;pid&gt;</c> when it restarts itself after a crash: the new process waits for the old
+/// one to be gone before it takes the mutex (the host never sends this flag).
 /// Only one engine runs per session (mutex <see cref="MutexName"/>). A second start forwards its
 /// command to the running instance and exits. The running instance owns a hidden window titled
 /// <see cref="Title"/> that accepts:
@@ -22,7 +25,11 @@ internal static class CaptureBridge
     internal const string MutexName = "Local\\MosaikCapture.Engine";
     internal const int CommandBase = 0x8000;
     internal const int ScreenshotMessage = 0x8001, RecordingMessage = 0x8002, QuitMessage = 0x8003, StateMessage = 0x800A;
+    internal const string AfterArgument = "--after";
     const int ForwardAttempts = 100, ForwardDelayMs = 50;
+
+    /// <summary>How long a restarted engine waits for the crashed one to exit.</summary>
+    static readonly TimeSpan ParentExitTimeout = TimeSpan.FromSeconds(10);
 
     enum Command { Idle = 0, Screenshot = 1, Recording = 2 }
 
@@ -31,8 +38,9 @@ internal static class CaptureBridge
         if (args.Length > 0 && args[0] == "--self-test") { Diagnostics.SelfTest.Run(args.Length > 1 ? args[1] : "capture-test.json"); return; }
         if (args.Length > 1 && args[0] == "--live-test") { Diagnostics.LiveTest.Run(args[1]); return; }
         int command = ParseCommand(args);
-        using var single = new Mutex(true, MutexName, out bool created);
-        if (!created)
+        if (ParseParent(args) is int parent) WaitForExit(parent, ParentExitTimeout);
+        using var single = new Mutex(false, MutexName);
+        if (!TryAcquire(single))
         {
             ForwardToRunningInstance(command);
             return;
@@ -47,6 +55,44 @@ internal static class CaptureBridge
         }
     }
 
+    /// <summary>Takes the single-instance mutex without waiting; an abandoned one (crashed owner) counts as taken.</summary>
+    internal static bool TryAcquire(Mutex mutex)
+    {
+        try
+        {
+            return mutex.WaitOne(0);
+        }
+        catch (AbandonedMutexException ex)
+        {
+            ErrorLog.Write("The previous engine ended without releasing its mutex", ex);
+            return true;   // the wait succeeded: this process owns the mutex now
+        }
+    }
+
+    /// <summary>The process id after <c>--after</c>, if any.</summary>
+    internal static int? ParseParent(string[] args)
+    {
+        int index = Array.IndexOf(args, AfterArgument);
+        return index >= 0 && index + 1 < args.Length && int.TryParse(args[index + 1], NumberStyles.None, CultureInfo.InvariantCulture, out int pid) ? pid : null;
+    }
+
+    /// <summary>Waits until the process has exited (or is unknown); false after the timeout.</summary>
+    internal static bool WaitForExit(int pid, TimeSpan timeout)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return process.WaitForExit((int)timeout.TotalMilliseconds);
+        }
+        catch (ArgumentException) { return true; }            // already gone
+        catch (InvalidOperationException) { return true; }    // exited while we looked
+        catch (Win32Exception ex)                             // no access: fall back to the mutex alone
+        {
+            ErrorLog.Write("Waiting for the previous engine", ex);
+            return false;
+        }
+    }
+
     // Another engine owns the mutex: hand the command over (its window may still be starting up).
     static void ForwardToRunningInstance(int command)
     {
@@ -55,7 +101,8 @@ internal static class CaptureBridge
             IntPtr window = NativeMethods.FindWindow(null, Title);
             if (window != IntPtr.Zero)
             {
-                NativeMethods.PostMessage(window, CommandBase + command, IntPtr.Zero, IntPtr.Zero);
+                if (!NativeMethods.PostMessage(window, CommandBase + command, IntPtr.Zero, IntPtr.Zero))
+                    ErrorLog.Write("Forwarding a command to the running engine", new Win32Exception(Marshal.GetLastWin32Error()));
                 return;
             }
             Thread.Sleep(ForwardDelayMs);

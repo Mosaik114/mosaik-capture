@@ -1,3 +1,4 @@
+using System.ComponentModel;
 #pragma warning disable CA1707 // Win32 names are kept as documented (SWP_NOSIZE, ...) so they can be looked up
 #pragma warning disable IDE1006
 
@@ -154,12 +155,14 @@ internal static partial class NativeMethods
     // ---------- user32: windows ----------
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string? className, string? windowName);
-    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool PostMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", SetLastError = true)] public static extern bool PostThreadMessage(uint threadId, int message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
-    [DllImport("user32.dll", SetLastError = true)] public static extern int GetWindowLong(IntPtr hwnd, int index);
-    [DllImport("user32.dll", SetLastError = true)] public static extern int SetWindowLong(IntPtr hwnd, int index, int value);
-    [DllImport("user32.dll", SetLastError = true)] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
+    // The engine is x64 only, where the ...Ptr variants are real exports (no 32-bit fallback needed).
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SetWindowLongPtrW")] static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SetWindowPos")] static extern bool SetWindowPosNative(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
+    [DllImport("kernel32.dll")] static extern void SetLastError(uint code);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll", SetLastError = true)] public static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
@@ -227,9 +230,25 @@ internal static partial class NativeMethods
 
     // ---------- Helpers ----------
 
-    /// <summary>Adds extended window styles (WS_EX_*) to a window.</summary>
-    public static void AddExtendedStyle(IntPtr hwnd, int styles) =>
-        _ = SetWindowLong(hwnd, GWL_EXSTYLE, GetWindowLong(hwnd, GWL_EXSTYLE) | styles);
+    /// <summary>The extended window styles (WS_EX_*) of a window.</summary>
+    public static long GetExtendedStyle(IntPtr hwnd) => GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
+
+    /// <summary>Adds extended window styles (WS_EX_*) to a window; logs if Windows refuses.</summary>
+    public static void AddExtendedStyle(IntPtr hwnd, int styles)
+    {
+        long current = GetExtendedStyle(hwnd);
+        SetLastError(0);
+        if (SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(current | (uint)styles)) == IntPtr.Zero && Marshal.GetLastWin32Error() != 0)
+            ErrorLog.Write("Setting window styles", new Win32Exception(Marshal.GetLastWin32Error()));
+    }
+
+    /// <summary>SetWindowPos that logs failures (a window in the wrong place is otherwise silent).</summary>
+    public static bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags)
+    {
+        if (SetWindowPosNative(hwnd, insertAfter, x, y, cx, cy, flags)) return true;
+        ErrorLog.Write("Placing a window", new Win32Exception(Marshal.GetLastWin32Error()));
+        return false;
+    }
 
     /// <summary>Moves a window without resizing or activating it and keeps it topmost.</summary>
     public static void MoveTopmost(IntPtr hwnd, int x, int y) =>

@@ -83,11 +83,23 @@ public sealed class FfmpegLocatorTests
     }
 
     [Fact]
+    public void ProbeNextToFfmpegComesFirst()
+    {
+        using var work = new TempDirectory();
+        string bundle = Directory.CreateDirectory(work.File("bundle")).FullName;
+        File.WriteAllText(Path.Combine(bundle, "ffmpeg.exe"), "");
+        File.WriteAllText(Path.Combine(bundle, "ffprobe.exe"), "");
+
+        Assert.Equal(Path.Combine(bundle, "ffprobe.exe"), Ffmpeg.FindProbe(Path.Combine(bundle, "ffmpeg.exe")));
+        Assert.Equal(Ffmpeg.FindProbe(null), Ffmpeg.FindProbe(work.File("elsewhere\\ffmpeg.exe")));   // nothing next to it: the usual search
+    }
+
+    [Fact]
     public async Task EncoderDetectionRunsOnceAndAlwaysYieldsAnEncoder()
     {
         var first = Ffmpeg.DetectEncoderAsync();
 
-        Assert.Same(first, Ffmpeg.DetectEncoderAsync());
+        if (Ffmpeg.Exe != null) Assert.Same(first, Ffmpeg.DetectEncoderAsync());
         var finished = await Task.WhenAny(first, Task.Delay(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
         Assert.True(finished == first, "encoder detection hangs");
         var encoder = await first;

@@ -11,22 +11,49 @@ internal enum VideoEncoder
     Nvenc,
 }
 
+/// <summary>How long a single ffmpeg/ffprobe call may take before it is killed.</summary>
+internal static class FfmpegTimeouts
+{
+    /// <summary>ffprobe, encoder detection, a single frame or the film strip.</summary>
+    public static readonly TimeSpan Quick = TimeSpan.FromMinutes(1);
+
+    /// <summary>Waiting for a killed process to be gone.</summary>
+    public static readonly TimeSpan Kill = TimeSpan.FromSeconds(5);
+
+    /// <summary>Fixed part of every encoding call.</summary>
+    static readonly TimeSpan EncodingBase = TimeSpan.FromMinutes(2);
+
+    /// <summary>Slowest plausible encoding speed relative to real time.</summary>
+    const double SlowestSpeed = 0.1;
+
+    /// <summary>Joining or re-encoding <paramref name="mediaSeconds"/> of video.</summary>
+    public static TimeSpan ForMedia(double mediaSeconds) => EncodingBase + TimeSpan.FromSeconds(Math.Max(0, mediaSeconds) / SlowestSpeed);
+}
+
 /// <summary>
 /// Locates and launches ffmpeg/ffprobe (hidden, tied to the engine's lifetime) and detects the
 /// H.264 encoder once per process.
 /// </summary>
+/// <remarks>Thread-safe: all members may be called from any thread.</remarks>
 internal static class Ffmpeg
 {
-    public static readonly string? Exe = Find("ffmpeg.exe"), Probe = Find("ffprobe.exe");
+    const int WaitSliceMs = 100;
 
     static readonly Lazy<Task<VideoEncoder>> encoderDetection = new(() => Task.Run(DetectEncoder), LazyThreadSafetyMode.ExecutionAndPublication);
     static readonly object jobGate = new();
     static IntPtr job;
+    static volatile string? exe, probe;
+
+    /// <summary>ffmpeg.exe, or null; searched again on every call until found (installing ffmpeg needs no restart).</summary>
+    public static string? Exe => exe ??= Find("ffmpeg.exe");
+
+    /// <summary>ffprobe.exe, preferably the one next to <see cref="Exe"/> (same install), or null.</summary>
+    public static string? Probe => probe ??= FindProbe(Exe);
 
     public static bool Available => Exe != null && Probe != null;
 
-    /// <summary>Starts the encoder detection (once) and returns its result; never faults.</summary>
-    public static Task<VideoEncoder> DetectEncoderAsync() => encoderDetection.Value;
+    /// <summary>Starts the encoder detection (once ffmpeg exists) and returns its result; never faults.</summary>
+    public static Task<VideoEncoder> DetectEncoderAsync() => Exe == null ? Task.FromResult(VideoEncoder.Software) : encoderDetection.Value;
 
     /// <summary>The detected encoder, waiting up to <paramref name="timeout"/>; software if unknown by then.</summary>
     public static async Task<VideoEncoder> EncoderOrSoftwareAsync(TimeSpan timeout)
@@ -50,10 +77,10 @@ internal static class Ffmpeg
     static VideoEncoder DetectEncoder()
     {
         if (Exe == null) return VideoEncoder.Software;
-        var probe = new FfmpegArgs().Add("-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
+        var test = new FfmpegArgs().Add("-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
             "-frames:v", "2", "-c:v", "h264_nvenc", "-f", "null", "-");
-        try { return Run(Exe, probe, null, out _, out _) == 0 ? VideoEncoder.Nvenc : VideoEncoder.Software; }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException)
+        try { return Run(Exe, test, FfmpegTimeouts.Quick, out _, out _) == 0 ? VideoEncoder.Nvenc : VideoEncoder.Software; }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or TimeoutException)
         {
             ErrorLog.Write("Detecting the video encoder", ex);
             return VideoEncoder.Software;
@@ -66,6 +93,13 @@ internal static class Ffmpeg
     // Chocolatey, Scoop) and only fully qualified local PATH entries are used: a relative entry such as "."
     // or a network share could otherwise inject a foreign ffmpeg.exe.
     static string? Find(string name) => Find(name, SearchLocations());
+
+    /// <summary>ffprobe next to the found ffmpeg first, so both come from the same install; otherwise the usual search.</summary>
+    internal static string? FindProbe(string? ffmpeg)
+    {
+        string? directory = ffmpeg == null ? null : Path.GetDirectoryName(ffmpeg);
+        return (directory == null ? null : Find("ffprobe.exe", new[] { directory })) ?? Find("ffprobe.exe");
+    }
 
     internal static IEnumerable<string> SearchLocations()
     {
@@ -102,6 +136,11 @@ internal static class Ffmpeg
     /// Starts a hidden process with redirected output. <paramref name="exited"/> is subscribed before
     /// the process starts, so even an immediate exit is reported.
     /// </summary>
+    /// <remarks>
+    /// The process joins the kill-on-close job right after it started. <see cref="Process"/> cannot start
+    /// it suspended, so for a moment an engine crash could leave it running; every call we make still
+    /// ends on its own (finite input, or the recording's stdin closes with the engine).
+    /// </remarks>
     public static Process Start(string? exe, FfmpegArgs args, Action<string>? outputLine, Action<string>? errorLine, Action? exited = null)
     {
         var process = new Process
@@ -137,25 +176,49 @@ internal static class Ffmpeg
     }
 
     /// <summary>
-    /// Runs to completion (call from a background thread). <paramref name="progress"/> receives the
-    /// seconds reported by <c>-progress pipe:1</c>.
+    /// Runs to completion (call from a background thread) and returns the exit code. <paramref name="progress"/>
+    /// receives the seconds reported by <c>-progress pipe:1</c>.
     /// </summary>
-    public static int Run(string? exe, FfmpegArgs args, Action<double>? progress, out string output, out string error)
+    /// <exception cref="TimeoutException">The call took longer than <paramref name="timeout"/>; the process was killed.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellation"/> fired; the process was killed.</exception>
+    public static int Run(string? exe, FfmpegArgs args, TimeSpan timeout, out string output, out string error,
+        Action<double>? progress = null, CancellationToken cancellation = default)
     {
+        cancellation.ThrowIfCancellationRequested();
         var outputText = new StringBuilder();
         var errorText = new StringBuilder();
-        using (var process = Start(exe, args, line =>
+        using var process = Start(exe, args, line =>
         {
             lock (outputText) outputText.AppendLine(line);
             if (progress != null && FfmpegOutput.ProgressSeconds(line) is double seconds) progress(seconds);
-        }, line => { lock (errorText) if (errorText.Length < 8000) errorText.AppendLine(line); }))
+        }, line => { lock (errorText) if (errorText.Length < 8000) errorText.AppendLine(line); });
+        var waited = Stopwatch.StartNew();
+        while (!process.WaitForExit(WaitSliceMs))
         {
-            // Without a timeout this also waits until the redirected output has been read to the end.
-            process.WaitForExit();
-            lock (outputText) output = outputText.ToString();
-            lock (errorText) error = errorText.ToString().Trim();
-            return process.ExitCode;
+            if (cancellation.IsCancellationRequested)
+            {
+                Kill(process);
+                throw new OperationCanceledException(cancellation);
+            }
+            if (waited.Elapsed > timeout)
+            {
+                Kill(process);
+                throw new TimeoutException(UiText.Common.FfmpegTimedOut);
+            }
         }
+        process.WaitForExit();   // has exited: this only waits for the last redirected output lines
+        lock (outputText) output = outputText.ToString();
+        lock (errorText) error = errorText.ToString().Trim();
+        return process.ExitCode;
+    }
+
+    /// <summary>Kills the process and waits (bounded) until it is gone.</summary>
+    internal static void Kill(Process process)
+    {
+        try { process.Kill(); }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException) { }   // exited in the meantime
+        if (!process.WaitForExit((int)FfmpegTimeouts.Kill.TotalMilliseconds))
+            ErrorLog.Write("ffmpeg did not end after being killed", null);
     }
 
     // Puts the process into a job object that kills it when the engine exits (no orphaned recordings).
