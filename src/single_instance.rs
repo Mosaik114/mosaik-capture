@@ -1,7 +1,10 @@
 //! Single-instance handling: a named mutex decides which process is the primary
-//! instance; later processes forward their action to its window and exit.
+//! instance; later processes forward their action to its window and exit. Only a
+//! window whose process runs this same executable receives the action.
 
+use std::env;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::thread;
 use std::time::Duration;
@@ -11,12 +14,13 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId, SMTO_ABORTIFHUNG,
+    AllowSetForegroundWindow, FindWindowExW, GetWindowThreadProcessId, SMTO_ABORTIFHUNG,
     SendMessageTimeoutW,
 };
 
 use crate::cli::Action;
 use crate::ipc;
+use crate::process::{process_image, same_file};
 use crate::wide::to_wide;
 
 /// Session-local mutex that marks the primary instance.
@@ -73,6 +77,10 @@ pub struct Target {
     pub interval: Duration,
     /// How long the receiver may take to handle the message.
     pub timeout: Duration,
+    /// The executable the receiving process must run (compared as a file, see
+    /// [`same_file`]); `None` accepts any process. A window of the right class from
+    /// another program — or another copy of this app elsewhere — is not trusted.
+    pub image: Option<PathBuf>,
 }
 
 impl Target {
@@ -83,20 +91,47 @@ impl Target {
             attempts: 200,
             interval: Duration::from_millis(10),
             timeout: Duration::from_secs(2),
+            // The primary runs this very executable. If Windows cannot tell us which
+            // one that is, verification is skipped rather than refusing to forward.
+            image: env::current_exe().ok(),
         }
     }
 
-    /// Looks for the window, retrying while it may still be created.
+    /// Looks for a trusted window, retrying while it may still be created.
     fn find_window(&self) -> Option<HWND> {
         let class = to_wide(&self.class);
         (0..self.attempts).find_map(|attempt| {
             if attempt > 0 {
                 thread::sleep(self.interval);
             }
-            // SAFETY: `class` is NUL-terminated; a null title matches any window.
-            let window = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
-            (!window.is_null()).then_some(window)
+            self.trusted_window(&class)
         })
+    }
+
+    /// The first window of the class whose process runs [`Target::image`].
+    fn trusted_window(&self, class: &[u16]) -> Option<HWND> {
+        let mut after: HWND = ptr::null_mut();
+        loop {
+            // SAFETY: `class` is NUL-terminated; null parent and title mean "any
+            // top-level window of the class"; `after` continues the enumeration.
+            after = unsafe { FindWindowExW(ptr::null_mut(), after, class.as_ptr(), ptr::null()) };
+            if after.is_null() {
+                return None;
+            }
+            let image = process_image(after);
+            if is_trusted(image.as_deref(), self.image.as_deref()) {
+                return Some(after);
+            }
+        }
+    }
+}
+
+/// Whether a window whose process runs `image` may receive forwarded actions.
+fn is_trusted(image: Option<&Path>, expected: Option<&Path>) -> bool {
+    match (image, expected) {
+        (_, None) => true,
+        (Some(image), Some(expected)) => same_file(image, expected),
+        (None, Some(_)) => false,
     }
 }
 
@@ -233,6 +268,8 @@ mod tests {
                 attempts: 1,
                 interval: Duration::ZERO,
                 timeout: Duration::from_millis(100),
+                // The fake primary lives in this test process.
+                image: Some(std::env::current_exe().unwrap()),
             }
         }
     }
@@ -262,6 +299,7 @@ mod tests {
             attempts: 5,
             interval: Duration::from_millis(20),
             timeout: Duration::from_millis(100),
+            image: None,
         };
         let started = Instant::now();
         assert_eq!(forward_to(&target, Action::Probe), Forwarded::NoWindow);
@@ -280,6 +318,25 @@ mod tests {
         assert_eq!(forward_to(&target, Action::Quit), Forwarded::Delivered(0));
         // `--background` needs no message at all.
         assert_eq!(forward_to(&target, Action::Background), Forwarded::Delivered(0));
+    }
+
+    #[test]
+    fn windows_of_other_executables_are_ignored() {
+        let primary = FakePrimary::start("Foreign", true);
+        let mut target = primary.target();
+        target.image = Some(std::env::temp_dir().join("MosaikCapture-elsewhere.exe"));
+        assert_eq!(forward_to(&target, Action::Probe), Forwarded::NoWindow);
+    }
+
+    #[test]
+    fn trust_decision() {
+        let exe = std::env::current_exe().unwrap();
+        let other = std::env::temp_dir();
+        assert!(is_trusted(Some(&exe), Some(&exe)));
+        assert!(!is_trusted(Some(&other), Some(&exe)));
+        assert!(!is_trusted(None, Some(&exe)), "unknown process image");
+        assert!(is_trusted(None, None), "no expectation, no check");
+        assert!(Target::primary().image.is_some());
     }
 
     #[test]

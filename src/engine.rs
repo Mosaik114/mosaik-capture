@@ -11,31 +11,19 @@
 //! [`Engine::is_busy`], capped at [`QUERY_TIMEOUT_MS`].
 
 use std::cell::RefCell;
-use std::ffi::OsString;
-use std::fs::OpenOptions;
-use std::mem;
-use std::os::windows::ffi::OsStringExt;
-use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::ptr;
+use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND};
-use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, GetFileInformationByHandle,
-};
-use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    QueryFullProcessImageNameW,
-};
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, GetWindowThreadProcessId, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
-    WM_APP,
+    FindWindowExW, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_APP,
 };
 
+use crate::process::{process_image, same_file};
 use crate::store::PREVIEW_CONFIG_VAR;
 use crate::wide::to_wide;
 
@@ -56,8 +44,9 @@ const MSG_QUERY_STATE: u32 = WM_APP + 10;
 const STATE_BUSY: usize = 1;
 /// Longest the UI thread waits for the state query.
 const QUERY_TIMEOUT_MS: u32 = 400;
-/// Room for long (`\\?\`) process image paths.
-const IMAGE_PATH_CAPACITY: u32 = 32_768;
+/// How long a started engine may take to show its window before it is considered
+/// stuck, killed and started again.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What to capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,16 +98,21 @@ impl Delivery {
 /// The next step for a capture request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
-    Post,
+    /// Post the request to the engine's window.
+    Post(HWND),
+    /// An engine we started is still coming up.
     Wait,
+    /// Start an engine (killing a stuck one first, if any).
     Spawn,
 }
 
-const fn next_step(engine_window: bool, launch_in_progress: bool) -> Step {
-    match (engine_window, launch_in_progress) {
-        (true, _) => Step::Post,
-        (false, true) => Step::Wait,
-        (false, false) => Step::Spawn,
+/// Decides what to do with a capture request, given the engine's window (if found)
+/// and how long an engine we started has been running without one (if any).
+fn next_step(engine_window: Option<HWND>, starting_for: Option<Duration>) -> Step {
+    match (engine_window, starting_for) {
+        (Some(window), _) => Step::Post(window),
+        (None, Some(elapsed)) if elapsed < LAUNCH_TIMEOUT => Step::Wait,
+        (None, _) => Step::Spawn,
     }
 }
 
@@ -130,75 +124,13 @@ const fn busy_from_reply(reply: Option<usize>) -> bool {
     }
 }
 
-/// The identity of a file: volume serial number and file index. Two paths with the
-/// same identity name the same file, whatever their spelling (case, 8.3 names,
-/// `\\?\` prefixes, junctions).
-fn file_id(path: &Path) -> Option<(u32, u64)> {
-    // Query access only; backup semantics would also allow opening directories.
-    let file = OpenOptions::new()
-        .access_mode(0)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
-        .ok()?;
-    // SAFETY: plain C struct for which all-zero is valid.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { mem::zeroed() };
-    // SAFETY: the handle is open for the duration of the call; `info` outlives it.
-    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) } != 0;
-    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
-    ok.then_some((info.dwVolumeSerialNumber, index))
-}
-
-/// Whether both paths name the same existing file: by file identity, or, if that
-/// cannot be read, by canonical path.
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (file_id(a), file_id(b)) {
-        (Some(a), Some(b)) => a == b,
-        _ => matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b),
-    }
-}
-
-/// The executable of the process that owns `window`.
-fn process_image(window: HWND) -> Option<PathBuf> {
-    let mut pid = 0u32;
-    // SAFETY: `pid` outlives the call; a stale handle just yields 0.
-    unsafe { GetWindowThreadProcessId(window, &raw mut pid) };
-    image_of_process(pid)
-}
-
-fn image_of_process(pid: u32) -> Option<PathBuf> {
-    if pid == 0 {
-        return None;
-    }
-    // SAFETY: no pointer arguments; the handle is closed below.
-    let process: HANDLE = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if process.is_null() {
-        return None;
-    }
-    let mut buffer = vec![0u16; IMAGE_PATH_CAPACITY as usize];
-    let mut length = IMAGE_PATH_CAPACITY;
-    // SAFETY: `buffer` holds `length` characters; `length` receives the copied count.
-    let ok = unsafe {
-        QueryFullProcessImageNameW(
-            process,
-            PROCESS_NAME_WIN32,
-            buffer.as_mut_ptr(),
-            &raw mut length,
-        )
-    } != 0;
-    // SAFETY: the handle came from OpenProcess and is closed exactly once.
-    unsafe { CloseHandle(process) };
-    let length = usize::try_from(length).ok()?;
-    ok.then(|| PathBuf::from(OsString::from_wide(&buffer[..length])))
-}
-
 /// The engine as seen from the host: finding, querying, commanding and starting it.
 #[derive(Debug)]
 pub struct Engine {
     exe_dir: PathBuf,
     preview_settings: Option<PathBuf>,
-    /// The engine process we started last, until it has a window or has exited.
-    launched: RefCell<Option<Child>>,
+    /// The engine process we started last and when, until it has a window or exited.
+    launched: RefCell<Option<(Child, Instant)>>,
 }
 
 impl Engine {
@@ -271,20 +203,35 @@ impl Engine {
     /// Starts a capture: posts it to the running engine or launches a new one, unless
     /// an engine we launched is still starting.
     pub fn start_capture(&self, mode: CaptureMode) -> Delivery {
+        // A relative (or empty) folder would make CreateProcess search the working
+        // directory and PATH; only ever start the engine next to this executable.
+        if !self.exe_dir.is_absolute() {
+            return Delivery::Failed;
+        }
         let window = self.find_window();
-        // Taken out of the cell, so no borrow is held across the calls below.
+        // Taken out of the cell, so no borrow is held across the calls below. Engines
+        // that have shown their window or exited are forgotten.
         let mut launched = self.launched.take().filter(|_| window.is_none());
-        let launch_in_progress =
-            launched.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-        let delivery = match (next_step(window.is_some(), launch_in_progress), window) {
-            (Step::Post, Some(window)) => {
+        if let Some((child, _)) = launched.as_mut() {
+            if !matches!(child.try_wait(), Ok(None)) {
+                launched = None;
+            }
+        }
+        let starting_for = launched.as_ref().map(|(_, since)| since.elapsed());
+        let delivery = match next_step(window, starting_for) {
+            Step::Post(window) => {
                 // SAFETY: posting to a window handle has no memory-safety preconditions.
                 let posted = unsafe { PostMessageW(window, mode.message(), 0, 0) } != 0;
                 if posted { Delivery::Posted } else { Delivery::Failed }
             }
-            (Step::Wait, _) => Delivery::AlreadyStarting,
-            (Step::Spawn | Step::Post, _) => {
-                launched = self.command(mode).spawn().ok();
+            Step::Wait => Delivery::AlreadyStarting,
+            Step::Spawn => {
+                if let Some((mut stuck, _)) = launched.take() {
+                    // Never showed its window within LAUNCH_TIMEOUT: replace it.
+                    let _ = stuck.kill();
+                    let _ = stuck.wait();
+                }
+                launched = self.command(mode).spawn().ok().map(|child| (child, Instant::now()));
                 if launched.is_some() { Delivery::Started } else { Delivery::Failed }
             }
         };
@@ -334,37 +281,18 @@ mod tests {
 
     #[test]
     fn requests_go_to_the_engine_or_start_it_once() {
-        assert_eq!(next_step(true, false), Step::Post);
-        assert_eq!(next_step(true, true), Step::Post, "a window always wins");
-        assert_eq!(next_step(false, true), Step::Wait, "no second engine while starting");
-        assert_eq!(next_step(false, false), Step::Spawn);
+        let window: HWND = ptr::without_provenance_mut(0x1234);
+        let soon = Some(Duration::from_secs(1));
+        let stuck = Some(LAUNCH_TIMEOUT);
+        assert_eq!(next_step(Some(window), None), Step::Post(window));
+        assert_eq!(next_step(Some(window), soon), Step::Post(window), "a window always wins");
+        assert_eq!(next_step(None, soon), Step::Wait, "no second engine while starting");
+        assert_eq!(next_step(None, stuck), Step::Spawn, "a stuck engine is replaced");
+        assert_eq!(next_step(None, None), Step::Spawn);
         assert!(Delivery::Failed.failed());
         for delivery in [Delivery::Posted, Delivery::Started, Delivery::AlreadyStarting] {
             assert!(!delivery.failed());
         }
-    }
-
-    #[test]
-    fn engine_image_is_compared_by_file_identity() {
-        let exe = std::env::current_exe().unwrap();
-        let upper = PathBuf::from(exe.to_string_lossy().to_uppercase());
-        assert!(same_file(&exe, &upper), "case does not matter");
-        let dotted = exe.parent().unwrap().join(".").join(exe.file_name().unwrap());
-        assert!(same_file(&exe, &dotted), "spelling does not matter");
-        let verbatim = PathBuf::from(format!(r"\\?\{}", exe.display()));
-        assert!(same_file(&exe, &verbatim), "verbatim prefix does not matter");
-
-        let other = std::env::temp_dir();
-        assert!(!same_file(&exe, &other), "a different file");
-        let missing = exe.with_file_name("MosaikCapture.Engine.missing.exe");
-        assert!(!same_file(&missing, &missing), "missing files never match");
-    }
-
-    #[test]
-    fn process_images_are_resolved() {
-        let own = image_of_process(std::process::id()).expect("own process");
-        assert!(same_file(&own, &std::env::current_exe().unwrap()), "{}", own.display());
-        assert_eq!(image_of_process(0), None);
     }
 
     #[test]
@@ -384,6 +312,18 @@ mod tests {
         let command = engine.command(CaptureMode::Screenshot);
         let envs: Vec<_> = command.get_envs().collect();
         assert_eq!(envs, [(PREVIEW_CONFIG_VAR.as_ref(), Some(ini.as_os_str()))]);
+    }
+
+    #[test]
+    fn engines_are_only_started_from_an_absolute_folder() {
+        for folder in ["", "relative", r".\bin"] {
+            let engine = Engine::new(Path::new(folder), None);
+            assert_eq!(
+                engine.start_capture(CaptureMode::Screenshot),
+                Delivery::Failed,
+                "{folder:?}"
+            );
+        }
     }
 
     #[test]

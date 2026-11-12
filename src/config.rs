@@ -194,7 +194,7 @@ pub enum ConfigError {
 }
 
 /// All user settings.
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "the flags are independent settings that mirror the INI file one to one"
 )]

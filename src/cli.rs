@@ -94,7 +94,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Command {
         }
         if arg == "--preview" {
             if let Some(path) = args.next() {
-                invocation.preview = Some(PathBuf::from(path));
+                // Absolute right away: the engine we start gets the same file, and
+                // the profile API would resolve a relative name in the Windows folder.
+                let path = PathBuf::from(path);
+                invocation.preview = Some(std::path::absolute(&path).unwrap_or(path));
             }
         } else if let Some(action) = Action::from_arg(&arg) {
             invocation.action = action;
@@ -164,8 +167,19 @@ mod tests {
         let Command::Run(invocation) = run(&["--preview", "recording"]) else {
             panic!("expected a normal run");
         };
-        assert_eq!(invocation.preview, Some(PathBuf::from("recording")));
+        let expected = std::env::current_dir().unwrap().join("recording");
+        assert_eq!(invocation.preview, Some(expected), "made absolute");
         assert_eq!(invocation.action, Action::ShowSettings);
+    }
+
+    #[test]
+    fn relative_preview_paths_become_absolute() {
+        let Command::Run(invocation) = run(&["--preview", r"qa\settings.ini"]) else {
+            panic!("expected a normal run");
+        };
+        let preview = invocation.preview.unwrap();
+        assert!(preview.is_absolute(), "{}", preview.display());
+        assert!(preview.ends_with(r"qa\settings.ini"));
     }
 
     #[test]

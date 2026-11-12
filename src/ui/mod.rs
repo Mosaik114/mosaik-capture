@@ -304,16 +304,7 @@ fn create_window(app: &App, class: &WindowClass, monitor: &Monitor) -> Result<HW
         return Err(UiError::last(UiErrorKind::CreateWindow));
     }
 
-    let dark = TRUE;
-    // SAFETY: `dark` is a BOOL that outlives the call; the size matches.
-    unsafe {
-        DwmSetWindowAttribute(
-            window,
-            DWMWA_USE_IMMERSIVE_DARK_MODE.cast_unsigned(),
-            (&raw const dark).cast(),
-            u32::try_from(mem::size_of_val(&dark)).unwrap_or(4),
-        );
-    }
+    use_dark_title_bar(window);
 
     // The system DPI was only a guess: the work area's monitor may use another one.
     // SAFETY: no pointer arguments.
@@ -324,6 +315,24 @@ fn create_window(app: &App, class: &WindowClass, monitor: &Monitor) -> Result<HW
         app.apply_dpi(actual, Some(monitor.centered_frame(actual)));
     }
     Ok(window)
+}
+
+/// Dark caption to match the dark client area. Windows 10 before 20H1 knows the
+/// attribute only under its preview number 19; elsewhere it simply stays light.
+fn use_dark_title_bar(window: HWND) {
+    const DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1: u32 = 19;
+    let dark = TRUE;
+    let size = u32::try_from(mem::size_of_val(&dark)).unwrap_or(4);
+    for attribute in
+        [DWMWA_USE_IMMERSIVE_DARK_MODE.cast_unsigned(), DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1]
+    {
+        // SAFETY: `dark` is a BOOL that outlives the call; the size matches.
+        let result =
+            unsafe { DwmSetWindowAttribute(window, attribute, (&raw const dark).cast(), size) };
+        if result >= 0 {
+            return;
+        }
+    }
 }
 
 /// Pumps messages until `WM_QUIT`. `IsDialogMessageW` gives the window dialog-style
@@ -372,11 +381,16 @@ unsafe extern "system" fn window_proc(
     // SAFETY: reads plain data from our own window.
     let app = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as *const App;
     // SAFETY: a non-null value was stored above and points to the boxed App, which
-    // outlives the window; it is cleared on WM_NCDESTROY and after the loop.
+    // outlives the window: it is cleared on WM_NCDESTROY, and `run` destroys the
+    // window before the App is dropped.
     let result =
         unsafe { app.as_ref() }.and_then(|app| app.handle_message(message, wparam, lparam));
     if message == WM_NCDESTROY {
         // SAFETY: see above.
+        if let Some(app) = unsafe { app.as_ref() } {
+            app.detach();
+        }
+        // SAFETY: clearing our own window's user data is plain data.
         unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, 0) };
     }
     // SAFETY: default handling for everything the app does not handle itself.
@@ -394,9 +408,85 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BN_DOUBLECLICKED, GetClientRect, ICON_SMALL, IDCANCEL, IDOK, IsWindow, IsWindowVisible,
-        SendMessageW, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_GETICON,
+        BN_DOUBLECLICKED, GetClientRect, HWND_MESSAGE, ICON_SMALL, IDCANCEL, IDOK, IsWindow,
+        IsWindowVisible, SendMessageW, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_GETICON,
     };
+
+    /// A message-only window (never visible, no hotkeys) of `class`, created with
+    /// `params` as its creation parameter.
+    fn message_only_window(app: &App, class: &WindowClass, params: *const App) -> HWND {
+        // SAFETY: the class name outlives the call; HWND_MESSAGE makes the window
+        // message-only; `params` is null or the boxed App, which outlives the window.
+        unsafe {
+            CreateWindowExW(
+                0,
+                class.name(),
+                ptr::null(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                ptr::null_mut(),
+                app.instance(),
+                params.cast(),
+            )
+        }
+    }
+
+    fn user_data(window: HWND) -> isize {
+        // SAFETY: reads plain data of a window of this thread.
+        unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) }
+    }
+
+    /// The window procedure's plumbing, without anything visible or global: the App
+    /// is attached on `WM_NCCREATE` and detached on `WM_NCDESTROY`, a window created
+    /// without an App stays unattached, and requests before start-up are refused.
+    #[test]
+    fn window_procedure_attaches_and_detaches_the_app() {
+        let dir = env::temp_dir();
+        let ini = dir.join(format!("mosaik-capture-msgonly-{}.ini", std::process::id()));
+        let folders = DefaultFolders::new(Path::new(r"C:\Bilder"), Path::new(r"C:\Videos"));
+        // SAFETY: a null name returns the handle of the executable itself.
+        let instance = unsafe { GetModuleHandleW(ptr::null()) };
+        let app = Box::new(App::new(
+            instance,
+            Dpi::new(96),
+            SettingsStore::at(ini.clone()),
+            Config::defaults(&folders),
+            None,
+            Some(&ini),
+        ));
+        let class_name = format!("MosaikCapture.Host.MessageOnly.{}", std::process::id());
+        let class = register_class(&app, &class_name).unwrap();
+
+        let window = message_only_window(&app, &class, ptr::from_ref(&*app));
+        assert!(!window.is_null());
+        assert_eq!(app.window(), window, "attached on WM_NCCREATE");
+        assert_eq!(user_data(window), ptr::from_ref(&*app) as isize);
+
+        assert_eq!(send(window, ipc::PROBE, 0), 0, "not started: probe says no");
+        assert_eq!(send(window, ipc::QUIT, 0), ipc::QUIT_REFUSED);
+        assert_eq!(send(window, ipc::SHOW_SETTINGS, 0), 0);
+        assert_eq!(send(window, ipc::TAKE_SCREENSHOT, 0), 0);
+
+        let stranger = message_only_window(&app, &class, ptr::null());
+        assert!(!stranger.is_null());
+        assert_eq!(user_data(stranger), 0, "no creation parameter, nothing attached");
+        assert_eq!(app.window(), window, "the App still belongs to the first window");
+        assert_eq!(send(stranger, ipc::PROBE, 0), 0, "handled by DefWindowProc");
+
+        // SAFETY: destroys the test windows while the App is alive.
+        unsafe {
+            DestroyWindow(stranger);
+            DestroyWindow(window);
+        }
+        assert!(app.window().is_null(), "detached on WM_NCDESTROY");
+        // SAFETY: no pointer arguments.
+        assert_eq!(unsafe { IsWindow(window) }, 0);
+        assert!(!ini.exists(), "nothing was saved before start-up");
+    }
 
     fn send(window: HWND, message: u32, wparam: WPARAM) -> LRESULT {
         // SAFETY: the messages used with this helper carry no pointers.

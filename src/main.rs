@@ -17,6 +17,7 @@ mod config;
 mod engine;
 mod hotkey;
 mod ipc;
+mod process;
 mod self_test;
 mod single_instance;
 mod store;
@@ -34,7 +35,8 @@ use cli::{Action, Command, Invocation};
 use single_instance::{Forwarded, InstanceLock};
 
 /// Process exit codes. Scripts (the build and QA tooling, the launcher) rely on these
-/// values; 1 and 2 are left to the Rust runtime.
+/// values. 1 and 2 are never used. A panic aborts (release profile `panic = "abort"`),
+/// which Windows reports as `0xC0000409` (`STATUS_STACK_BUFFER_OVERRUN`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 enum Exit {

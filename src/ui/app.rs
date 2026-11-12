@@ -159,6 +159,11 @@ impl App {
         self.window.set(window);
     }
 
+    /// Forgets the window handle (called on `WM_NCDESTROY`, when it becomes invalid).
+    pub fn detach(&self) {
+        self.window.set(ptr::null_mut());
+    }
+
     /// The app window.
     pub fn window(&self) -> HWND {
         self.window.get()
@@ -573,12 +578,15 @@ impl App {
         state.screenshot_hotkey && state.recording_hotkey
     }
 
+    /// Releases both hotkeys; `--probe` reports them as missing from now on (also
+    /// while the window is being torn down).
     fn unregister_hotkeys(&self) {
         // SAFETY: no pointer arguments; unregistering an unknown id fails harmlessly.
         unsafe {
             UnregisterHotKey(self.window(), HOTKEY_SCREENSHOT);
             UnregisterHotKey(self.window(), HOTKEY_RECORDING);
         }
+        self.hotkeys.set(ProbeResponse::default());
     }
 
     /// Re-registers the hotkeys of the saved settings after a failed change.

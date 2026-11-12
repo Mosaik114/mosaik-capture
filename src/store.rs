@@ -5,9 +5,10 @@
 //! it the same way (or through [`PREVIEW_CONFIG_VAR`] in preview mode).
 //!
 //! Saving runs on the UI thread. It normally takes a few milliseconds; while another
-//! process holds the file open, each of the two steps (write, replace) is retried at
-//! most [`SHARING_ATTEMPTS`] times, so the window can block for at most about
-//! 2 × 3 × [`SHARING_RETRY_DELAY`] = 0.3 s before the error is reported.
+//! process holds the file open, each of the two steps (write, replace) is attempted
+//! at most [`SHARING_ATTEMPTS`] times (three retries with a pause before each), so
+//! the window can block for at most about 2 × 3 × [`SHARING_RETRY_DELAY`] = 0.3 s
+//! before the error is reported.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
@@ -160,7 +161,11 @@ pub struct IniFile {
 
 impl IniFile {
     /// Opens (lazily) the file at `path`.
+    ///
+    /// The path must be absolute: the profile API would look for a bare or relative
+    /// name in the Windows folder.
     pub fn new(path: &Path) -> Self {
+        debug_assert!(path.is_absolute(), "INI path must be absolute: {}", path.display());
         Self { path: to_wide(path), section: to_wide(SECTION) }
     }
 }
