@@ -139,7 +139,7 @@ without external resource tools, so both toolchains produce the same resources.
 
 | Check | Rust host | C# engine |
 |---|---|---|
-| Tests | 94 unit tests (hotkeys, settings, migration, CLI, forwarding, DPI, atomic writes, resource writer) + an end-to-end test that drives the real settings window | 298 xUnit cases: the recording and screenshot state machines with fakes (incl. recovery from UI errors), ffmpeg timeouts and cancellation, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, IPC contract, pixel comparisons of 13 UI states |
+| Tests | 101 unit tests (hotkeys, settings, migration, CLI, forwarding, DPI, atomic writes, resource writer) + an end-to-end test that drives the real settings window | 320 xUnit cases: the recording and screenshot state machines with fakes (incl. recovery from UI errors), ffmpeg timeouts and cancellation, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, IPC contract, pixel comparisons of 13 UI states |
 | Static analysis | `clippy::pedantic`, warnings as errors, every `unsafe` block carries a `// SAFETY:` note | Nullable reference types, .NET analyzers (`Recommended`), warnings as errors |
 | Formatting | `cargo fmt --check` | `dotnet format --verify-no-changes` |
 | Supply chain | `Cargo.lock`, a single dependency (`windows-sys`) | Central package management, `packages.lock.json`, locked restore |
@@ -194,7 +194,11 @@ docs/                architecture notes and images
 
 ## How it was built
 
-This started as a personal tool that I use every day. It was developed with AI coding assistants (OpenAI Codex, Anthropic Claude) as pair
+This started as a personal tool that I use every day. This repository was created on
+2026-11-12: the first commit imports that tool unchanged, and the following commits are a
+deliberate restructuring for publication — modular Rust, an SDK-style C# project, tests,
+CI — done in several rounds of independent AI-assisted code review whose findings were fixed
+and verified by the test suites. New work lands in small, CI-checked changes. It was developed with AI coding assistants (OpenAI Codex, Anthropic Claude) as pair
 programmers; requirements, design decisions, review and day-to-day testing are the author's.
 
 ## License

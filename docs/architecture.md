@@ -16,7 +16,7 @@ Mosaik Capture is two cooperating Windows processes:
   drop shadows), hit testing, undo/redo, animations and per-monitor DPI. WPF provides all
   of that; doing it in raw Win32/GDI from Rust would multiply the code for no user benefit.
 - **Fault isolation.** A crash in the editor or in an ffmpeg pipeline cannot take down
-  hotkey handling. The engine logs the error to `error.log` next to the executable and
+  hotkey handling. The engine logs the error to `%LOCALAPPDATA%\MosaikCapture\logs\error.log` and
   restarts itself (but not within its first minute, to avoid a crash loop) with
   `--idle --after <pid>`, so the new process waits for the old one to exit before taking the
   single-instance mutex; the host simply spawns it again on the next capture. Inside the
@@ -38,7 +38,7 @@ and pin it with tests, so a change on one side fails that side's suite.
 | host → engine | `WM_APP+3` | quit (refused while a recording is running) |
 | host → engine | `SendMessageTimeout` `WM_APP+10` | state query: bit 0 = busy (selection/countdown/recording), bit 1 = recording live |
 | engine → host | `PostMessage` `WM_APP+20` to window class `MosaikCapture.Host` | microphone / system sound / click display toggled in the recording bar (bits 0–2), so the host persists them |
-| anyone → host | second start of the host with `--screenshot`, `--recording`, `--quit`, `--probe`, `recording` | forwarded to the running instance (`WM_APP+1…+4`, `+9`, `+10`); exit code 9 if it does not answer; requests that arrive while the host is still starting are answered with 0 |
+| anyone → host | second start of the host with `--screenshot`, `--recording`, `--quit`, `--probe`, `recording` | forwarded to the running instance (`WM_APP+1…+4`, `+9`, `+10`); see the exit codes below |
 
 Single instance on both sides uses session-local mutexes (`Local\MosaikCapture.Host`,
 `Local\MosaikCapture.Engine`). Settings are shared through
@@ -47,6 +47,23 @@ writes (temporary file, flushed, then `MoveFileExW(REPLACE_EXISTING | WRITE_THRO
 engine only reads. On first start the host copies settings from the pre-1.0 location
 (`%LOCALAPPDATA%\Mosaiks-Aufnahme`) and replaces the old autostart value.
 
+The host's exit codes are part of the contract for scripts and for the engine:
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 3 | self-test failed |
+| 4 | single-instance mutex unavailable |
+| 5 | `--probe`: no running instance with registered hotkeys |
+| 6 | a running instance exists but its window was not found |
+| 7 | window class could not be registered |
+| 8 | window or one of its controls could not be created |
+| 9 | forwarded action was not answered (running instance hung) |
+| 10 | message loop failed |
+| 11 | `--quit` refused (recording or selection in progress, a dialog open, or still starting) |
+
+The engine window is only trusted if its process runs `MosaikCapture.Engine.exe` from the
+host's own folder, so a foreign window with the same title is never messaged.
 ## Host internals (Rust)
 
 ```
@@ -83,9 +100,9 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
 
 | Folder | Contents |
 |---|---|
-| `Core/` | `Program` (entry point, crash handling), `CaptureBridge` (CLI + IPC), `CaptureSettings`, `ErrorLog`, `NativeMethods` (every P/Invoke and Win32 constant), `UiText` (every German UI string), `ClipboardWriter` (the single clipboard path), `Motion` (shared timing), `Palette`, `ToolWindows` |
-| `Screenshot/` | `Screenshots` (facade) → `ScreenshotController` → `IScreenshotUi` / `IScreenshotStore`; `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`), `PinnedScreenshot`, `TextRecognition` |
-| `Recording/` | `ScreenRecorder` (facade) → `RecordingController` (state machine) → `IRecordingUi` / `IRecordingBackend` / `IRecordingSession`; `RecordingSession`, `Ffmpeg` (every call bounded by `FfmpegTimeouts`, cancellable), `FfmpegArgs`, `AudioRecorder`/`AudioTrack` (WASAPI), `Dxgi`, toolbar, frame, countdown, card, `TrimWindow`, `VideoExport` |
+| `Core/` | `Program` (entry point, crash handling), `CaptureBridge` (CLI + IPC), `CaptureSettings`, `ErrorLog`, `NativeMethods` (every P/Invoke and Win32 constant), `UiText` (every German UI string), `ClipboardWriter` (the single clipboard path), `Motion` (shared timing), `Metrics` (shared sizes and shadows), `Palette`, `ToolWindows` |
+| `Screenshot/` | `Screenshots` (facade) → `ScreenshotController` → `IScreenshotUi` / `IScreenshotStore`; `ShapeRecognizer` and `TextLineFinder` (pure, tested), `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`), `PinnedScreenshot`, `TextRecognition` |
+| `Recording/` | `ScreenRecorder` (facade) → `RecordingController` (state machine) → `IRecordingUi` / `IRecordingBackend` / `IRecordingSession`; `RecordingSession`, `RecordingSession` (behind `IFfmpegRunner` / `IAudioRecorder`, unit-tested with fakes), `Ffmpeg` (every call bounded by `FfmpegTimeouts`, cancellable), `FfmpegArgs`, `TailBuffer`, `AudioRecorder`/`AudioTrack` (WASAPI), `Dxgi`, toolbar, frame, countdown, card, `TrimWindow`, `VideoExport` |
 | `Diagnostics/` | `--self-test` and `--live-test` |
 
 ### Screenshot
@@ -153,7 +170,7 @@ pause/resume: closes the segment, opens a new one on the same clocks            
 
 | Layer | How it is tested |
 |---|---|
-| Pure logic (Rust) | `cargo test`, 94 tests: hotkey grammar, settings defaults/normalisation/migration, INI layout and a real round trip through the Win32 profile API on a temp file, CLI parsing, exit codes, forwarding to a fake running instance (incl. timeouts), retrying atomic writes, DPI scaling, COM vtable offsets, the resource writer against golden layouts |
+| Pure logic (Rust) | `cargo test`, 101 tests: hotkey grammar, settings defaults/normalisation/migration, INI layout and a real round trip through the Win32 profile API on a temp file, CLI parsing, exit codes, forwarding to a fake running instance (incl. timeouts), retrying atomic writes, DPI scaling, COM vtable offsets, the resource writer against golden layouts |
 | Host UI (Rust) | `cargo test -- --ignored` creates the real settings window in-process (own window class, temp settings, unusual hotkeys) and drives save, validation, Enter/Escape, IPC and a DPI change; runs in CI |
 | Engine logic (C#) | xUnit on a shared STA dispatcher thread: the recording state machine with fakes, WASAPI track padding/trimming with a fake capture client, shape recognition, highlighter snapping, selection geometry (including a randomized check over 5,000 rectangles), command-line quoting (500 random round trips through `CommandLineToArgvW`), settings parsing, error-log rotation |
 | Engine + ffmpeg | real ffmpeg runs: audio stays in sync after a pause, one or zero audio tracks, trim with and without sound, GIF export, broken input files (skipped when ffmpeg is missing) |

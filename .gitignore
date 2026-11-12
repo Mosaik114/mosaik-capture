@@ -6,12 +6,8 @@ bin/
 obj/
 *.pdb
 
-# Test and QA artefacts
-/qa/
+# Test artefacts
 TestResults/
-engine-test.json*
-toolchain-check*
-toolchain-native*
 
 # Editors
 .vs/
