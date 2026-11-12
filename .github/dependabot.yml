@@ -1,0 +1,21 @@
+# Proposes newer dependency and Action versions once a week. Security updates arrive immediately.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # 0.60+ links through raw-dylib, which needs dlltool on the GNU toolchain
+      - dependency-name: windows-sys
+        versions: [">=0.60"]
+
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
