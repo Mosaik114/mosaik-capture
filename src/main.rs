@@ -6,7 +6,8 @@
 //!
 //! Tests: `cargo test` runs the unit tests. The end-to-end test of the real settings
 //! window (`ui::tests::settings_window_end_to_end`) creates a window and registers
-//! global hotkeys, so it only runs when `MOSAIK_UI_TESTS=1` is set; CI sets it.
+//! global hotkeys, so it is `#[ignore]`d by default; CI runs it with
+//! `cargo test -- --include-ignored`.
 
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
@@ -96,12 +97,25 @@ fn run(invocation: &Invocation) -> Exit {
         Action::Probe => Exit::ProbeFailed,
         _ => match ui::run(invocation) {
             Ok(()) => Exit::Success,
-            Err(ui::UiError::RegisterClass) => Exit::WindowClassFailed,
-            Err(ui::UiError::CreateWindow | ui::UiError::CreateControls) => {
-                Exit::WindowCreationFailed
+            Err(error) => {
+                // At logon (`--background`) nobody is waiting for a window, so no dialog.
+                if action != Action::Background {
+                    ui::report(error);
+                }
+                ui_exit(error.kind)
             }
-            Err(ui::UiError::MessageLoop) => Exit::MessageLoopFailed,
         },
+    }
+}
+
+/// The exit code for a failed step of the user interface.
+const fn ui_exit(kind: ui::UiErrorKind) -> Exit {
+    match kind {
+        ui::UiErrorKind::RegisterClass => Exit::WindowClassFailed,
+        ui::UiErrorKind::CreateWindow | ui::UiErrorKind::CreateControls => {
+            Exit::WindowCreationFailed
+        }
+        ui::UiErrorKind::MessageLoop => Exit::MessageLoopFailed,
     }
 }
 
@@ -141,6 +155,20 @@ mod tests {
         for (exit, code) in codes {
             assert_eq!(exit as u8, code);
         }
+    }
+
+    #[test]
+    fn ui_failures_map_to_exit_codes() {
+        use ui::UiErrorKind as Kind;
+        assert_eq!(ui_exit(Kind::RegisterClass), Exit::WindowClassFailed);
+        assert_eq!(ui_exit(Kind::CreateWindow), Exit::WindowCreationFailed);
+        assert_eq!(ui_exit(Kind::CreateControls), Exit::WindowCreationFailed);
+        assert_eq!(ui_exit(Kind::MessageLoop), Exit::MessageLoopFailed);
+        let error = ui::UiError { kind: Kind::CreateWindow, code: 1400 };
+        assert_eq!(
+            error.message(),
+            "Das Einstellungsfenster konnte nicht erstellt werden (Windows-Fehler 1400)."
+        );
     }
 
     #[test]

@@ -286,7 +286,7 @@ impl Config {
         for (key, value) in entries {
             ini.push(key);
             ini.push("=");
-            ini.push(value);
+            ini.push(quote_if_needed(value));
             ini.push("\r\n");
         }
         ini
@@ -311,6 +311,28 @@ impl Config {
         }
         Ok(hotkeys)
     }
+}
+
+/// Protects a value from the profile API's read-side cleanup.
+///
+/// `GetPrivateProfileStringW` trims spaces and tabs around a value and then removes
+/// one pair of matching surrounding quotes (`"…"` or `'…'`). A value that would be
+/// changed by that — leading or trailing whitespace, or already quoted — is written
+/// in double quotes, so it reads back exactly as stored.
+fn quote_if_needed(value: OsString) -> OsString {
+    let units: Vec<u16> = value.encode_wide().collect();
+    let is_blank = |unit: &u16| *unit == u16::from(b' ') || *unit == u16::from(b'\t');
+    let is_quote = |unit: &u16| *unit == u16::from(b'"') || *unit == u16::from(b'\'');
+    let padded = units.first().is_some_and(is_blank) || units.last().is_some_and(is_blank);
+    let quoted =
+        units.len() >= 2 && units.first().is_some_and(is_quote) && units.first() == units.last();
+    if !padded && !quoted {
+        return value;
+    }
+    let mut wrapped = OsString::from("\"");
+    wrapped.push(value);
+    wrapped.push("\"");
+    wrapped
 }
 
 /// Whether `path` is an absolute drive path (`C:\…`, `C:/…`) or a UNC path (`\\…`)
@@ -440,6 +462,20 @@ mod tests {
             fps=30\r\n\
             countdown=0\r\n";
         assert_eq!(config.to_ini(), expected);
+    }
+
+    #[test]
+    fn values_that_the_profile_api_would_alter_are_quoted() {
+        let quote = |text: &str| quote_if_needed(OsString::from(text));
+        assert_eq!(quote(r"C:\Bilder"), r"C:\Bilder", "ordinary values stay as they are");
+        assert_eq!(quote(""), "");
+        assert_eq!(quote(r"C:\Ordner "), r#""C:\Ordner ""#);
+        assert_eq!(quote(" Alt+4"), r#"" Alt+4""#);
+        assert_eq!(quote("\tx"), "\"\tx\"");
+        assert_eq!(quote(r#""x""#), r#"""x"""#);
+        assert_eq!(quote("'x'"), r#""'x'""#);
+        assert_eq!(quote(r#""x"#), r#""x"#, "an unmatched quote is not removed on read");
+        assert_eq!(quote("'"), "'");
     }
 
     #[test]

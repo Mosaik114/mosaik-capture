@@ -457,6 +457,19 @@ mod tests {
     }
 
     #[test]
+    fn padded_and_quoted_values_round_trip() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.ini");
+        let mut config = Config::defaults(&sample_folders());
+        config.screenshot_folder = PathBuf::from(r"C:\Ordner mit Leerzeichen am Ende ");
+        config.recording_folder = PathBuf::from(r#""C:\in Anführungszeichen""#);
+        config.screenshot_hotkey = " Alt+4 ".to_owned();
+        config.recording_hotkey = "'Alt+5'".to_owned();
+        SettingsStore::at(path.clone()).save(&config).unwrap();
+        assert_eq!(Config::load(&IniFile::new(&path), &sample_folders()), config);
+    }
+
+    #[test]
     fn saved_file_is_utf16le_with_bom() {
         let dir = TempDir::new();
         let path = dir.file("settings.ini");

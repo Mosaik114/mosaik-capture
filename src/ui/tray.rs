@@ -9,12 +9,14 @@ use std::{mem, ptr};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows_sys::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NIN_SELECT,
+    NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NIN_SELECT,
     NOTIFY_ICON_MESSAGE, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, HICON, HMENU, MF_STRING, PostMessageW,
-    SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_CONTEXTMENU, WM_NULL,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetSystemMetrics, HICON, HMENU, MF_STRING,
+    PostMessageW, SM_MENUDROPALIGNMENT, SetForegroundWindow, TPM_LEFTALIGN, TPM_RETURNCMD,
+    TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TRACK_POPUP_MENU_FLAGS, TrackPopupMenu, WM_CONTEXTMENU,
+    WM_NULL,
 };
 
 use super::layout::id;
@@ -33,7 +35,8 @@ fn notify(window: HWND, icon: HICON, message: NOTIFY_ICON_MESSAGE) -> bool {
     data.cbSize = u32::try_from(mem::size_of::<NOTIFYICONDATAW>()).unwrap_or(u32::MAX);
     data.hWnd = window;
     data.uID = ICON_ID;
-    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    // Version 4 shows the standard tooltip only with NIF_SHOWTIP.
+    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     data.uCallbackMessage = ipc::TRAY_CALLBACK;
     data.hIcon = icon;
     data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
@@ -120,6 +123,12 @@ fn signed_word(value: usize) -> i32 {
     i32::from(u16::try_from(value & 0xFFFF).unwrap_or_default().cast_signed())
 }
 
+/// Horizontal menu alignment as configured by the user (Tablet PC settings,
+/// `SM_MENUDROPALIGNMENT`): right-handed users get menus to the left of the anchor.
+const fn menu_alignment(right_aligned: bool) -> TRACK_POPUP_MENU_FLAGS {
+    if right_aligned { TPM_RIGHTALIGN } else { TPM_LEFTALIGN }
+}
+
 /// A choice from the tray menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
@@ -179,7 +188,16 @@ pub fn show_menu(window: HWND, x: i32, y: i32) -> Option<MenuCommand> {
     let chosen = unsafe {
         // Required so the menu closes when the user clicks elsewhere.
         SetForegroundWindow(window);
-        TrackPopupMenu(menu.0, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0, window, ptr::null())
+        let align = menu_alignment(GetSystemMetrics(SM_MENUDROPALIGNMENT) != 0);
+        TrackPopupMenu(
+            menu.0,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | align,
+            x,
+            y,
+            0,
+            window,
+            ptr::null(),
+        )
     };
     drop(menu);
     // SAFETY: posting a message has no memory-safety preconditions. WM_NULL makes the
@@ -196,6 +214,12 @@ mod tests {
     fn lparam(event: u32) -> LPARAM {
         // HIWORD carries the icon id in version 4.
         isize::try_from((ICON_ID << 16) | event).unwrap()
+    }
+
+    #[test]
+    fn menus_follow_the_drop_alignment_setting() {
+        assert_eq!(menu_alignment(true), TPM_RIGHTALIGN);
+        assert_eq!(menu_alignment(false), TPM_LEFTALIGN);
     }
 
     #[test]

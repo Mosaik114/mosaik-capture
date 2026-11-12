@@ -14,6 +14,7 @@
 use std::cell::{Cell, RefCell};
 use std::env;
 use std::ffi::OsString;
+use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,15 +32,14 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::WindowsAndMessaging::BN_CLICKED;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BS_AUTOCHECKBOX, BS_OWNERDRAW, CBS_DROPDOWNLIST, DestroyWindow, ES_AUTOHSCROLL, IDCANCEL, IDOK,
-    IsWindowVisible, KillTimer, PostQuitMessage, RegisterWindowMessageW, SHOW_WINDOW_CMD,
+    IsWindow, IsWindowVisible, KillTimer, PostQuitMessage, RegisterWindowMessageW, SHOW_WINDOW_CMD,
     SM_CXSMICON, SW_HIDE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
     SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
     WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ENDSESSION,
-    WM_HOTKEY, WM_PAINT, WM_TIMER, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VSCROLL,
+    WM_ERASEBKGND, WM_HOTKEY, WM_PAINT, WM_TIMER, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VSCROLL,
 };
 use windows_sys::w;
 
-use super::UiError;
 use super::controls::{Control, Creation};
 use super::folder_picker;
 use super::icons::{OwnedIcon, WindowIcons};
@@ -47,6 +47,7 @@ use super::layout::{CONTROLS, ControlKind, ControlSpec, Dpi, EDIT_LIMIT, id};
 use super::strings::status;
 use super::theme::{self, Brushes, Scaled};
 use super::tray::{self, MenuCommand, TrayEvent, TrayState};
+use super::{UiError, UiErrorKind};
 use crate::autostart;
 use crate::cli::Action;
 use crate::config::{Config, ConfigError, Countdown, FrameRate};
@@ -90,7 +91,8 @@ pub struct App {
     /// Every created control with its layout entry, for re-layout on DPI changes.
     children: RefCell<Vec<(Control, &'static ControlSpec)>>,
     store: SettingsStore,
-    exe: PathBuf,
+    /// This executable, for the autostart entry; `None` if Windows could not tell.
+    exe: Option<PathBuf>,
     engine: Engine,
     /// Preview mode: separate settings file, autostart untouched.
     preview: bool,
@@ -118,10 +120,10 @@ impl App {
         dpi: Dpi,
         store: SettingsStore,
         config: Config,
-        exe: PathBuf,
+        exe: Option<PathBuf>,
         preview: Option<&Path>,
     ) -> Self {
-        let exe_dir = exe.parent().map(PathBuf::from).unwrap_or_default();
+        let exe_dir = exe.as_deref().and_then(Path::parent).map(PathBuf::from).unwrap_or_default();
         Self {
             window: Cell::new(ptr::null_mut()),
             instance,
@@ -167,11 +169,6 @@ impl App {
         self.instance
     }
 
-    /// Brushes (also used as the window-class background).
-    pub fn brushes(&self) -> &Brushes {
-        &self.brushes
-    }
-
     /// The DPI the window is currently laid out for.
     pub fn dpi(&self) -> Dpi {
         self.dpi.get()
@@ -196,14 +193,16 @@ impl App {
 
         let config = self.config.borrow().clone();
         let registered = self.register_hotkeys(&config);
-        let saved = self.store.save(&config).is_ok()
-            && (self.preview || autostart::set_enabled(config.autostart, &self.exe).is_ok());
+        let autostart = self.write_autostart(config.autostart);
+        let saved = self.store.save(&config).is_ok() && !matches!(autostart, Some(Err(_)));
         if let Err(error) = config.hotkeys() {
             self.set_status(config_error_message(error), false);
         } else if !registered {
             self.set_status(status::HOTKEY_TAKEN, false);
         } else if !saved {
             self.set_status(status::STARTUP_SAVE_FAILED, false);
+        } else if autostart.is_none() {
+            self.set_status(status::EXE_UNKNOWN, false);
         }
 
         // SAFETY: the literal is NUL-terminated.
@@ -228,6 +227,13 @@ impl App {
     fn add_tray_icon(&self) {
         let icon = self.tray_icon.borrow().handle();
         let state = tray::advance(self.window(), icon, self.tray_state.get());
+        // Shell_NotifyIconW dispatches sent messages; if one of them destroyed the
+        // window meanwhile, an icon added afterwards would be orphaned.
+        // SAFETY: no pointer arguments.
+        if unsafe { IsWindow(self.window()) } == 0 {
+            tray::remove(self.window());
+            return;
+        }
         self.tray_state.set(state);
         let retry = state != TrayState::Ready && self.tray_retries.get() > 0;
         if retry {
@@ -255,14 +261,21 @@ impl App {
     /// Runs a modal loop (folder picker, tray menu). Meanwhile captures are queued and
     /// quitting is refused (see [`while_modal`]); a queued capture starts afterwards.
     fn run_modal<T>(&self, modal: impl FnOnce() -> T) -> T {
-        self.modal_depth.set(self.modal_depth.get() + 1);
-        let result = modal();
-        self.modal_depth.set(self.modal_depth.get() - 1);
+        let result = self.modal_section(modal);
         if self.modal_depth.get() == 0 {
             if let Some(mode) = self.pending_capture.take() {
                 self.capture(mode);
             }
         }
+        result
+    }
+
+    /// Runs `section` as modal (captures are queued, quitting is refused) without
+    /// starting a queued capture afterwards; the caller decides.
+    fn modal_section<T>(&self, section: impl FnOnce() -> T) -> T {
+        self.modal_depth.set(self.modal_depth.get() + 1);
+        let result = section();
+        self.modal_depth.set(self.modal_depth.get() - 1);
         result
     }
 
@@ -331,6 +344,8 @@ impl App {
                 unsafe { PostQuitMessage(0) };
                 0
             }
+            // WM_PAINT paints the whole background; erasing first would only flicker.
+            WM_ERASEBKGND => 1,
             WM_PAINT => {
                 self.paint_background();
                 0
@@ -453,7 +468,8 @@ impl App {
                 rect: dpi.scale_rect(spec.rect),
                 id: spec.id,
             };
-            let control = Control::create(&creation).ok_or(UiError::CreateControls)?;
+            let control = Control::create(&creation)
+                .ok_or_else(|| UiError::last(UiErrorKind::CreateControls))?;
             let font = self.scaled.borrow().font(spec.font_role());
             control.set_font(font);
             match spec.kind {
@@ -571,6 +587,16 @@ impl App {
         self.register_hotkeys(saved);
     }
 
+    /// Writes (or removes) the autostart entry. Preview mode never touches it and
+    /// reports success; `None` means nothing was written because the path of this
+    /// executable is unknown (an empty path must never end up in the Run key).
+    fn write_autostart(&self, enabled: bool) -> Option<io::Result<()>> {
+        if self.preview {
+            return Some(Ok(()));
+        }
+        self.exe.as_deref().map(|exe| autostart::set_enabled(enabled, exe))
+    }
+
     /// "Speichern" ("Save"): validate, re-register hotkeys, update autostart, write
     /// the file. Every failure rolls back to the previous settings.
     fn save(&self) {
@@ -588,20 +614,22 @@ impl App {
             return;
         }
 
-        let stored = (self.preview || autostart::set_enabled(draft.autostart, &self.exe).is_ok())
-            && self.store.save(&draft).is_ok();
+        let autostart = self.write_autostart(draft.autostart);
+        let stored = !matches!(autostart, Some(Err(_))) && self.store.save(&draft).is_ok();
         if !stored {
             self.restore_hotkeys(&saved);
-            if !self.preview {
-                // Best effort: the user already sees the error below.
-                let _ = autostart::set_enabled(saved.autostart, &self.exe);
-            }
+            // Best effort: the user already sees the error below.
+            let _ = self.write_autostart(saved.autostart);
             self.set_status(status::SAVE_FAILED, false);
             return;
         }
 
         *self.config.borrow_mut() = draft;
-        self.set_status(status::SAVED, true);
+        if autostart.is_some() {
+            self.set_status(status::SAVED, true);
+        } else {
+            self.set_status(status::EXE_UNKNOWN, false);
+        }
     }
 
     fn command(&self, control: i32) {
@@ -670,15 +698,28 @@ impl App {
         }
         // The state query waits for the engine and dispatches incoming sent messages
         // meanwhile; as a modal section, a nested quit is refused and captures wait.
-        if self.run_modal(|| self.engine.is_busy()) {
-            self.show_settings(true);
-            self.set_status(status::BUSY, false);
-            return false;
+        let busy = self.modal_section(|| self.engine.is_busy());
+        let queued = self.pending_capture.take();
+        match quit_decision(busy, queued.is_some()) {
+            QuitDecision::Quit => {
+                self.engine.request_quit();
+                // SAFETY: destroys our own window; WM_DESTROY then ends the message loop.
+                unsafe { DestroyWindow(self.window()) };
+                true
+            }
+            QuitDecision::RefuseBusy => {
+                self.show_settings(true);
+                self.set_status(status::BUSY, false);
+                false
+            }
+            QuitDecision::RefuseForCapture => {
+                // The user asked for a capture while we checked: do it, keep running.
+                if let Some(mode) = queued {
+                    self.capture(mode);
+                }
+                false
+            }
         }
-        self.engine.request_quit();
-        // SAFETY: destroys our own window; WM_DESTROY then ends the message loop.
-        unsafe { DestroyWindow(self.window()) };
-        true
     }
 
     /// Stores audio options changed in the engine's recording toolbar. The new values
@@ -756,6 +797,25 @@ const fn while_modal(request: Request, modal: bool) -> Handling {
         (_, false) => Handling::Now,
         (Request::Capture, true) => Handling::Defer,
         (Request::Quit, true) => Handling::Refuse,
+    }
+}
+
+/// The outcome of a quit request after the engine was asked whether it is busy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuitDecision {
+    /// Quit app and engine.
+    Quit,
+    /// The engine is recording or selecting a region.
+    RefuseBusy,
+    /// A capture was requested while the engine was being asked; it starts instead.
+    RefuseForCapture,
+}
+
+const fn quit_decision(engine_busy: bool, capture_queued: bool) -> QuitDecision {
+    match (engine_busy, capture_queued) {
+        (true, _) => QuitDecision::RefuseBusy,
+        (false, true) => QuitDecision::RefuseForCapture,
+        (false, false) => QuitDecision::Quit,
     }
 }
 
@@ -844,6 +904,14 @@ mod tests {
         assert_eq!(clicked_command(packed(1, id::SAVE), button), None, "BN_PAINT, not a key");
         let edit_change = packed(EN_CHANGE, id::SCREENSHOT_HOTKEY);
         assert_eq!(clicked_command(edit_change, button), None);
+    }
+
+    #[test]
+    fn quitting_never_races_a_capture() {
+        assert_eq!(quit_decision(false, false), QuitDecision::Quit);
+        assert_eq!(quit_decision(true, false), QuitDecision::RefuseBusy);
+        assert_eq!(quit_decision(true, true), QuitDecision::RefuseBusy);
+        assert_eq!(quit_decision(false, true), QuitDecision::RefuseForCapture);
     }
 
     #[test]

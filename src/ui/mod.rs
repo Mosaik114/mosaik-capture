@@ -12,7 +12,7 @@ mod tray;
 use std::{env, mem, ptr};
 
 use windows_sys::Win32::Foundation::{
-    FALSE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM,
+    FALSE, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM,
 };
 use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -27,10 +27,10 @@ use windows_sys::Win32::UI::HiDpi::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW, IDC_ARROW,
-    IsDialogMessageW, IsWindow, LoadCursorW, MSG, RegisterClassW, SPI_GETWORKAREA,
-    SetWindowLongPtrW, SystemParametersInfoW, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW,
-    WS_MINIMIZEBOX, WS_SYSMENU,
+    IsDialogMessageW, IsWindow, LoadCursorW, MB_ICONERROR, MB_OK, MSG, MessageBoxW, RegisterClassW,
+    SPI_GETWORKAREA, SetWindowLongPtrW, SystemParametersInfoW, TranslateMessage, UnregisterClassW,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW, WS_CAPTION,
+    WS_EX_APPWINDOW, WS_MINIMIZEBOX, WS_SYSMENU,
 };
 
 use windows_sys::core::PCWSTR;
@@ -47,9 +47,9 @@ const WINDOW_STYLE: WINDOW_STYLE = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 /// Extended style of the settings window: always shown on the taskbar.
 const WINDOW_EX_STYLE: WINDOW_EX_STYLE = WS_EX_APPWINDOW;
 
-/// Why the user interface could not be run.
+/// Which step of running the user interface failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UiError {
+pub enum UiErrorKind {
     /// `RegisterClassW` failed.
     RegisterClass,
     /// `CreateWindowExW` failed for the settings window.
@@ -58,6 +58,45 @@ pub enum UiError {
     CreateControls,
     /// `GetMessageW` reported an error.
     MessageLoop,
+}
+
+/// Why the user interface could not be run: the failed step and the Windows error
+/// code (`GetLastError`) at that moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiError {
+    /// The failed step.
+    pub kind: UiErrorKind,
+    /// The Windows error code.
+    pub code: u32,
+}
+
+impl UiError {
+    /// Captures the calling thread's last error for `kind`. Call it directly after
+    /// the failed API call.
+    pub(crate) fn last(kind: UiErrorKind) -> Self {
+        // SAFETY: reads the calling thread's last-error value.
+        Self { kind, code: unsafe { GetLastError() } }
+    }
+
+    /// The German message for the user (the UI language).
+    pub fn message(self) -> String {
+        let step = match self.kind {
+            UiErrorKind::RegisterClass => "Die Fensterklasse konnte nicht registriert werden",
+            UiErrorKind::CreateWindow => "Das Einstellungsfenster konnte nicht erstellt werden",
+            UiErrorKind::CreateControls => "Die Bedienelemente konnten nicht erstellt werden",
+            UiErrorKind::MessageLoop => "Die Nachrichtenverarbeitung ist fehlgeschlagen",
+        };
+        format!("{step} (Windows-Fehler {}).", self.code)
+    }
+}
+
+/// Tells the user why the app could not start (for interactive starts; a background
+/// start at logon only sets the exit code).
+pub fn report(error: UiError) {
+    let text = to_wide(error.message());
+    let title = to_wide(strings::APP_NAME);
+    // SAFETY: both strings are NUL-terminated and outlive the modal call; no owner.
+    unsafe { MessageBoxW(ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR) };
 }
 
 /// Runs the primary instance until the user quits.
@@ -81,12 +120,11 @@ pub fn run(invocation: &Invocation) -> Result<(), UiError> {
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
     // The window opens on the monitor the user is working on.
     let monitor = Monitor::under_cursor();
-    let exe = env::current_exe().unwrap_or_default();
+    let exe = env::current_exe().ok();
     // Boxed: the window procedure keeps the address, so it must never move.
     let app = Box::new(App::new(instance, monitor.dpi, store, config, exe, preview));
 
-    // Declared after `app`, so the class is unregistered before the App (and with it
-    // the class background brush) is dropped.
+    // Unregistered when this guard drops, after the window is gone.
     let class = register_class(&app, ipc::WINDOW_CLASS)?;
     let window = create_window(&app, &class, &monitor)?;
 
@@ -161,13 +199,16 @@ fn register_class(app: &App, name: &str) -> Result<WindowClass, UiError> {
         hIcon: icons::class_icon(app.instance()),
         // SAFETY: loads a predefined system cursor.
         hCursor: unsafe { LoadCursorW(ptr::null_mut(), IDC_ARROW) },
-        hbrBackground: app.brushes().background(),
+        // No class brush: WM_PAINT fills the background and WM_ERASEBKGND is skipped.
+        // (Windows would also delete a class brush on UnregisterClass, which belongs
+        // to the App.)
+        hbrBackground: ptr::null_mut(),
         lpszMenuName: ptr::null(),
         lpszClassName: class_name.as_ptr(),
     };
     // SAFETY: `class` and the class name it points to outlive the call.
     if unsafe { RegisterClassW(&raw const class) } == 0 {
-        return Err(UiError::RegisterClass);
+        return Err(UiError::last(UiErrorKind::RegisterClass));
     }
     Ok(WindowClass { name: class_name, instance: app.instance() })
 }
@@ -183,7 +224,6 @@ fn frame_size(dpi: Dpi) -> (i32, i32) {
     (frame.right - frame.left, frame.bottom - frame.top)
 }
 
-/// The window rectangle that centres a window of `dpi`'s size in the work area.
 /// The monitor the window should open on: work area and DPI.
 #[derive(Clone, Copy, Debug)]
 struct Monitor {
@@ -261,7 +301,7 @@ fn create_window(app: &App, class: &WindowClass, monitor: &Monitor) -> Result<HW
         )
     };
     if window.is_null() {
-        return Err(UiError::CreateWindow);
+        return Err(UiError::last(UiErrorKind::CreateWindow));
     }
 
     let dark = TRUE;
@@ -296,7 +336,7 @@ fn run_message_loop(window: HWND) -> Result<(), UiError> {
         unsafe {
             match GetMessageW(&raw mut message, ptr::null_mut(), 0, 0) {
                 0 => return Ok(()),
-                -1 => return Err(UiError::MessageLoop),
+                -1 => return Err(UiError::last(UiErrorKind::MessageLoop)),
                 _ => {
                     if IsDialogMessageW(window, &raw const message) == 0 {
                         TranslateMessage(&raw const message);
@@ -383,9 +423,6 @@ mod tests {
         Control::child(window, id::STATUS).text()
     }
 
-    /// Enables the end-to-end test of the real window.
-    const UI_TESTS_VAR: &str = "MOSAIK_UI_TESTS";
-
     /// Destroys the window (unregistering the hotkeys) and removes the temp folder,
     /// even if an assertion fails.
     struct Cleanup {
@@ -407,15 +444,12 @@ mod tests {
     ///
     /// It only touches this process (a private window class, a temp settings file in
     /// preview mode, no engine, no registry), but it creates a window and registers
-    /// two unusual global hotkeys, so it is opt-in: it runs only when the environment
-    /// variable `MOSAIK_UI_TESTS` is `1`. CI sets it for `cargo test`; locally run
-    /// `MOSAIK_UI_TESTS=1 cargo test settings_window` (on a spare desktop if you like).
+    /// two unusual global hotkeys, so it is ignored by default and reported as such.
+    /// CI runs it with `cargo test -- --include-ignored`; locally use
+    /// `cargo test -- --ignored settings_window` (on a spare desktop if you like).
     #[test]
+    #[ignore = "drives a real window; CI runs it with --include-ignored"]
     fn settings_window_end_to_end() {
-        if env::var_os(UI_TESTS_VAR).is_none_or(|value| value != "1") {
-            eprintln!("skipped: set {UI_TESTS_VAR}=1 to drive the real settings window");
-            return;
-        }
         let dir = env::temp_dir().join(format!("mosaik-capture-ui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ini = dir.join("settings.ini");
@@ -432,7 +466,7 @@ mod tests {
             Dpi::new(96),
             SettingsStore::at(ini.clone()),
             config.clone(),
-            env::current_exe().unwrap(),
+            env::current_exe().ok(),
             Some(&ini),
         ));
         let class = register_class(&app, "MosaikCapture.Host.Test").unwrap();

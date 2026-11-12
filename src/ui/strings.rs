@@ -1,6 +1,8 @@
 //! User-visible German texts (except control labels, which live in the layout table).
 //! Each doc comment says what the text means in English.
 
+/// Name of the app in German message boxes ("Mosaiks Aufnahme").
+pub const APP_NAME: &str = "Mosaiks Aufnahme";
 /// Title of the settings window ("Mosaiks Aufnahme – Settings").
 pub const WINDOW_TITLE: &str = "Mosaiks Aufnahme – Einstellungen";
 /// Tooltip of the notification-area icon ("… – screenshot and screen recording").
@@ -37,6 +39,10 @@ pub mod status {
         "Ein Kürzel ist bereits belegt. Die bisherigen Kürzel bleiben aktiv.";
     /// Registering a hotkey failed at startup.
     pub const HOTKEY_TAKEN: &str = "Ein Tastenkürzel ist bereits belegt. Bitte ein anderes wählen.";
+    /// The path of this executable is unknown, so autostart was not written ("The
+    /// program path is unknown, so autostart was not set up.").
+    pub const EXE_UNKNOWN: &str =
+        "Der Programmpfad ist unbekannt, daher wurde der Autostart nicht eingerichtet.";
     /// Saving the settings or the autostart entry failed.
     pub const SAVE_FAILED: &str = "Die Einstellungen konnten nicht gespeichert werden.";
     /// Saving at startup failed.
