@@ -24,7 +24,8 @@ Mosaik Capture is two cooperating Windows processes:
   windows and returns to a consistent state (a running recording is still saved) instead of
   leaving a half-open UI. Anything that still reaches the global handler is classified: recoverable
   I/O, COM, Win32 and timeout errors are logged and the engine continues; anything else is
-  treated as a bug, logged, and the engine restarts itself.
+  treated as a bug, logged, and the engine restarts itself (or, in its first minute, shuts
+  down cleanly and is started again by the host on the next capture).
 - **Runtime requirements.** .NET Framework 4.8 ships with Windows, so neither process needs
   an installed runtime.
 

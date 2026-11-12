@@ -105,7 +105,7 @@ internal static class Ffmpeg
     static VideoEncoder DetectEncoder()
     {
         if (Exe == null) return VideoEncoder.Software;
-        var test = new FfmpegArgs().Add("-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
+        var test = new FfmpegArgs().Add("-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
             "-frames:v", "2", "-c:v", "h264_nvenc", "-f", "null", "-");
         try { return Run(Exe, test, FfmpegTimeouts.Quick, out _, out _) == 0 ? VideoEncoder.Nvenc : VideoEncoder.Software; }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or TimeoutException)
@@ -235,6 +235,7 @@ internal static class Ffmpeg
             outputText.Add(line);
             if (progress != null && FfmpegOutput.ProgressSeconds(line) is double seconds) progress(seconds);
         }, errorText.Add);
+        CloseInput(process);   // nothing is ever sent: a call that reads stdin ends instead of waiting
         var waited = Stopwatch.StartNew();
         while (!process.WaitForExit(WaitSliceMs))
         {
@@ -253,6 +254,12 @@ internal static class Ffmpeg
         output = outputText.ToString();
         error = errorText.ToString().Trim();
         return process.ExitCode;
+    }
+
+    static void CloseInput(Process process)
+    {
+        try { process.StandardInput.Close(); }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException) { }   // exited already
     }
 
     /// <summary>Kills the process and waits (bounded) until it is gone.</summary>

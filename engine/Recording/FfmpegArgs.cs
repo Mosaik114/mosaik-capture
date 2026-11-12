@@ -10,8 +10,15 @@ internal sealed class FfmpegArgs
     static readonly char[] NeedsQuotes = { ' ', '\t', '\n', '\v', '"' };
     readonly List<string> arguments = new();
 
-    /// <summary>The usual start of every ffmpeg call: quiet, errors only, overwrite the output.</summary>
+    /// <summary>The usual start of an ffmpeg call: quiet, errors only, overwrite the output.</summary>
+    /// <remarks>Recording segments use this: they keep stdin, because "q" on stdin ends them cleanly.</remarks>
     public static FfmpegArgs Quiet() => new FfmpegArgs().Add("-hide_banner", "-loglevel", "error", "-y");
+
+    /// <summary>
+    /// <see cref="Quiet"/> for calls that run to completion: <c>-nostdin</c> so ffmpeg never waits for or
+    /// reacts to input (<see cref="Ffmpeg.Run"/> also closes stdin right away).
+    /// </summary>
+    public static FfmpegArgs Batch() => Quiet().Add("-nostdin");
 
     public IReadOnlyList<string> Arguments => arguments;
 

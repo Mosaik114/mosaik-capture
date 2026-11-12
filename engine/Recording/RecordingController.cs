@@ -31,6 +31,7 @@ internal sealed class RecordingController
     readonly IRecordingBackend backend;
     readonly Func<double, TimeSpan> saveTimeout;
     IRecordingSession? session;
+    Action? brokeHandler;            // subscribed to session.Broke; removed when the session is taken
     RECT workArea;
 
     /// <param name="ui">The windows.</param>
@@ -112,7 +113,9 @@ internal sealed class RecordingController
         try
         {
             session = backend.StartSession(area, output, desktop, new AudioSettings(Microphone, SystemSound, ShowClicks));
-            session.Broke += OnSessionBroke;
+            var started = session;
+            brokeHandler = () => OnSessionBroke(started);
+            started.Broke += brokeHandler;
         }
         catch (Exception ex)   // e.g. the work folder cannot be created or the audio API fails
         {
@@ -148,8 +151,9 @@ internal sealed class RecordingController
     });
 
     // ffmpeg exited on its own (e.g. graphics driver, locked screen): save what we have.
-    void OnSessionBroke() => ui.Post(() => Guard("Saving after ffmpeg stopped", () =>
+    void OnSessionBroke(IRecordingSession broken) => ui.Post(() => Guard("Saving after ffmpeg stopped", () =>
     {
+        if (!ReferenceEquals(session, broken)) return;   // an earlier session: already saved or discarded
         if (Phase == RecordingPhase.Counting)
         {
             ui.StopCountdown();
@@ -274,6 +278,8 @@ internal sealed class RecordingController
     {
         var taken = session;
         session = null;
+        if (taken != null && brokeHandler != null) taken.Broke -= brokeHandler;
+        brokeHandler = null;
         return taken;
     }
 

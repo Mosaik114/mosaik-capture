@@ -171,17 +171,59 @@ public sealed class RecordingSessionTests : IDisposable
             else session.Pause();
         }
         await Within(Task.WhenAll(resumes));
-        int expected = paused ? 0 : 1;
-        for (int i = 0; i < 250 && Running() != expected; i++) await Task.Delay(20, TestContext.Current.CancellationToken);   // quits run in the background
+        List<FakeProcess> started;
+        lock (runner.Processes) started = runner.Processes.ToList();
+        // every segment but the one still wanted is asked to quit (in the background): wait for exactly those signals
+        var stopped = paused ? started : started.Take(started.Count - 1);
+        await Within(Task.WhenAll(stopped.Select(p => p.Quit.Task)));
 
         Assert.Equal(paused, session.Paused);
-        Assert.Equal(expected, Running());
-        Assert.Equal(expected, session.Paused ? 0 : 1);
+        if (!paused) Assert.False(started[started.Count - 1].Quit.Task.IsCompleted, "the wanted segment was stopped");
+    }
 
-        int Running()
+    [Fact]
+    public async Task ElapsedNeverDipsAcrossPauses()
+    {
+        var session = NewSession();
+        using var stop = new CancellationTokenSource();
+        double lowest = 0;
+        bool dipped = false;
+        var reader = Task.Run(() =>
         {
-            lock (runner.Processes) return runner.Processes.Count(p => !p.Quit.Task.IsCompleted);
+            while (!stop.IsCancellationRequested)
+            {
+                double now = session.Elapsed;
+                if (now < lowest) dipped = true;
+                lowest = Math.Max(lowest, now);
+            }
+        }, TestContext.Current.CancellationToken);
+
+        for (int i = 0; i < 50; i++)
+        {
+            await Within(session.ResumeAsync());
+            session.Pause();
         }
+        stop.Cancel();
+        await Within(reader);
+
+        Assert.False(dipped, "Elapsed went backwards while pausing");
+    }
+
+    [Fact]
+    public async Task AnOlderSegmentEndingAfterAResumeIsNoBreak()
+    {
+        var session = NewSession();
+        int broke = 0;
+        session.Broke += () => broke++;
+        await Within(session.ResumeAsync());
+        var first = runner.Processes.Single();
+        session.Pause();
+        await Within(session.ResumeAsync());
+
+        first.Exit("late exit of the paused segment");
+
+        Assert.Equal(0, broke);
+        Assert.False(session.Paused);
     }
 
     [Fact]
@@ -316,7 +358,7 @@ public sealed class RecordingSessionTests : IDisposable
         Assert.True(Directory.Exists(session.WorkDirectory), "removed while the WAV files are still open");
 
         audio.Release.SetResult(true);
-        for (int i = 0; i < 100 && Directory.Exists(session.WorkDirectory); i++) await Task.Delay(20, TestContext.Current.CancellationToken);
+        await Within(session.WorkDirectoryRemoved);
         Assert.False(Directory.Exists(session.WorkDirectory));
     }
 

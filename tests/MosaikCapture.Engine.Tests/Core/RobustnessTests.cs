@@ -47,6 +47,66 @@ public sealed class RobustnessTests
         Assert.Equal(recoverable, Program.IsRecoverable(Samples[sample]));
 
     [Fact]
+    public void RecoverableFailuresKeepTheEngineWithoutRestarting()
+    {
+        bool restarted = false;
+
+        Assert.Equal(Program.UiFailureResponse.Continue, Program.ResponseTo(new IOException(), () => restarted = true));
+        Assert.False(restarted);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]   // within the first minute no restart happens, but the engine still ends
+    public void BugsEndTheEngineWhetherOrNotItRestarted(bool restartStarted)
+    {
+        int restarts = 0;
+
+        var response = Program.ResponseTo(new NullReferenceException(), () => { restarts++; return restartStarted; });
+
+        Assert.Equal(Program.UiFailureResponse.Shutdown, response);
+        Assert.Equal(1, restarts);
+    }
+
+    [Fact]
+    public void WaveFormatIsThePacked40ByteStructure()
+    {
+        Assert.Equal(40, Marshal.SizeOf<Wasapi.WAVEFORMATEXTENSIBLE>());
+        Assert.Equal(0, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("FormatTag"));
+        Assert.Equal(2, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("Channels"));
+        Assert.Equal(4, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("SamplesPerSecond"));
+        Assert.Equal(8, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("AverageBytesPerSecond"));
+        Assert.Equal(12, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("BlockAlign"));
+        Assert.Equal(14, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("BitsPerSample"));
+        Assert.Equal(16, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("ExtensionSize"));
+        Assert.Equal(18, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("ValidBitsPerSample"));
+        Assert.Equal(20, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("ChannelMask"));
+        Assert.Equal(24, (int)Marshal.OffsetOf<Wasapi.WAVEFORMATEXTENSIBLE>("SubFormat"));
+    }
+
+    [Fact]
+    public void WaveFormatDescribesStereoFloat()
+    {
+        IntPtr memory = Wasapi.AllocateFloatStereoFormat(48000);
+        try
+        {
+            Assert.Equal(unchecked((short)0xFFFE), Marshal.ReadInt16(memory, 0));
+            Assert.Equal(2, Marshal.ReadInt16(memory, 2));
+            Assert.Equal(48000, Marshal.ReadInt32(memory, 4));
+            Assert.Equal(48000 * 8, Marshal.ReadInt32(memory, 8));
+            Assert.Equal(8, Marshal.ReadInt16(memory, 12));
+            Assert.Equal(32, Marshal.ReadInt16(memory, 14));
+            Assert.Equal(22, Marshal.ReadInt16(memory, 16));
+            Assert.Equal(32, Marshal.ReadInt16(memory, 18));
+            Assert.Equal(3, Marshal.ReadInt32(memory, 20));
+            var subFormat = new byte[16];
+            Marshal.Copy(memory + 24, subFormat, 0, 16);
+            Assert.Equal(new Guid("00000003-0000-0010-8000-00aa00389b71"), new Guid(subFormat));
+        }
+        finally { Marshal.FreeHGlobal(memory); }
+    }
+
+    [Fact]
     public void RateLimitLetsTenCommandsPerSecondThrough()
     {
         var limit = new CommandRateLimit(10, TimeSpan.FromSeconds(1));

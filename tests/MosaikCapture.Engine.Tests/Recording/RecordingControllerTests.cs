@@ -281,6 +281,44 @@ public sealed class RecordingControllerTests
     }
 
     [Fact]
+    public async Task ABreakFromAFinishedSessionLeavesTheNextRecordingAlone()
+    {
+        var old = await StartRunning();
+        old.Video = new RecordedVideo { Path = "C:\\x.mp4" };
+        await Within(controller.StopAsync());
+        ui.Finished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await StartNext();
+        var current = backend.Sessions[1];
+        int callsBefore = ui.Calls.Count;
+
+        old.Break();   // e.g. its ffmpeg exit is reported late
+
+        Assert.Equal(RecordingPhase.Running, controller.Phase);
+        Assert.Equal(callsBefore, ui.Calls.Count);
+        Assert.Null(current.FinishedInto);
+        Assert.False(ui.Finished.Task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task DiscardedSessionIsUnsubscribed()
+    {
+        var old = await StartRunning();
+        controller.Discard();
+        await Within(old.Discarded.Task);
+
+        Assert.Equal(0, old.BrokeSubscribers);
+    }
+
+    async Task StartNext()
+    {
+        controller.Toggle();
+        ui.Pick!(Picked, Monitor, Work);
+        await controller.LaunchAsync();
+        ui.CountdownFinished!();
+        Assert.Equal(RecordingPhase.Running, controller.Phase);
+    }
+
+    [Fact]
     public async Task DiscardHidesEverythingAndDeletesTheRecording()
     {
         var session = await StartRunning();
@@ -494,7 +532,7 @@ public sealed class RecordingControllerTests
     sealed class FakeUi : IRecordingUi
     {
         public readonly List<string> Calls = new();
-        public readonly TaskCompletionSource<bool> Finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> Finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Action<Int32Rect, RECT, RECT>? Pick;
         public Action? PickCancelled, Launch, CountdownFinished, CountdownCancelled;
 
@@ -631,6 +669,8 @@ public sealed class RecordingControllerTests
         public bool AudioLost { get; set; }
 
         public event Action? Broke;
+
+        public int BrokeSubscribers => Broke?.GetInvocationList().Length ?? 0;
 
         public void Break() => Broke?.Invoke();
 

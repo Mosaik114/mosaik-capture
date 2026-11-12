@@ -71,6 +71,22 @@ public sealed class FfmpegArgsTests
         Assert.Equal(new[] { "-hide_banner", "-loglevel", "error", "-y" }, FfmpegArgs.Quiet().Arguments);
 
     [Fact]
+    public void BatchCallsNeverReadStdin() =>
+        Assert.Equal(new[] { "-hide_banner", "-loglevel", "error", "-y", "-nostdin" }, FfmpegArgs.Batch().Arguments);
+
+    [Fact]
+    public void OnlyRecordingSegmentsKeepStdinForQuit()
+    {
+        Assert.DoesNotContain("-nostdin", RecordingSession.SegmentArguments(0, 30, new Int32Rect(0, 0, 100, 100), 0, 0, 0, VideoEncoder.Software, "C:\\a.mkv").Arguments);
+        Assert.Contains("-nostdin", RecordingSession.Assemble("C:\\l.txt", new List<string>(), new List<double>(), new List<double>(), "C:\\o.mp4").Arguments);
+        Assert.Contains("-nostdin", VideoExport.Mp4Arguments("C:\\i.mp4", 0, 1, false, VideoEncoder.Software, "C:\\o.mp4").Arguments);
+        Assert.Contains("-nostdin", VideoExport.GifPaletteArguments("C:\\i.mp4", 0, 1, "C:\\p.png").Arguments);
+        Assert.Contains("-nostdin", VideoExport.GifArguments("C:\\i.mp4", 0, 1, "C:\\p.png", "C:\\o.gif").Arguments);
+        Assert.Contains("-nostdin", RecordedVideo.FrameArguments("C:\\v.mp4", 1, 640, "C:\\f.png").Arguments);
+        Assert.Contains("-nostdin", RecordedVideo.StripArguments("C:\\v.mp4", 6, 3, 60, "C:\\s.png").Arguments);
+    }
+
+    [Fact]
     public void AddKeepsTheOrder()
     {
         var args = new FfmpegArgs().Add("-a").Add(new List<string> { "-b", "c" }).Add("-d", "e");
@@ -129,7 +145,7 @@ public sealed class CommandLineTests
     {
         var args = VideoExport.Mp4Arguments("C:\\My Videos\\in.mp4", 1.5, 4, keepAudio, VideoEncoder.Software, "C:\\My Videos\\in gekürzt.mp4").Arguments;
 
-        var expected = new List<string> { "-hide_banner", "-loglevel", "error", "-y", "-ss", "1.5", "-to", "4", "-i", "C:\\My Videos\\in.mp4", "-map", "0:v:0" };
+        var expected = new List<string> { "-hide_banner", "-loglevel", "error", "-y", "-nostdin", "-ss", "1.5", "-to", "4", "-i", "C:\\My Videos\\in.mp4", "-map", "0:v:0" };
         expected.AddRange(audio);
         expected.AddRange(Ffmpeg.FileVideoArgs(VideoEncoder.Software));
         expected.AddRange(new[] { "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "C:\\My Videos\\in gekürzt.mp4" });
@@ -144,12 +160,12 @@ public sealed class CommandLineTests
 
         Assert.Equal(new[]
         {
-            "-hide_banner", "-loglevel", "error", "-y", "-ss", "2", "-to", "5", "-i", "C:\\in.mp4",
+            "-hide_banner", "-loglevel", "error", "-y", "-nostdin", "-ss", "2", "-to", "5", "-i", "C:\\in.mp4",
             "-vf", "fps=15,scale='min(960,iw)':-2:flags=lanczos,palettegen=stats_mode=diff", "C:\\Temp\\palette.png",
         }, palette);
         Assert.Equal(new[]
         {
-            "-hide_banner", "-loglevel", "error", "-y", "-ss", "2", "-to", "5", "-i", "C:\\in.mp4", "-i", "C:\\Temp\\palette.png",
+            "-hide_banner", "-loglevel", "error", "-y", "-nostdin", "-ss", "2", "-to", "5", "-i", "C:\\in.mp4", "-i", "C:\\Temp\\palette.png",
             "-lavfi", "fps=15,scale='min(960,iw)':-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
             "-loop", "0", "-progress", "pipe:1", "-nostats", "C:\\out.gif",
         }, gif);
@@ -158,9 +174,9 @@ public sealed class CommandLineTests
     [Fact]
     public void SingleFrameSeeksAndLimitsTheWidth()
     {
-        Assert.Equal(new[] { "-hide_banner", "-loglevel", "error", "-y", "-ss", "2.5", "-i", "C:\\v.mp4", "-frames:v", "1", "-vf", "scale='min(640,iw)':-2", "C:\\f.png" },
+        Assert.Equal(new[] { "-hide_banner", "-loglevel", "error", "-y", "-nostdin", "-ss", "2.5", "-i", "C:\\v.mp4", "-frames:v", "1", "-vf", "scale='min(640,iw)':-2", "C:\\f.png" },
             RecordedVideo.FrameArguments("C:\\v.mp4", 2.5, 640, "C:\\f.png").Arguments);
-        Assert.Equal("0", RecordedVideo.FrameArguments("C:\\v.mp4", -1, 640, "C:\\f.png").Arguments[5]);
+        Assert.Equal("0", RecordedVideo.FrameArguments("C:\\v.mp4", -1, 640, "C:\\f.png").Arguments[6]);
     }
 
     [Fact]
@@ -170,12 +186,12 @@ public sealed class CommandLineTests
 
         Assert.Equal(new[]
         {
-            "-hide_banner", "-loglevel", "error", "-y",
+            "-hide_banner", "-loglevel", "error", "-y", "-nostdin",
             "-ss", "1", "-i", "C:\\v.mp4", "-ss", "3", "-i", "C:\\v.mp4", "-ss", "5", "-i", "C:\\v.mp4",
             "-filter_complex", "[0:v]scale=-2:60,setsar=1[v0];[1:v]scale=-2:60,setsar=1[v1];[2:v]scale=-2:60,setsar=1[v2];[v0][v1][v2]hstack=inputs=3",
             "-frames:v", "1", "C:\\s.png",
         }, args);
-        Assert.EndsWith("[v0]null", RecordedVideo.StripArguments("C:\\v.mp4", 6, 1, 60, "C:\\s.png").Arguments[9]);
+        Assert.EndsWith("[v0]null", RecordedVideo.StripArguments("C:\\v.mp4", 6, 1, 60, "C:\\s.png").Arguments[10]);
     }
 
     [Fact]

@@ -46,11 +46,11 @@ internal sealed class RecordedVideo
         RenderToImage("mosaik-strip-", png => StripArguments(path, duration, count, height, png));
 
     internal static FfmpegArgs FrameArguments(string path, double at, int maxWidth, string png) =>
-        FfmpegArgs.Quiet().Add("-ss", FfmpegArgs.Number(Math.Max(0, at)), "-i", path, "-frames:v", "1", "-vf", "scale='min(" + maxWidth + ",iw)':-2", png);
+        FfmpegArgs.Batch().Add("-ss", FfmpegArgs.Number(Math.Max(0, at)), "-i", path, "-frames:v", "1", "-vf", "scale='min(" + maxWidth + ",iw)':-2", png);
 
     internal static FfmpegArgs StripArguments(string path, double duration, int count, int height, string png)
     {
-        var args = FfmpegArgs.Quiet();
+        var args = FfmpegArgs.Batch();
         var filter = new StringBuilder();
         for (int i = 0; i < count; i++)
         {

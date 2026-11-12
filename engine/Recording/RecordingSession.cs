@@ -96,7 +96,7 @@ internal sealed class RecordingSession : IRecordingSession
     volatile Segment? current;       // under gate: the running segment, null while paused
     volatile string reason = UiText.Recording.NoFrames;
     VideoEncoder? encoder;           // chosen once, so all segments can be joined without re-encoding (one resume at a time)
-    long recordedTicks;              // length of the finished segments (Stopwatch ticks); Interlocked
+    long recordedTicks;              // under gate: length of the finished segments (Stopwatch ticks)
     int pauseCount;                  // under gate: a resume that started before the latest pause gives up
     int resuming;                    // 1 while a resume is starting a segment; Interlocked (full fences)
     volatile bool wantRunning;       // the user's intent: resumed and not paused since (shown at once, even while ffmpeg starts)
@@ -134,9 +134,12 @@ internal sealed class RecordingSession : IRecordingSession
     {
         get
         {
-            long ticks = Interlocked.Read(ref recordedTicks);
-            var segment = current;
-            if (segment != null) ticks += Stopwatch.GetTimestamp() - segment.StopwatchStart;
+            long ticks;
+            lock (gate)
+            {
+                ticks = recordedTicks;
+                if (current != null) ticks += Stopwatch.GetTimestamp() - current.StopwatchStart;
+            }
             return ticks / (double)Stopwatch.Frequency;
         }
     }
@@ -246,7 +249,9 @@ internal sealed class RecordingSession : IRecordingSession
 
     void OnSegmentExited(Segment segment)
     {
-        if (current != segment) return;   // stopped on purpose
+        bool stillCurrent;
+        lock (gate) stillCurrent = current == segment;
+        if (!stillCurrent) return;   // stopped on purpose, or an older segment
         reason = segment.Errors.IsEmpty ? UiText.Recording.StoppedUnexpectedly : FfmpegOutput.LastLine(segment.Errors.ToString());
         Broke?.Invoke();
     }
@@ -260,10 +265,10 @@ internal sealed class RecordingSession : IRecordingSession
             pauseCount++;
             segment = current;
             if (segment == null) return;
+            recordedTicks += Stopwatch.GetTimestamp() - segment.StopwatchStart;   // before current goes: Elapsed never dips
             current = null;
             if (segment.Process != null) segment.Stopped = QuitInBackground(segment.Process);   // otherwise StartSegment stops it
         }
-        Interlocked.Add(ref recordedTicks, Stopwatch.GetTimestamp() - segment.StopwatchStart);
     }
 
     static Task QuitInBackground(IFfmpegProcess process) => Task.Run(() =>
@@ -343,11 +348,12 @@ internal sealed class RecordingSession : IRecordingSession
     }
 
     // While the audio thread still holds its track files, the folder is removed once it lets go.
-    void DeleteWorkDirectory()
-    {
-        if (audio.Finished.IsCompleted) DeleteWorkDirectoryNow();
-        else audio.Finished.ContinueWith(_ => DeleteWorkDirectoryNow(), CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
-    }
+    void DeleteWorkDirectory() =>
+        WorkDirectoryRemoved = audio.Finished.ContinueWith(_ => DeleteWorkDirectoryNow(), CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+    /// <summary>Completes once the work folder was removed (or removing it failed and was logged); tests wait on it.</summary>
+    internal Task WorkDirectoryRemoved { get; private set; } = Task.CompletedTask;
 
     void DeleteWorkDirectoryNow()
     {
@@ -371,7 +377,7 @@ internal sealed class RecordingSession : IRecordingSession
     /// </summary>
     internal static FfmpegArgs Assemble(string concatList, IList<string> tracks, IList<double> from, IList<double> length, string path)
     {
-        var args = FfmpegArgs.Quiet().Add("-f", "concat", "-safe", "0", "-i", concatList);
+        var args = FfmpegArgs.Batch().Add("-f", "concat", "-safe", "0", "-i", concatList);
         foreach (string track in tracks) args.Add(AudioTrack.InputArguments).Add("-i", track);   // raw samples: the format must be named
         if (tracks.Count > 0)
         {

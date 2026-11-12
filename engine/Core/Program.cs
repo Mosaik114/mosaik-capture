@@ -16,7 +16,7 @@ internal static class Program
     {
         // The flows guard their own entry points; what still arrives here escaped them. Failures of the
         // outside world (a device, the clipboard, a file) are logged and the engine goes on; anything else
-        // is a bug that may have left state broken, so the engine restarts fresh (unless it just started).
+        // is a bug that may have left state broken, so this engine ends (restarting first unless it just started).
         app.DispatcherUnhandledException += (_, e) =>
         {
             e.Handled = true;
@@ -25,8 +25,9 @@ internal static class Program
                 ErrorLog.Write("Unhandled UI exception (recoverable)", e.Exception);
                 return;
             }
+            // a bug: restart if possible, otherwise just end (the host starts the engine again when needed)
             ErrorLog.Write("Unhandled UI exception: restarting", e.Exception);
-            if (Restart()) app.Shutdown();
+            if (ResponseTo(e.Exception, Restart) == UiFailureResponse.Shutdown) app.Shutdown();
         };
         TaskScheduler.UnobservedTaskException += (_, e) => { ErrorLog.Write("Unobserved task exception", e.Exception); e.SetObserved(); };
         // Not recoverable (failure outside the UI thread): log it and restart fresh.
@@ -44,6 +45,26 @@ internal static class Program
     }
 
     internal static string RestartArguments(int pid) => RestartArgument + " " + CaptureBridge.AfterArgument + " " + pid.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>What happens after an unhandled exception on the UI thread.</summary>
+    internal enum UiFailureResponse
+    {
+        /// <summary>A recoverable failure: log and keep running.</summary>
+        Continue,
+        /// <summary>A bug: end this engine. A new one runs already, or the host starts one with the next capture.</summary>
+        Shutdown,
+    }
+
+    /// <summary>
+    /// Recoverable failures keep the engine running; anything else ends it after trying a restart
+    /// (<paramref name="restart"/>; skipped within the first minute). Never continues in a broken state.
+    /// </summary>
+    internal static UiFailureResponse ResponseTo(Exception exception, Func<bool> restart)
+    {
+        if (IsRecoverable(exception)) return UiFailureResponse.Continue;
+        restart();
+        return UiFailureResponse.Shutdown;
+    }
 
     /// <summary>
     /// Failures caused by the outside world (devices, clipboard, files, Win32, timeouts, cancelled work),

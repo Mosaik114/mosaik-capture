@@ -64,17 +64,47 @@ internal static class Wasapi
     /// </summary>
     public static IntPtr AllocateFloatStereoFormat(int rate)
     {
-        IntPtr format = Marshal.AllocHGlobal(40);
-        Marshal.WriteInt16(format, 0, unchecked((short)0xFFFE));   // WAVE_FORMAT_EXTENSIBLE
-        Marshal.WriteInt16(format, 2, 2);                           // channels
-        Marshal.WriteInt32(format, 4, rate);
-        Marshal.WriteInt32(format, 8, rate * 8);                    // bytes per second
-        Marshal.WriteInt16(format, 12, 8);                          // block align
-        Marshal.WriteInt16(format, 14, 32);                         // bits per sample
-        Marshal.WriteInt16(format, 16, 22);                         // extension size
-        Marshal.WriteInt16(format, 18, 32);                         // valid bits
-        Marshal.WriteInt32(format, 20, 3);                          // front left + front right
-        Marshal.Copy(IeeeFloatSubFormat.ToByteArray(), 0, format + 24, 16);
-        return format;
+        var format = FloatStereoFormat(rate);
+        IntPtr memory = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEFORMATEXTENSIBLE>());
+        Marshal.StructureToPtr(format, memory, false);
+        return memory;
+    }
+
+    /// <summary>Stereo 32-bit float at <paramref name="rate"/>, as WASAPI expects it.</summary>
+    internal static WAVEFORMATEXTENSIBLE FloatStereoFormat(int rate)
+    {
+        const ushort Channels = 2, BitsPerSample = 32, BlockAlign = Channels * BitsPerSample / 8;
+        return new WAVEFORMATEXTENSIBLE
+        {
+            FormatTag = WaveFormatExtensible,
+            Channels = Channels,
+            SamplesPerSecond = (uint)rate,
+            AverageBytesPerSecond = (uint)rate * BlockAlign,
+            BlockAlign = BlockAlign,
+            BitsPerSample = BitsPerSample,
+            ExtensionSize = 22,   // the bytes after the WAVEFORMATEX part
+            ValidBitsPerSample = BitsPerSample,
+            ChannelMask = SpeakerFrontLeft | SpeakerFrontRight,
+            SubFormat = IeeeFloatSubFormat,
+        };
+    }
+
+    const ushort WaveFormatExtensible = 0xFFFE;
+    const uint SpeakerFrontLeft = 0x1, SpeakerFrontRight = 0x2;
+
+    /// <summary>WAVEFORMATEXTENSIBLE (mmreg.h): packed, 40 bytes.</summary>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal struct WAVEFORMATEXTENSIBLE
+    {
+        public ushort FormatTag;
+        public ushort Channels;
+        public uint SamplesPerSecond;
+        public uint AverageBytesPerSecond;
+        public ushort BlockAlign;
+        public ushort BitsPerSample;
+        public ushort ExtensionSize;
+        public ushort ValidBitsPerSample;
+        public uint ChannelMask;
+        public Guid SubFormat;
     }
 }

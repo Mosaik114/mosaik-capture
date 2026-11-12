@@ -59,7 +59,7 @@ internal static class VideoExport
         new[] { "-ss", FfmpegArgs.Number(from), "-to", FfmpegArgs.Number(to), "-i", source };
 
     internal static FfmpegArgs Mp4Arguments(string source, double from, double to, bool keepAudio, VideoEncoder encoder, string target) =>
-        FfmpegArgs.Quiet()
+        FfmpegArgs.Batch()
             .Add(CutInput(source, from, to))
             .Add("-map", "0:v:0")
             .Add(keepAudio ? KeepAudio : NoAudio)
@@ -68,10 +68,10 @@ internal static class VideoExport
 
     // GIFs take two passes: first a palette for exactly these frames, then the GIF using it.
     internal static FfmpegArgs GifPaletteArguments(string source, double from, double to, string palette) =>
-        FfmpegArgs.Quiet().Add(CutInput(source, from, to)).Add("-vf", GifScale + ",palettegen=stats_mode=diff", palette);
+        FfmpegArgs.Batch().Add(CutInput(source, from, to)).Add("-vf", GifScale + ",palettegen=stats_mode=diff", palette);
 
     internal static FfmpegArgs GifArguments(string source, double from, double to, string palette, string target) =>
-        FfmpegArgs.Quiet()
+        FfmpegArgs.Batch()
             .Add(CutInput(source, from, to))
             .Add("-i", palette, "-lavfi", GifScale + "[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle")
             .Add("-loop", "0", "-progress", "pipe:1", "-nostats", target);
