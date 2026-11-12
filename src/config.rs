@@ -1,126 +1,514 @@
-use crate::win::*;
-use core::{ptr, mem};
+//! The user's capture settings: defaults, normalisation, validation and the INI
+//! serialisation format.
+//!
+//! Everything here is pure. Reading and writing the actual file lives in
+//! [`crate::store`], which feeds raw values in through [`ProfileSource`].
 
-#[derive(Clone, Copy)]
-pub struct Text { pub buf: [u16;512] }
-impl Text {
-    pub const fn empty()->Self { Self{buf:[0;512]} }
-    pub fn of(s:&str)->Self { let mut value=Self::empty(); value.append(s); value }
-    pub fn len(&self)->usize { self.buf.iter().position(|c|*c==0).unwrap_or(511) }
-    pub fn p(&self)->*const u16 { self.buf.as_ptr() }
-    pub fn append(&mut self,s:&str) { let mut n=self.len(); for c in s.encode_utf16() { if n>=511 { break; } self.buf[n]=c;n+=1; }self.buf[n]=0; }
-    pub fn extend(&mut self,s:&Text) { let mut n=self.len();for c in &s.buf[..s.len()] {if n>=511{break;}self.buf[n]=*c;n+=1;}self.buf[n]=0; }
-    pub unsafe fn from_ptr(p:*const u16)->Self {let mut value=Self::empty();if !p.is_null(){for i in 0..511 {let c=*p.add(i);value.buf[i]=c;if c==0{break;}}}value}
-    pub fn is(&self,s:&str)->bool {let value=Text::of(s);self.buf[..self.len()]==value.buf[..value.len()]}
+use crate::hotkey::{Hotkey, ParseHotkeyError};
+
+/// INI section holding all settings.
+pub const SECTION: &str = "capture";
+
+/// INI key names.
+pub mod keys {
+    /// Hotkey that takes a screenshot.
+    pub const SCREENSHOT_HOTKEY: &str = "screenshot_hotkey";
+    /// Hotkey that starts or stops a recording.
+    pub const RECORDING_HOTKEY: &str = "recording_hotkey";
+    /// Folder for screenshots.
+    pub const SCREENSHOT_FOLDER: &str = "screenshot_folder";
+    /// Folder for recordings.
+    pub const RECORDING_FOLDER: &str = "recording_folder";
+    /// Record the microphone.
+    pub const MICROPHONE: &str = "microphone";
+    /// Record system audio.
+    pub const SYSTEM_AUDIO: &str = "system_audio";
+    /// Visualise mouse clicks in recordings.
+    pub const SHOW_CLICKS: &str = "show_clicks";
+    /// Start with Windows.
+    pub const AUTOSTART: &str = "autostart";
+    /// Recording frame rate.
+    pub const FPS: &str = "fps";
+    /// Countdown before a recording starts, in seconds.
+    pub const COUNTDOWN: &str = "countdown";
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)] pub struct Key {pub modifiers:u32,pub code:u32}
-fn token_is(token:&[u16],word:&str)->bool {
-    token.len()==word.len() && token.iter().zip(word.bytes()).all(|(a,b)| {
-        let c=if *a>=97&&*a<=122{*a-32}else{*a}; c==b as u16
-    })
+/// Default screenshot hotkey.
+pub const DEFAULT_SCREENSHOT_HOTKEY: &str = "Shift+Alt+4";
+/// Default recording hotkey.
+pub const DEFAULT_RECORDING_HOTKEY: &str = "Shift+Alt+5";
+
+/// Characters that may not appear anywhere in a folder path.
+const FORBIDDEN_PATH_CHARS: &[char] = &['\n', '\r', '"', '*', '<', '>', '?', '|'];
+
+/// Recording frame rate. Anything other than 30 is treated as 60.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FrameRate {
+    /// 30 frames per second.
+    Fps30,
+    /// 60 frames per second.
+    #[default]
+    Fps60,
 }
-pub fn parse_key(value:&Text)->Option<Key> {
-    let mut token=[0u16;24];let mut count=0;let mut modifiers=0;let mut code=0;
-    for c in value.buf[..value.len()].iter().copied().chain(core::iter::once(43)) {
-        if c==32 {continue;}
-        if c!=43 {if count>=24{return None;}token[count]=c;count+=1;continue;}
-        if count==0{return None;}
-        let t=&token[..count];
-        let m=if token_is(t,"SHIFT")||token_is(t,"UMSCHALT"){4}else if token_is(t,"ALT"){1}else if token_is(t,"CTRL")||token_is(t,"CONTROL")||token_is(t,"STRG"){2}else{0};
-        if m!=0 {if modifiers&m!=0{return None;}modifiers|=m;} else {
-            if code!=0{return None;}
-            code=if count==1 {
-                let v=t[0];let upper=if v>=97&&v<=122{v-32}else{v};
-                if (48..=57).contains(&upper)||(65..=90).contains(&upper){upper as u32}else{return None;}
-            }else if token_is(t,"SPACE")||token_is(t,"LEERTASTE"){32}
-            else if t[0]==70||t[0]==102 {
-                let mut n=0;for digit in &t[1..] {if *digit<48||*digit>57{return None;}n=n*10+(*digit-48)as u32;}
-                if n==0||n>24{return None;}111+n
-            }else{return None;};
+
+impl FrameRate {
+    /// Interprets a stored value.
+    pub const fn from_value(value: u32) -> Self {
+        if value == 30 {
+            Self::Fps30
+        } else {
+            Self::Fps60
         }
-        count=0;
     }
-    if code==0||modifiers==0{None}else{Some(Key{modifiers,code})}
+
+    /// The value written to the settings file.
+    pub const fn value(self) -> u32 {
+        match self {
+            Self::Fps30 => 30,
+            Self::Fps60 => 60,
+        }
+    }
+
+    /// Position in the frame-rate combo box (`30 Bilder/s`, `60 Bilder/s`).
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Fps30 => 0,
+            Self::Fps60 => 1,
+        }
+    }
+
+    /// Interprets a combo-box selection; no selection means 60.
+    pub const fn from_index(index: Option<usize>) -> Self {
+        match index {
+            Some(0) => Self::Fps30,
+            _ => Self::Fps60,
+        }
+    }
 }
 
-#[derive(Clone, Copy)]
+/// Countdown before a recording starts. Unknown values fall back to three seconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Countdown {
+    /// Start immediately.
+    Off,
+    /// Three-second countdown.
+    #[default]
+    Seconds3,
+    /// Five-second countdown.
+    Seconds5,
+}
+
+impl Countdown {
+    /// Interprets a stored value.
+    pub const fn from_value(value: u32) -> Self {
+        match value {
+            0 => Self::Off,
+            5 => Self::Seconds5,
+            _ => Self::Seconds3,
+        }
+    }
+
+    /// The value written to the settings file (the length in seconds).
+    pub const fn value(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::Seconds3 => 3,
+            Self::Seconds5 => 5,
+        }
+    }
+
+    /// Position in the countdown combo box (`Ohne Vorlauf`, `3 Sekunden`, `5 Sekunden`).
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::Seconds3 => 1,
+            Self::Seconds5 => 2,
+        }
+    }
+
+    /// Interprets a combo-box selection; no selection means three seconds.
+    pub const fn from_index(index: Option<usize>) -> Self {
+        match index {
+            Some(0) => Self::Off,
+            Some(2) => Self::Seconds5,
+            _ => Self::Seconds3,
+        }
+    }
+}
+
+/// Default output folders, which depend on the user's known folders.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultFolders {
+    /// Default screenshot folder.
+    pub screenshots: String,
+    /// Default recording folder.
+    pub recordings: String,
+}
+
+impl DefaultFolders {
+    /// Builds the defaults from the user's "Pictures" and "Videos" folders.
+    pub fn new(pictures: &str, videos: &str) -> Self {
+        Self {
+            screenshots: format!("{pictures}\\Mosaiks-Screenshots"),
+            recordings: format!("{videos}\\Mosaiks-Aufnahmen"),
+        }
+    }
+}
+
+/// Raw access to stored settings, with the semantics of the Win32 profile API:
+/// a missing key yields the given default.
+pub trait ProfileSource {
+    /// Reads a string value.
+    fn string(&self, key: &str, default: &str) -> String;
+    /// Reads an unsigned integer value.
+    fn int(&self, key: &str, default: u32) -> u32;
+}
+
+/// The two hotkeys of a configuration, both valid and distinct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hotkeys {
+    /// Takes a screenshot.
+    pub screenshot: Hotkey,
+    /// Starts or stops a recording.
+    pub recording: Hotkey,
+}
+
+/// Why a configuration cannot be applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigError {
+    /// A hotkey could not be parsed.
+    InvalidHotkey(ParseHotkeyError),
+    /// Both actions use the same hotkey.
+    DuplicateHotkey,
+    /// A folder is not a complete, valid path.
+    InvalidFolder,
+}
+
+/// All user settings.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the flags are independent settings that mirror the INI file one to one"
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    pub screenshot_key:Text,pub recording_key:Text,pub screenshot_folder:Text,pub recording_folder:Text,
-    pub microphone:bool,pub audio:bool,pub clicks:bool,pub autostart:bool,pub fps:u32,pub countdown:u32,
+    /// Hotkey text for screenshots, as entered by the user.
+    pub screenshot_hotkey: String,
+    /// Hotkey text for recordings, as entered by the user.
+    pub recording_hotkey: String,
+    /// Folder for screenshots.
+    pub screenshot_folder: String,
+    /// Folder for recordings.
+    pub recording_folder: String,
+    /// Record the microphone.
+    pub microphone: bool,
+    /// Record system audio.
+    pub system_audio: bool,
+    /// Visualise mouse clicks.
+    pub show_clicks: bool,
+    /// Start with Windows.
+    pub autostart: bool,
+    /// Recording frame rate.
+    pub frame_rate: FrameRate,
+    /// Countdown before recording.
+    pub countdown: Countdown,
 }
+
 impl Config {
-    pub const fn empty()->Self {Self{screenshot_key:Text::empty(),recording_key:Text::empty(),screenshot_folder:Text::empty(),recording_folder:Text::empty(),microphone:false,audio:true,clicks:true,autostart:true,fps:60,countdown:3}}
-}
-pub static mut INI:Text=Text::empty();
-pub static mut EXE:Text=Text::empty();
-pub static mut ROOT:Text=Text::empty();
-
-unsafe fn read_text(key:&str,fallback:&Text)->Text {
-    let mut out=Text::empty();GetPrivateProfileStringW(Text::of("capture").p(),Text::of(key).p(),fallback.p(),out.buf.as_mut_ptr(),512,INI.p());out
-}
-unsafe fn number(key:&str,fallback:i32)->u32 {GetPrivateProfileIntW(Text::of("capture").p(),Text::of(key).p(),fallback,INI.p())}
-unsafe fn folder(id:i32,suffix:&str)->Text {let mut value=Text::empty();SHGetFolderPathW(0,id,0,0,value.buf.as_mut_ptr());value.append(suffix);value}
-pub unsafe fn initialize(override_path:&Text)->Config {
-    GetModuleFileNameW(0,EXE.buf.as_mut_ptr(),512);ROOT=EXE;
-    if let Some(n)=ROOT.buf[..ROOT.len()].iter().rposition(|c|*c==92){ROOT.buf[n]=0;}
-    if override_path.len()!=0{INI=*override_path;}else{
-        GetEnvironmentVariableW(Text::of("LOCALAPPDATA").p(),INI.buf.as_mut_ptr(),512);INI.append("\\Mosaiks-Aufnahme");CreateDirectoryW(INI.p(),ptr::null());INI.append("\\settings.ini");
+    /// The settings used when nothing has been stored yet.
+    pub fn defaults(folders: &DefaultFolders) -> Self {
+        Self {
+            screenshot_hotkey: DEFAULT_SCREENSHOT_HOTKEY.to_owned(),
+            recording_hotkey: DEFAULT_RECORDING_HOTKEY.to_owned(),
+            screenshot_folder: folders.screenshots.clone(),
+            recording_folder: folders.recordings.clone(),
+            microphone: false,
+            system_audio: true,
+            show_clicks: true,
+            autostart: true,
+            frame_rate: FrameRate::default(),
+            countdown: Countdown::default(),
+        }
     }
-    Config{
-        screenshot_key:read_text("screenshot_hotkey",&Text::of("Shift+Alt+4")),
-        recording_key:read_text("recording_hotkey",&Text::of("Shift+Alt+5")),
-        screenshot_folder:read_text("screenshot_folder",&folder(0x27,"\\Mosaiks-Screenshots")),
-        recording_folder:read_text("recording_folder",&folder(0x0e,"\\Mosaiks-Aufnahmen")),
-        microphone:number("microphone",0)!=0,audio:number("system_audio",1)!=0,clicks:number("show_clicks",1)!=0,
-        autostart:number("autostart",1)!=0,fps:if number("fps",60)==30{30}else{60},
-        countdown:match number("countdown",3){0=>0,5=>5,_=>3},
+
+    /// Loads settings, falling back to [`Config::defaults`] for missing keys and
+    /// normalising out-of-range numbers.
+    pub fn load(source: &impl ProfileSource, folders: &DefaultFolders) -> Self {
+        let defaults = Self::defaults(folders);
+        let string = |key, default: &str| source.string(key, default);
+        let flag = |key, default: bool| source.int(key, u32::from(default)) != 0;
+        Self {
+            screenshot_hotkey: string(keys::SCREENSHOT_HOTKEY, &defaults.screenshot_hotkey),
+            recording_hotkey: string(keys::RECORDING_HOTKEY, &defaults.recording_hotkey),
+            screenshot_folder: string(keys::SCREENSHOT_FOLDER, &defaults.screenshot_folder),
+            recording_folder: string(keys::RECORDING_FOLDER, &defaults.recording_folder),
+            microphone: flag(keys::MICROPHONE, defaults.microphone),
+            system_audio: flag(keys::SYSTEM_AUDIO, defaults.system_audio),
+            show_clicks: flag(keys::SHOW_CLICKS, defaults.show_clicks),
+            autostart: flag(keys::AUTOSTART, defaults.autostart),
+            frame_rate: FrameRate::from_value(source.int(keys::FPS, defaults.frame_rate.value())),
+            countdown: Countdown::from_value(
+                source.int(keys::COUNTDOWN, defaults.countdown.value()),
+            ),
+        }
+    }
+
+    /// Serialises the settings in the exact layout `WritePrivateProfileStringW`
+    /// produces for a fresh file, so the engine and older versions read it unchanged.
+    pub fn to_ini(&self) -> String {
+        let flag = |value: bool| if value { "1" } else { "0" }.to_owned();
+        let entries = [
+            (keys::SCREENSHOT_HOTKEY, self.screenshot_hotkey.clone()),
+            (keys::RECORDING_HOTKEY, self.recording_hotkey.clone()),
+            (keys::SCREENSHOT_FOLDER, self.screenshot_folder.clone()),
+            (keys::RECORDING_FOLDER, self.recording_folder.clone()),
+            (keys::MICROPHONE, flag(self.microphone)),
+            (keys::SYSTEM_AUDIO, flag(self.system_audio)),
+            (keys::SHOW_CLICKS, flag(self.show_clicks)),
+            (keys::AUTOSTART, flag(self.autostart)),
+            (keys::FPS, self.frame_rate.value().to_string()),
+            (keys::COUNTDOWN, self.countdown.value().to_string()),
+        ];
+        let mut ini = format!("\r\n[{SECTION}]\r\n");
+        for (key, value) in entries {
+            ini.push_str(key);
+            ini.push('=');
+            ini.push_str(&value);
+            ini.push_str("\r\n");
+        }
+        ini
+    }
+
+    /// Parses both hotkeys and checks that they differ.
+    pub fn hotkeys(&self) -> Result<Hotkeys, ConfigError> {
+        let parse = |text: &str| text.parse::<Hotkey>().map_err(ConfigError::InvalidHotkey);
+        let screenshot = parse(&self.screenshot_hotkey)?;
+        let recording = parse(&self.recording_hotkey)?;
+        if screenshot == recording {
+            return Err(ConfigError::DuplicateHotkey);
+        }
+        Ok(Hotkeys {
+            screenshot,
+            recording,
+        })
+    }
+
+    /// Full validation before saving: hotkeys first, then folders.
+    pub fn validate(&self) -> Result<Hotkeys, ConfigError> {
+        let hotkeys = self.hotkeys()?;
+        if !is_valid_folder(&self.screenshot_folder) || !is_valid_folder(&self.recording_folder) {
+            return Err(ConfigError::InvalidFolder);
+        }
+        Ok(hotkeys)
     }
 }
-unsafe fn write(path:&Text,key:&str,value:&Text)->bool {WritePrivateProfileStringW(Text::of("capture").p(),Text::of(key).p(),value.p(),path.p())!=0}
-fn yes(value:bool)->Text {Text::of(if value{"1"}else{"0"})}
-pub unsafe fn persist(c:&Config)->bool {
-    let mut temp=INI;temp.append(".new");
-    let file=CreateFileW(temp.p(),0x40000000,0,ptr::null(),2,0x80,0);
-    if file == -1{return false;}
-    let mut written=0;let bom=[0xffu8,0xfe];let bom_ok=WriteFile(file,bom.as_ptr(),2,&mut written,ptr::null_mut())!=0&&written==2;
-    CloseHandle(file);if !bom_ok{return false;}
-    let ok=write(&temp,"screenshot_hotkey",&c.screenshot_key)&&write(&temp,"recording_hotkey",&c.recording_key)
-        &&write(&temp,"screenshot_folder",&c.screenshot_folder)&&write(&temp,"recording_folder",&c.recording_folder)
-        &&write(&temp,"microphone",&yes(c.microphone))&&write(&temp,"system_audio",&yes(c.audio))&&write(&temp,"show_clicks",&yes(c.clicks))
-        &&write(&temp,"autostart",&yes(c.autostart))&&write(&temp,"fps",&Text::of(if c.fps==30{"30"}else{"60"}))
-        &&write(&temp,"countdown",&Text::of(match c.countdown{0=>"0",5=>"5",_=>"3"}));
-    WritePrivateProfileStringW(ptr::null(),ptr::null(),ptr::null(),temp.p());
-    ok&&MoveFileExW(temp.p(),INI.p(),1|8)!=0
-}
-pub unsafe fn login(enabled:bool)->bool {
-    let mut key=0;let mut disposition=0;
-    if RegCreateKeyExW(0x80000001u32 as i32 as isize,Text::of("Software\\Microsoft\\Windows\\CurrentVersion\\Run").p(),0,ptr::null(),0,2,ptr::null(),&mut key,&mut disposition)!=0{return false;}
-    let result=if enabled {
-        let mut command=Text::of("\"");command.extend(&EXE);command.append("\" --background");
-        RegSetValueExW(key,Text::of("Mosaiks Aufnahme").p(),0,1,command.p()as*const u8,((command.len()+1)*2)as u32)==0
-    }else{let status=RegDeleteValueW(key,Text::of("Mosaiks Aufnahme").p());status==0||status==2};
-    RegCloseKey(key);result
-}
-pub fn valid_folder(value:&Text)->bool {
-    let n=value.len();let p=&value.buf;
-    n>=3 && ((p[1]==58&&(p[2]==92||p[2]==47))||(p[0]==92&&p[1]==92)) && !p[..n].iter().any(|c|[10,13,34,42,60,62,63,124].contains(c))
-}
-pub unsafe fn spawn_engine(recording:bool)->bool {
-    let mut executable=ROOT;executable.append("\\Mosaiks-Capture-Engine.exe");
-    let mut command=Text::of("\"");command.extend(&executable);command.append(if recording{"\" --recording"}else{"\" --screenshot"});
-    let mut start:StartupInfo=mem::zeroed();start.size=mem::size_of::<StartupInfo>()as u32;
-    let mut process:ProcessInfo=mem::zeroed();
-    let ok=CreateProcessW(ptr::null(),command.buf.as_mut_ptr(),ptr::null(),ptr::null(),0,0x08000000,ptr::null(),ROOT.p(),&mut start,&mut process)!=0;
-    if ok{CloseHandle(process.process);CloseHandle(process.thread);}ok
+
+/// Whether `path` is an absolute drive path (`C:\…`, `C:/…`) or a UNC path (`\\…`)
+/// without characters that Windows forbids in file names.
+pub fn is_valid_folder(path: &str) -> bool {
+    let units: Vec<u16> = path.encode_utf16().collect();
+    let is = |index: usize, c: u8| units.get(index) == Some(&u16::from(c));
+    let drive = is(1, b':') && (is(2, b'\\') || is(2, b'/'));
+    let unc = is(0, b'\\') && is(1, b'\\');
+    units.len() >= 3 && (drive || unc) && !path.contains(FORBIDDEN_PATH_CHARS)
 }
 
-pub fn self_test()->bool {
-    let cases=[("Shift+Alt+4",Some(Key{modifiers:5,code:52})),("Alt + Umschalt + 5",Some(Key{modifiers:5,code:53})),
-        ("Strg+Shift+F12",Some(Key{modifiers:6,code:123})),("ctrl+space",Some(Key{modifiers:2,code:32})),
-        ("Shift+Alt+F24",Some(Key{modifiers:5,code:135})),("Alt+F25",None),("Shift+Shift+4",None),
-        ("Alt+4+5",None),("4",None),("Shift+Alt",None),("Alt++4",None),("Alt+F0",None)];
-    cases.iter().all(|(text,expected)|parse_key(&Text::of(text))==*expected)
-        &&valid_folder(&Text::of("C:\\Bilder\\Grüße"))&&!valid_folder(&Text::of("relativ\\Bilder"))
-        &&!valid_folder(&Text::of("C:\\Bilder\nneu"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::self_test::FOLDER_CASES;
+    use std::collections::HashMap;
+
+    fn folders() -> DefaultFolders {
+        DefaultFolders::new("C:\\Users\\Ada\\Pictures", "C:\\Users\\Ada\\Videos")
+    }
+
+    /// An in-memory profile that behaves like `GetPrivateProfile{String,Int}W`.
+    #[derive(Default)]
+    struct MapSource {
+        ints: HashMap<&'static str, u32>,
+        strings: HashMap<&'static str, &'static str>,
+    }
+
+    impl ProfileSource for MapSource {
+        fn string(&self, key: &str, default: &str) -> String {
+            self.strings.get(key).copied().unwrap_or(default).to_owned()
+        }
+        fn int(&self, key: &str, default: u32) -> u32 {
+            self.ints.get(key).copied().unwrap_or(default)
+        }
+    }
+
+    #[test]
+    fn default_folders_append_app_subfolders() {
+        let folders = folders();
+        assert_eq!(
+            folders.screenshots,
+            "C:\\Users\\Ada\\Pictures\\Mosaiks-Screenshots"
+        );
+        assert_eq!(
+            folders.recordings,
+            "C:\\Users\\Ada\\Videos\\Mosaiks-Aufnahmen"
+        );
+        // A failed known-folder lookup yields an (invalid) rooted path, as before.
+        assert_eq!(
+            DefaultFolders::new("", "").screenshots,
+            "\\Mosaiks-Screenshots"
+        );
+    }
+
+    #[test]
+    fn empty_profile_loads_defaults() {
+        let config = Config::load(&MapSource::default(), &folders());
+        assert_eq!(config, Config::defaults(&folders()));
+        assert_eq!(config.screenshot_hotkey, "Shift+Alt+4");
+        assert_eq!(config.recording_hotkey, "Shift+Alt+5");
+        assert!(!config.microphone);
+        assert!(config.system_audio && config.show_clicks && config.autostart);
+        assert_eq!(config.frame_rate, FrameRate::Fps60);
+        assert_eq!(config.countdown, Countdown::Seconds3);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn stored_values_override_defaults() {
+        let mut source = MapSource::default();
+        source.strings.insert(keys::SCREENSHOT_HOTKEY, "Strg+F1");
+        source.strings.insert(keys::RECORDING_FOLDER, "D:\\Videos");
+        source.ints.insert(keys::MICROPHONE, 1);
+        source.ints.insert(keys::SYSTEM_AUDIO, 0);
+        source.ints.insert(keys::AUTOSTART, 7);
+        source.ints.insert(keys::FPS, 30);
+        source.ints.insert(keys::COUNTDOWN, 5);
+        let config = Config::load(&source, &folders());
+        assert_eq!(config.screenshot_hotkey, "Strg+F1");
+        assert_eq!(config.recording_folder, "D:\\Videos");
+        assert!(config.microphone);
+        assert!(!config.system_audio);
+        assert!(config.autostart, "any non-zero value is true");
+        assert_eq!(config.frame_rate, FrameRate::Fps30);
+        assert_eq!(config.countdown, Countdown::Seconds5);
+    }
+
+    #[test]
+    fn frame_rate_normalisation() {
+        assert_eq!(FrameRate::from_value(30), FrameRate::Fps30);
+        for value in [0, 29, 31, 60, 120, u32::MAX] {
+            assert_eq!(FrameRate::from_value(value), FrameRate::Fps60, "{value}");
+        }
+        for rate in [FrameRate::Fps30, FrameRate::Fps60] {
+            assert_eq!(FrameRate::from_value(rate.value()), rate);
+            assert_eq!(FrameRate::from_index(Some(rate.index())), rate);
+        }
+        assert_eq!(FrameRate::from_index(None), FrameRate::Fps60);
+        assert_eq!(FrameRate::from_index(Some(5)), FrameRate::Fps60);
+    }
+
+    #[test]
+    fn countdown_normalisation() {
+        assert_eq!(Countdown::from_value(0), Countdown::Off);
+        assert_eq!(Countdown::from_value(5), Countdown::Seconds5);
+        for value in [1, 3, 4, 6, 10, u32::MAX] {
+            assert_eq!(Countdown::from_value(value), Countdown::Seconds3, "{value}");
+        }
+        for countdown in [Countdown::Off, Countdown::Seconds3, Countdown::Seconds5] {
+            assert_eq!(Countdown::from_value(countdown.value()), countdown);
+            assert_eq!(Countdown::from_index(Some(countdown.index())), countdown);
+        }
+        assert_eq!(Countdown::from_index(None), Countdown::Seconds3);
+        assert_eq!(Countdown::from_index(Some(9)), Countdown::Seconds3);
+    }
+
+    #[test]
+    fn to_ini_matches_profile_api_layout() {
+        let mut config = Config::defaults(&folders());
+        config.frame_rate = FrameRate::Fps30;
+        config.countdown = Countdown::Off;
+        let expected = "\r\n[capture]\r\n\
+            screenshot_hotkey=Shift+Alt+4\r\n\
+            recording_hotkey=Shift+Alt+5\r\n\
+            screenshot_folder=C:\\Users\\Ada\\Pictures\\Mosaiks-Screenshots\r\n\
+            recording_folder=C:\\Users\\Ada\\Videos\\Mosaiks-Aufnahmen\r\n\
+            microphone=0\r\n\
+            system_audio=1\r\n\
+            show_clicks=1\r\n\
+            autostart=1\r\n\
+            fps=30\r\n\
+            countdown=0\r\n";
+        assert_eq!(config.to_ini(), expected);
+    }
+
+    #[test]
+    fn hotkey_validation() {
+        let mut config = Config::defaults(&folders());
+        let hotkeys = config.hotkeys().unwrap();
+        assert_eq!(hotkeys.screenshot.key, u16::from(b'4'));
+        assert_eq!(hotkeys.recording.key, u16::from(b'5'));
+
+        config.recording_hotkey = "Alt + Shift + 4".to_owned();
+        assert_eq!(config.hotkeys(), Err(ConfigError::DuplicateHotkey));
+
+        config.recording_hotkey = "Alt+".to_owned();
+        assert!(matches!(
+            config.hotkeys(),
+            Err(ConfigError::InvalidHotkey(_))
+        ));
+    }
+
+    #[test]
+    fn validation_checks_hotkeys_before_folders() {
+        let mut config = Config::defaults(&folders());
+        config.screenshot_folder = "relative".to_owned();
+        assert_eq!(config.validate(), Err(ConfigError::InvalidFolder));
+        config.screenshot_hotkey = "nonsense".to_owned();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidHotkey(_))
+        ));
+        config.screenshot_hotkey = DEFAULT_SCREENSHOT_HOTKEY.to_owned();
+        config.screenshot_folder = folders().screenshots;
+        config.recording_folder = "C:\\a|b".to_owned();
+        assert_eq!(config.validate(), Err(ConfigError::InvalidFolder));
+    }
+
+    #[test]
+    fn folder_self_test_cases_hold() {
+        for &(path, expected) in FOLDER_CASES {
+            assert_eq!(is_valid_folder(path), expected, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn folder_validation() {
+        let valid = [
+            "C:\\",
+            "c:/",
+            "D:\\Bilder",
+            "Z:/Videos/Neu",
+            "\\\\server\\share",
+            "\\\\server",
+            "C:\\Ordner mit Leerzeichen\\ä",
+        ];
+        for path in valid {
+            assert!(is_valid_folder(path), "{path:?}");
+        }
+        let invalid = [
+            "",
+            "C:",
+            "C:x",
+            "\\\\",
+            "\\Ordner",
+            "/Ordner",
+            "Ordner\\C:\\",
+            "C:\\a\rb",
+            "C:\\\"quoted\"",
+            "C:\\*",
+            "C:\\a<b",
+            "C:\\a>b",
+            "C:\\what?",
+            "C:\\a|b",
+        ];
+        for path in invalid {
+            assert!(!is_valid_folder(path), "{path:?}");
+        }
+    }
 }

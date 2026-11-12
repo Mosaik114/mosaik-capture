@@ -1,0 +1,47 @@
+//! User-visible German texts (except control labels, which live in the layout table).
+
+/// Title of the settings window.
+pub const WINDOW_TITLE: &str = "Mosaiks Aufnahme – Einstellungen";
+/// Tooltip of the notification-area icon.
+pub const TRAY_TOOLTIP: &str = "Mosaiks Aufnahme – Screenshot und Bildschirmaufnahme";
+/// Title of the folder picker.
+pub const PICK_FOLDER_TITLE: &str = "Speicherordner auswählen";
+
+/// Tray menu: take a screenshot.
+pub const MENU_SCREENSHOT: &str = "Screenshot erstellen";
+/// Tray menu: start or stop a recording.
+pub const MENU_RECORDING: &str = "Aufnahme starten / beenden";
+/// Tray menu: open the settings.
+pub const MENU_SETTINGS: &str = "Einstellungen";
+/// Tray menu: quit.
+pub const MENU_QUIT: &str = "Beenden";
+
+/// Status messages shown below the buttons.
+pub mod status {
+    /// Initial status.
+    pub const READY: &str = "Bereit.";
+    /// Settings saved successfully.
+    pub const SAVED: &str = "Gespeichert. Beide Tastenkürzel sind aktiv.";
+    /// A hotkey could not be parsed.
+    pub const INVALID_HOTKEY: &str = "Bitte ein gültiges Kürzel eingeben, etwa Shift+Alt+4.";
+    /// Both actions use the same hotkey.
+    pub const DUPLICATE_HOTKEY: &str = "Screenshot und Aufnahme brauchen unterschiedliche Kürzel.";
+    /// A folder path is incomplete or invalid.
+    pub const INVALID_FOLDER: &str = "Bitte vollständige, gültige Ordnerpfade auswählen.";
+    /// Registering a new hotkey failed while saving.
+    pub const HOTKEY_TAKEN_KEEPING_OLD: &str =
+        "Ein Kürzel ist bereits belegt. Die bisherigen Kürzel bleiben aktiv.";
+    /// Registering a hotkey failed at startup.
+    pub const HOTKEY_TAKEN: &str = "Ein Tastenkürzel ist bereits belegt. Bitte ein anderes wählen.";
+    /// Saving the settings or the autostart entry failed.
+    pub const SAVE_FAILED: &str = "Die Einstellungen konnten nicht gespeichert werden.";
+    /// Saving at startup failed.
+    pub const STARTUP_SAVE_FAILED: &str =
+        "Die Einstellungen oder der Autostart konnten nicht gespeichert werden.";
+    /// Saving audio settings sent by the engine failed.
+    pub const AUDIO_SAVE_FAILED: &str = "Audioeinstellungen konnten nicht gespeichert werden.";
+    /// The engine could not be reached or started.
+    pub const ENGINE_FAILED: &str = "Das Aufnahmeprogramm konnte nicht gestartet werden.";
+    /// Quitting is blocked by a running capture.
+    pub const BUSY: &str = "Bitte die laufende Aufnahme oder Bereichsauswahl zuerst beenden.";
+}
