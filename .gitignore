@@ -1,6 +1,19 @@
+# Build output
+/target/
 /bin/
-/qa/
+/dist/
+bin/
+obj/
 *.pdb
+
+# Test and QA artefacts
+/qa/
+TestResults/
 engine-test.json*
 toolchain-check*
 toolchain-native*
+
+# Editors
+.vs/
+.vscode/
+*.user
