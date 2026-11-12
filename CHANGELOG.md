@@ -28,6 +28,9 @@ First public release as a standalone project.
   be dropped by Windows for responding too slowly.
 - All parts of a paused recording use the same encoder, so joining them can't produce a
   broken video; a hanging ffmpeg can no longer leave the engine busy forever.
+- Switching the default audio device during a recording (e.g. plugging in headphones) is
+  followed within about a second instead of recording silence.
+- Two quick trims or GIF exports can no longer overwrite each other.
 - Recordings longer than about 93 minutes keep their sound (audio tracks no longer use
   size-limited WAV files).
 - A screenshot on a locked or secure desktop shows a message instead of a black image; a
@@ -44,7 +47,7 @@ First public release as a standalone project.
   window end-to-end test.
 - C# engine moved to an SDK-style project with nullable types and analyzers; recording and
   screenshot flows extracted into tested state machines; one home each for P/Invoke, UI
-  strings, metrics and timing; 405 tests including real ffmpeg runs and pixel comparisons.
+  strings, metrics and timing; 415 tests including real ffmpeg runs and pixel comparisons.
 - `build.ps1`, GitHub Actions CI with packaging and release upload, secret scanning,
   Dependabot.
 
