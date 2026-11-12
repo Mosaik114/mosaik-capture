@@ -1,34 +1,39 @@
 namespace MosaikCapture.Engine.Core;
 
-// Error log next to the exe; beyond 1 MB it is renamed to Fehler.alt.log and started afresh.
-// The German file names are kept on purpose: the host and existing installations rely on them.
-static class ErrorLog
+/// <summary>
+/// Error log next to the exe (error.log). Beyond 1 MB it is renamed to error.old.log and started afresh.
+/// Writing never throws: if the log cannot be written, all the engine can do is keep running.
+/// </summary>
+internal static class ErrorLog
 {
-    internal const string FileName = "Fehler.log", OldFileName = "Fehler.alt.log";
-    const long MaxBytes = 1000000;
+    internal const string FileName = "error.log", OldFileName = "error.old.log";
+    const long MaxBytes = 1_000_000;
     static readonly object gate = new();
 
-    public static void Write(Exception? ex) => Write(null, ex);
+    public static void Write(Exception? exception) => Write(null, exception);
 
-    public static void Write(string? where, Exception? ex)
+    /// <param name="context">What the engine was doing, e.g. "Saving a screenshot".</param>
+    /// <param name="exception">The failure, if any.</param>
+    public static void Write(string? context, Exception? exception)
     {
         lock (gate)
         {
             try
             {
-                string dir = AppDomain.CurrentDomain.BaseDirectory;
-                string file = Path.Combine(dir, FileName);
+                string directory = AppDomain.CurrentDomain.BaseDirectory;
+                string file = Path.Combine(directory, FileName);
                 if (File.Exists(file) && new FileInfo(file).Length > MaxBytes)
                 {
-                    string old = Path.Combine(dir, OldFileName);
+                    string old = Path.Combine(directory, OldFileName);
                     File.Delete(old);
                     File.Move(file, old);
                 }
-                string text = where == null ? (ex == null ? "unbekannter Fehler" : ex.ToString())
-                                            : where + (ex == null ? "" : ": " + ex);
-                File.AppendAllText(file, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture) + "  " + text + "\r\n\r\n");
+                File.AppendAllText(file, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "  " + Format(context, exception) + "\r\n\r\n");
             }
-            catch (Exception) { }   // the log itself is not writable: all we can do is keep running
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { }
         }
     }
+
+    internal static string Format(string? context, Exception? exception) =>
+        context == null ? exception?.ToString() ?? "unknown error" : context + (exception == null ? "" : ": " + exception);
 }

@@ -1,15 +1,15 @@
-using System.Collections;
 using System.Windows.Controls;
 
 namespace MosaikCapture.Engine.Tests.Pixel;
 
 // Appearance: every surface is rendered off-screen and compared with References/*.png.
-// Opt-in (fonts and ClearType differ between machines): run with --filter "Category=Pixel",
-// CI excludes them with --filter "Category!=Pixel".
+// They run by default; without the fonts of the references (e.g. on Windows Server) they are skipped,
+// and MOSAIK_PIXEL_TOLERANCE=lenient absorbs other font versions (see PixelComparison).
+// --filter "Category!=Pixel" leaves them out.
 [Trait("Category", "Pixel")]
 public sealed class PixelTests : IDisposable
 {
-    static readonly ShotOverlay.RECT WorkArea = new() { left = 0, top = 0, right = 1920, bottom = 1040 };
+    static readonly RECT WorkArea = new() { left = 0, top = 0, right = 1920, bottom = 1040 };
     readonly bool? palette = Palette.Force;
 
     public PixelTests() => Palette.Force = false;   // dark theme regardless of the Windows setting
@@ -69,14 +69,12 @@ public sealed class PixelTests : IDisposable
 
     // ---------- Screenshot editor ----------
 
-    static object Tool(string name) => Private.Enum(typeof(ShotEditor), "Tool", name);
-
-    static void Stroke(ShotEditor editor, string tool, List<Point> points)
+    static void Stroke(ScreenshotEditor editor, ScreenshotEditor.Tool tool, List<Point> points)
     {
-        Private.Call(editor, "SetTool", Tool(tool));
-        Private.Call(editor, "Down", points[0]);
-        for (int i = 1; i < points.Count; i++) Private.Call(editor, "Moved", points[i]);
-        Private.Call(editor, "Up");
+        editor.SetTool(tool);
+        editor.PointerDown(points[0]);
+        for (int i = 1; i < points.Count; i++) editor.PointerMoved(points[i]);
+        editor.PointerUp();
     }
 
     /// <summary>Fake screenshot: dark and light text, a button, an e-mail address.</summary>
@@ -107,86 +105,85 @@ public sealed class PixelTests : IDisposable
     [Fact]
     public void ScreenshotEditorToolbarMenuIconsAndAllTools() => WpfThread.Run(() =>
     {
+        PixelComparison.RequireFonts();
         var check = new PixelComparison();
-        var editor = new ShotEditor((_, _) => { }, _ => { }, (_, _) => { });
-        var root = Private.Field<Canvas>(editor, "root");
+        var editor = new ScreenshotEditor((_, _) => { }, _ => { }, (_, _) => { });
+        var root = editor.Surface;
         root.Width = 3000;
         root.Height = 2000;
         Lay(root);
-        var bar = Private.Field<FrameworkElement>(editor, "bar");
-        Private.Call(editor, "SetTool", Tool("Arrow"));
+        var bar = editor.Toolbar;
+        editor.SetTool(ScreenshotEditor.Tool.Arrow);
         Lay(root);
         check.Check("editor_toolbar", Cutout(bar, new Rect(0, 0, bar.ActualWidth, bar.ActualHeight), Brushes.Gray, 3));
 
         // load the scene
         var shot = Scene();
-        var data = new ShotData { Full = shot, Scale = 1, Vw = shot.PixelWidth, Vh = shot.PixelHeight, Cut = new Int32Rect(0, 0, shot.PixelWidth, shot.PixelHeight) };
-        data.Monitor = new ShotOverlay.RECT { left = 0, top = 0, right = shot.PixelWidth, bottom = shot.PixelHeight };
-        Private.SetField(editor, "data", data);
-        Private.SetField(editor, "s", 1.0);
-        root.Width = shot.PixelWidth;
-        root.Height = shot.PixelHeight;
-        var back = Private.Field<Image>(editor, "back");
-        back.Source = shot;
-        back.Width = shot.PixelWidth;
-        back.Height = shot.PixelHeight;
-        Private.SetField(editor, "sel", new Rect(0, 0, shot.PixelWidth, shot.PixelHeight));
-        Private.Call(editor, "Layout");
+        editor.Load(new ScreenCapture
+        {
+            FullScreen = shot,
+            Image = shot,
+            Scale = 1,
+            VirtualWidth = shot.PixelWidth,
+            VirtualHeight = shot.PixelHeight,
+            Crop = new Int32Rect(0, 0, shot.PixelWidth, shot.PixelHeight),
+            Monitor = new RECT { left = 0, top = 0, right = shot.PixelWidth, bottom = shot.PixelHeight },
+        });
         Lay(root);
 
         // menu of the shapes group
-        Private.Call(editor, "SetTool", Tool("Box"));
-        Private.Call(editor, "OpenMenu", Private.Field<IList>(editor, "groups")[2]);
+        editor.SetTool(ScreenshotEditor.Tool.Box);
+        editor.OpenGroupMenu(2);
         Lay(root);
-        var menu = Private.Field<FrameworkElement>(editor, "menu");
+        var menu = editor.ToolMenu;
         Rect area = Rect.Union(new Rect(Canvas.GetLeft(bar), Canvas.GetTop(bar), bar.ActualWidth, bar.ActualHeight),
                                new Rect(Canvas.GetLeft(menu), Canvas.GetTop(menu), menu.ActualWidth, menu.ActualHeight));
         area.Inflate(16, 16);
         check.Check("editor_menu", Cutout(root, area, null, 2));
-        Private.Call(editor, "CloseMenu");
+        editor.CloseMenu();
 
         // tool icons, large
         var icons = new StackPanel { Orientation = Orientation.Horizontal, Background = new SolidColorBrush(Color.FromRgb(0x30, 0x30, 0x2E)) };
-        foreach (var name in new[] { "Move", "Arrow", "Box", "Ellipse", "Line", "Pen", "Marker", "Spot", "Text", "Label", "Number", "Pixel", "Blur" })
-            icons.Children.Add(new Grid { Width = 36, Height = 36, Children = { (UIElement)Private.Call(editor, "ToolIcon", Tool(name), new SolidColorBrush(Color.FromRgb(0xFA, 0xF9, 0xF5)))! } });
+        foreach (ScreenshotEditor.Tool tool in Enum.GetValues(typeof(ScreenshotEditor.Tool)))
+            icons.Children.Add(new Grid { Width = 36, Height = 36, Children = { ScreenshotEditor.ToolIcon(tool, new SolidColorBrush(Color.FromRgb(0xFA, 0xF9, 0xF5))) } });
         Lay(icons);
         check.Check("editor_icons", Cutout(icons, new Rect(icons.DesiredSize), null, 4));
 
         // every tool in the scene
-        Private.Call(editor, "SetColor", 0);
-        Private.Call(editor, "SetWidth", 2);
-        Stroke(editor, "Marker", Strokes.Line(new Point(118, 106), new Point(262, 110), 30));   // highlighter, slanted and too short
-        Private.Call(editor, "SetColor", 2);
-        Stroke(editor, "Marker", Strokes.Line(new Point(512, 331), new Point(640, 327), 30));   // light text on dark
-        Private.Call(editor, "SetColor", 0);
-        Stroke(editor, "Spot", Strokes.Line(new Point(470, 390), new Point(700, 470), 5));
-        Stroke(editor, "Blur", Strokes.Line(new Point(40, 440), new Point(250, 480), 5));
-        Private.Call(editor, "SetTool", Tool("Label"));
-        Private.Call(editor, "Down", new Point(330, 200));
-        Private.Field<TextBox>(editor, "typing").Text = "Hier klicken";
+        editor.SetColor(0);
+        editor.SetWidth(2);
+        Stroke(editor, ScreenshotEditor.Tool.Marker, Strokes.Line(new Point(118, 106), new Point(262, 110), 30));   // highlighter, slanted and too short
+        editor.SetColor(2);
+        Stroke(editor, ScreenshotEditor.Tool.Marker, Strokes.Line(new Point(512, 331), new Point(640, 327), 30));   // light text on dark
+        editor.SetColor(0);
+        Stroke(editor, ScreenshotEditor.Tool.Spot, Strokes.Line(new Point(470, 390), new Point(700, 470), 5));
+        Stroke(editor, ScreenshotEditor.Tool.Blur, Strokes.Line(new Point(40, 440), new Point(250, 480), 5));
+        editor.SetTool(ScreenshotEditor.Tool.Label);
+        editor.PointerDown(new Point(330, 200));
+        editor.TypeText("Hier klicken");
         Lay(root);
-        Private.Call(editor, "Commit");
-        Private.Call(editor, "SetColor", 5);
-        Private.Call(editor, "SetWidth", 1);
-        Private.Call(editor, "Down", new Point(330, 250));
-        Private.Field<TextBox>(editor, "typing").Text = "Hell";
+        editor.CommitText();
+        editor.SetColor(5);
+        editor.SetWidth(1);
+        editor.PointerDown(new Point(330, 250));
+        editor.TypeText("Hell");
         Lay(root);
-        Private.Call(editor, "Commit");
-        Private.Call(editor, "SetColor", 4);
-        Stroke(editor, "Pen", Strokes.Wobble(Strokes.Ellipse(new Point(820, 110), 50, 40, 0.1), 3, 7));   // freehand, smoothed
-        var held = Strokes.Wobble(Strokes.Ellipse(new Point(820, 250), 45, 45, 0.15), 2.5, 11);          // held still: becomes a circle
-        Private.Call(editor, "SetTool", Tool("Pen"));
-        Private.Call(editor, "Down", held[0]);
-        for (int i = 1; i < held.Count; i++) Private.Call(editor, "Moved", held[i]);
-        Private.Call(editor, "Held");
-        Private.Call(editor, "Moved", new Point(held[held.Count - 1].X + 12, held[held.Count - 1].Y));
-        Private.Call(editor, "Up");
-        Private.Call(editor, "SetColor", 3);
-        Stroke(editor, "Ellipse", Strokes.Line(new Point(40, 520), new Point(180, 580), 5));
-        Stroke(editor, "Line", Strokes.Line(new Point(220, 550), new Point(400, 520), 5));
-        Stroke(editor, "Arrow", Strokes.Line(new Point(420, 560), new Point(470, 510), 5));
+        editor.CommitText();
+        editor.SetColor(4);
+        Stroke(editor, ScreenshotEditor.Tool.Pen, Strokes.Wobble(Strokes.Ellipse(new Point(820, 110), 50, 40, 0.1), 3, 7));   // freehand, smoothed
+        var held = Strokes.Wobble(Strokes.Ellipse(new Point(820, 250), 45, 45, 0.15), 2.5, 11);                          // held still: becomes a circle
+        editor.SetTool(ScreenshotEditor.Tool.Pen);
+        editor.PointerDown(held[0]);
+        for (int i = 1; i < held.Count; i++) editor.PointerMoved(held[i]);
+        editor.PenHeld();
+        editor.PointerMoved(new Point(held[held.Count - 1].X + 12, held[held.Count - 1].Y));
+        editor.PointerUp();
+        editor.SetColor(3);
+        Stroke(editor, ScreenshotEditor.Tool.Ellipse, Strokes.Line(new Point(40, 520), new Point(180, 580), 5));
+        Stroke(editor, ScreenshotEditor.Tool.Line, Strokes.Line(new Point(220, 550), new Point(400, 520), 5));
+        Stroke(editor, ScreenshotEditor.Tool.Arrow, Strokes.Line(new Point(420, 560), new Point(470, 510), 5));
         Lay(root);
-        check.Check("editor_scene", (BitmapSource)Private.Call(editor, "Render")!);
+        check.Check("editor_scene", editor.Render());
         check.AssertAllMatch();
     });
 
@@ -208,22 +205,12 @@ public sealed class PixelTests : IDisposable
         return bitmap;
     }
 
-    /// <summary>Stops the card's progress bar so the image does not depend on timing.</summary>
-    static void FreezeBar(RecCard card, double width)
-    {
-        var scale = Private.Field<ScaleTransform>(card, "barScale");
-        var move = Private.Field<TranslateTransform>(card, "barMove");
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        move.BeginAnimation(TranslateTransform.XProperty, null);
-        scale.ScaleX = width;
-        move.X = 0;
-    }
-
     [Fact]
     public void RecordingCardDoneSavingAndFailed() => WpfThread.Run(() =>
     {
+        PixelComparison.RequireFonts();
         var check = new PixelComparison();
-        var done = new RecResult
+        var done = new RecordedVideo
         {
             Path = @"C:\Videos\Mosaiks-Aufnahme 2026-09-26 14-03-12.mp4",
             Duration = 42.4,
@@ -231,21 +218,21 @@ public sealed class PixelTests : IDisposable
             Height = 1080,
             Audio = true,
             Bytes = 18350080,
-            Thumb = Thumbnail()
+            Thumbnail = Thumbnail()
         };
-        var card = new RecCard { Offscreen = true };
+        var card = new RecordingCard { Offscreen = true };
         card.Present(done, "Aufnahme gespeichert", WorkArea);
-        FreezeBar(card, 1);
+        card.SetBar(1);
         check.Check("recording_card", Draw((FrameworkElement)card.Content));
 
-        card = new RecCard { Offscreen = true };
+        card = new RecordingCard { Offscreen = true };
         card.Saving(83, WorkArea);
-        FreezeBar(card, 0.3);
+        card.SetBar(0.3);
         check.Check("recording_card_saving", Draw((FrameworkElement)card.Content));
 
-        card = new RecCard { Offscreen = true };
+        card = new RecordingCard { Offscreen = true };
         card.Problem("Aufnahme fehlgeschlagen", "Dieser Monitor ist für die Aufnahme nicht erreichbar", WorkArea);
-        FreezeBar(card, 1);
+        card.SetBar(1);
         check.Check("recording_card_error", Draw((FrameworkElement)card.Content));
         check.AssertAllMatch();
     });
@@ -253,36 +240,37 @@ public sealed class PixelTests : IDisposable
     [Fact]
     public void RecordingBarNormalMutedMicrophoneAndDiscardPrompt() => WpfThread.Run(() =>
     {
+        PixelComparison.RequireFonts();
         var check = new PixelComparison();
-        bool mic = Rec.Mic, sound = Rec.Sound, clicks = Rec.Clicks;
+        bool mic = ScreenRecorder.Mic, sound = ScreenRecorder.Sound, clicks = ScreenRecorder.Clicks;
         try
         {
-            var bar = new RecBar();
-            Rec.Mic = true;
-            Rec.Sound = true;
-            Rec.Clicks = true;
+            var bar = new RecordingToolbar();
+            ScreenRecorder.Mic = true;
+            ScreenRecorder.Sound = true;
+            ScreenRecorder.Clicks = true;
             bar.Refresh();
-            Private.Field<TextBlock>(bar, "time").Text = "0:42";
+            bar.TimeText.Text = "0:42";
             check.Check("recording_bar", Draw((FrameworkElement)bar.Content));
 
-            Rec.Mic = false;
+            ScreenRecorder.Mic = false;
             bar.Refresh();
             Lay((FrameworkElement)bar.Content);
-            Private.Call(bar, "Hover", Private.Field<Border>(bar, "soundBtn"));
+            bar.Hover(bar.SoundButton);
             check.Check("recording_bar_caption", Draw((FrameworkElement)bar.Content));
 
-            Private.Call(bar, "Hover", new object?[] { null });
-            Private.SetField(bar, "confirm", true);
+            bar.Hover(null);
+            bar.ConfirmingDiscard = true;
             bar.Refresh();
             Lay((FrameworkElement)bar.Content);
-            Private.Call(bar, "Hover", Private.Field<Border>(bar, "trashBtn"));
+            bar.Hover(bar.DiscardButton);
             check.Check("recording_bar_discard", Draw((FrameworkElement)bar.Content));
         }
         finally
         {
-            Rec.Mic = mic;
-            Rec.Sound = sound;
-            Rec.Clicks = clicks;
+            ScreenRecorder.Mic = mic;
+            ScreenRecorder.Sound = sound;
+            ScreenRecorder.Clicks = clicks;
         }
         check.AssertAllMatch();
     });
@@ -290,14 +278,15 @@ public sealed class PixelTests : IDisposable
     [Fact]
     public void CountdownAndFrameAroundTheArea() => WpfThread.Run(() =>
     {
+        PixelComparison.RequireFonts();
         var check = new PixelComparison();
-        var countdown = new RecCountdown();
-        Private.Call(countdown, "Show", 2, 0.6);
+        var countdown = new CountdownWindow();
+        countdown.ShowFrame(2, 0.6);
         WpfThread.Pump(400);   // wait for the number to fade in
         check.Check("recording_countdown", Draw((FrameworkElement)countdown.Content));
 
-        var frame = new RecFrame();
-        frame.Build(new Int32Rect(40, 40, 600, 340), new ShotOverlay.RECT { left = 0, top = 0, right = 1920, bottom = 1080 }, 1);
+        var frame = new RecordingFrame();
+        frame.Build(new Int32Rect(40, 40, 600, 340), new RECT { left = 0, top = 0, right = 1920, bottom = 1080 }, 1);
         check.Check("recording_frame", Draw((FrameworkElement)frame.Content));
         check.AssertAllMatch();
     });
@@ -306,21 +295,19 @@ public sealed class PixelTests : IDisposable
     [Trait("Category", "Ffmpeg")]
     public void TrimWindowWithFilmStripSelectionAndPlayhead()
     {
-        Ffmpeg.SkipIfMissing();
+        PixelComparison.RequireFonts();
+        FfmpegTool.SkipIfMissing();
         using var work = new TempDirectory();
         string video = work.File("probe.mp4");
-        Ffmpeg.TestVideo(video, 6);
+        FfmpegTool.TestVideo(video, 6);
 
         WpfThread.Run(() =>
         {
             var check = new PixelComparison();
-            var editor = new RecEditor { Offscreen = true };
-            editor.Open(RecResult.Load(video), WorkArea);
-            Assert.True(WpfThread.PumpUntil(() => Private.Field<Image>(editor, "strip").Source != null, 20000), "film strip did not arrive");
-            Private.SetField(editor, "a", 1.2);
-            Private.SetField(editor, "b", 4.1);
-            Private.SetField(editor, "pos", 3.4);
-            Private.Call(editor, "Draw");
+            var editor = new TrimWindow { Offscreen = true };
+            editor.Open(RecordedVideo.Load(video), WorkArea);
+            Assert.True(WpfThread.PumpUntil(() => editor.FilmStripLoaded, 20000), "film strip did not arrive");
+            editor.ShowSelection(1.2, 4.1, 3.4);
             check.Check("recording_trim", Draw((FrameworkElement)editor.Content));
             check.AssertAllMatch();
         });

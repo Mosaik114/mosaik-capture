@@ -22,17 +22,17 @@ public sealed class CaptureBridgeTests
     [Fact]
     public void IpcContractIsUnchanged()
     {
-        Assert.Equal("Local\\MosaiksCaptureEngine", CaptureBridge.MutexName);
-        Assert.Equal("Mosaiks Capture Engine", CaptureBridge.Title);
+        Assert.Equal("Local\\MosaikCapture.Engine", CaptureBridge.MutexName);
+        Assert.Equal("MosaikCapture.Engine", CaptureBridge.Title);
         Assert.Equal(0x8000, CaptureBridge.CommandBase);
         Assert.Equal(0x8001, CaptureBridge.ScreenshotMessage);
         Assert.Equal(0x8002, CaptureBridge.RecordingMessage);
         Assert.Equal(0x8003, CaptureBridge.QuitMessage);
         Assert.Equal(0x800A, CaptureBridge.StateMessage);
-        Assert.Equal("MosaiksAufnahmeRust", CaptureSettings.HostWindowClass);
+        Assert.Equal("MosaikCapture.Host", CaptureSettings.HostWindowClass);
         Assert.Equal(0x8014, CaptureSettings.SaveAudioMessage);
         Assert.Equal("MOSAIK_CAPTURE_TEST_CONFIG", CaptureSettings.TestConfigVariable);
-        Assert.Equal("Fehler.log", ErrorLog.FileName);
+        Assert.Equal("error.log", ErrorLog.FileName);
     }
 
     [Theory]
@@ -44,9 +44,9 @@ public sealed class CaptureBridgeTests
     [Fact]
     public void RecordingIsIdleInitially()
     {
-        Assert.False(Rec.Busy);
-        Assert.False(Rec.Live);
-        Assert.False(Rec.Paused);
-        Assert.Equal(0, Rec.Elapsed);
+        Assert.False(ScreenRecorder.Busy);
+        Assert.False(ScreenRecorder.Live);
+        Assert.False(ScreenRecorder.Paused);
+        Assert.Equal(0, ScreenRecorder.Elapsed);
     }
 }

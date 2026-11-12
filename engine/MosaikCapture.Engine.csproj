@@ -6,13 +6,14 @@
     <TargetFramework>net48</TargetFramework>
     <UseWPF>true</UseWPF>
     <PlatformTarget>x64</PlatformTarget>
-    <AssemblyName>Mosaiks-Capture-Engine</AssemblyName>
+    <AssemblyName>MosaikCapture.Engine</AssemblyName>
     <RootNamespace>MosaikCapture.Engine</RootNamespace>
     <StartupObject>MosaikCapture.Engine.Core.Program</StartupObject>
     <ApplicationIcon>..\assets\capture.ico</ApplicationIcon>
     <ApplicationManifest>..\assets\app.manifest</ApplicationManifest>
-    <Product>Mosaiks Aufnahme</Product>
-    <Description>Capture engine of Mosaiks Aufnahme</Description>
+    <Product>Mosaik Capture</Product>
+    <Company>Mosaik Capture</Company>
+    <Description>Screenshot and screen recording engine of Mosaik Capture</Description>
     <!-- Ship the exe alone, as before (no generated .exe.config pinning the runtime SKU). -->
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
   </PropertyGroup>

@@ -1,6 +1,6 @@
 namespace MosaikCapture.Engine.Tests.Core;
 
-// `Mosaiks-Capture-Engine.exe --self-test <report>` is used by the build script; keep it working.
+// `MosaikCapture.Engine.exe --self-test <report>` is used by the build script; keep it working.
 public sealed class SelfTestTests
 {
     [Fact]

@@ -13,13 +13,13 @@ public sealed class FfmpegLocatorTests
     [InlineData(@"\ffmpeg")]
     [InlineData("C")]
     [InlineData("1:\\tools")]
-    public void RelativeAndNetworkPathsAreRejected(string directory) => Assert.False(FF.IsLocalPath(directory));
+    public void RelativeAndNetworkPathsAreRejected(string directory) => Assert.False(Ffmpeg.IsLocalPath(directory));
 
     [Theory]
     [InlineData(@"C:\ffmpeg\bin")]
     [InlineData("D:/tools")]
     [InlineData(@"z:\")]
-    public void FullyQualifiedLocalPathsAreAccepted(string directory) => Assert.True(FF.IsLocalPath(directory));
+    public void FullyQualifiedLocalPathsAreAccepted(string directory) => Assert.True(Ffmpeg.IsLocalPath(directory));
 
     [Fact]
     public void FindSkipsRelativeEntriesEvenIfTheyContainFfmpeg()
@@ -34,8 +34,8 @@ public sealed class FfmpegLocatorTests
         {
             Environment.CurrentDirectory = work.Path;
 
-            Assert.Equal(Path.Combine(real, "ffmpeg.exe"), FF.Find("ffmpeg.exe", new[] { "fremd", @".\fremd", "\"" + real + "\"" }));
-            Assert.Null(FF.Find("ffmpeg.exe", new[] { "fremd", null, "  ", "C:\\a\"b" }));
+            Assert.Equal(Path.Combine(real, "ffmpeg.exe"), Ffmpeg.Find("ffmpeg.exe", new[] { "fremd", @".\fremd", "\"" + real + "\"" }));
+            Assert.Null(Ffmpeg.Find("ffmpeg.exe", new[] { "fremd", null, "  ", "C:\\a\"b" }));
         }
         finally { Environment.CurrentDirectory = previous; }
     }
@@ -49,7 +49,7 @@ public sealed class FfmpegLocatorTests
         File.WriteAllText(Path.Combine(first, "ffprobe.exe"), "");
         File.WriteAllText(Path.Combine(second, "ffprobe.exe"), "");
 
-        Assert.Equal(Path.Combine(first, "ffprobe.exe"), FF.Find("ffprobe.exe", new[] { work.File("leer"), first, second }));
+        Assert.Equal(Path.Combine(first, "ffprobe.exe"), Ffmpeg.Find("ffprobe.exe", new[] { work.File("leer"), first, second }));
     }
 
     [Fact]
@@ -58,13 +58,13 @@ public sealed class FfmpegLocatorTests
         using var work = new TempDirectory();
         File.WriteAllText(work.File("ffmpeg.exe"), "");
 
-        Assert.Equal(work.File("ffmpeg.exe"), FF.Find("ffmpeg.exe", new[] { "C:\\in<valid>|path", work.Path }));
+        Assert.Equal(work.File("ffmpeg.exe"), Ffmpeg.Find("ffmpeg.exe", new[] { "C:\\in<valid>|path", work.Path }));
     }
 
     [Fact]
     public void FixedInstallLocationsComeBeforePath()
     {
-        var locations = FF.SearchLocations().ToList();
+        var locations = Ffmpeg.SearchLocations().ToList();
 
         Assert.EndsWith(@"Microsoft\WinGet\Links", locations[0]);
         Assert.EndsWith(@"ffmpeg\bin", locations[1]);
@@ -76,26 +76,22 @@ public sealed class FfmpegLocatorTests
     [Fact]
     public void DetectedFfmpegIsLocal()
     {
-        Assert.SkipWhen(FF.Exe == null, "ffmpeg is not installed");
+        Assert.SkipWhen(Ffmpeg.Exe == null, "ffmpeg is not installed");
 
-        Assert.True(FF.IsLocalPath(Path.GetDirectoryName(FF.Exe)!), "found ffmpeg should be local: " + FF.Exe);
-        Assert.Equal("ffmpeg.exe", Path.GetFileName(FF.Exe), ignoreCase: true);
+        Assert.True(Ffmpeg.IsLocalPath(Path.GetDirectoryName(Ffmpeg.Exe)!), "found ffmpeg should be local: " + Ffmpeg.Exe);
+        Assert.Equal("ffmpeg.exe", Path.GetFileName(Ffmpeg.Exe), ignoreCase: true);
     }
 
     [Fact]
-    public void EncoderArgumentsMatchTheDetectedEncoder()
+    public async Task EncoderDetectionRunsOnceAndAlwaysYieldsAnEncoder()
     {
-        if (FF.Nvenc)
-        {
-            Assert.StartsWith("-c:v h264_nvenc", FF.LiveVideo);
-            Assert.StartsWith("-c:v h264_nvenc", FF.FileVideo);
-        }
-        else
-        {
-            Assert.StartsWith("-c:v libx264", FF.LiveVideo);
-            Assert.StartsWith("-c:v libx264", FF.FileVideo);
-        }
-        Assert.EndsWith("-pix_fmt yuv420p", FF.FileVideo);
-        Assert.Contains("-g 120", FF.LiveVideo);
+        var first = Ffmpeg.DetectEncoderAsync();
+
+        Assert.Same(first, Ffmpeg.DetectEncoderAsync());
+        var finished = await Task.WhenAny(first, Task.Delay(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+        Assert.True(finished == first, "encoder detection hangs");
+        var encoder = await first;
+        Assert.True(Enum.IsDefined(typeof(VideoEncoder), encoder));
+        if (Ffmpeg.Exe == null) Assert.Equal(VideoEncoder.Software, encoder);
     }
 }

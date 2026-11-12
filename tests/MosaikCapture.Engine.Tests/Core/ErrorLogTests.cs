@@ -36,7 +36,7 @@ public sealed class ErrorLogTests : IDisposable
         ErrorLog.Write("nur Ort", null);
 
         string log = Log();
-        Assert.Contains("unbekannter Fehler", log);
+        Assert.Contains("unknown error", log);
         Assert.Contains("  nur Ort\r\n", log);
     }
 
@@ -88,7 +88,7 @@ public sealed class ErrorLogTests : IDisposable
     public void OpeningAMissingFileReturnsFalseAndLogs()
     {
         Assert.False(Shell.Open(@"C:\gibt-es-nicht\datei.exe"));
-        Assert.Contains(@"Oeffnen von C:\gibt-es-nicht\datei.exe", Log());
+        Assert.Contains(@"Opening C:\gibt-es-nicht\datei.exe", Log());
     }
 
     [Fact]
@@ -104,7 +104,7 @@ public sealed class ErrorLogTests : IDisposable
             Program.Restart();
             Program.Restart();   // the guard makes a second crash report a no-op
 
-            Assert.Single(Regex.Matches(Log(), "Kein Neustart: Absturz in der ersten Minute"));
+            Assert.Single(Regex.Matches(Log(), "No restart: crashed within the first minute"));
             Assert.Equal(1, Program.restarting);
         }
         finally

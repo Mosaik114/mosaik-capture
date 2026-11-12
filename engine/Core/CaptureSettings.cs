@@ -1,14 +1,23 @@
 namespace MosaikCapture.Engine.Core;
 
-// Settings shared with the Rust host: a Unicode INI file, section [capture].
-// MOSAIK_CAPTURE_TEST_CONFIG points to a different file (tests and QA).
-static class CaptureSettings
+/// <summary>
+/// Settings shared with the host: a Unicode INI file, section [capture], written by the host.
+/// <c>MOSAIK_CAPTURE_TEST_CONFIG</c> points to a different file (tests and QA).
+/// </summary>
+internal static class CaptureSettings
 {
     internal const string TestConfigVariable = "MOSAIK_CAPTURE_TEST_CONFIG";
-    internal const string HostWindowClass = "MosaiksAufnahmeRust";
+    internal const string HostWindowClass = "MosaikCapture.Host";
     internal const int SaveAudioMessage = 0x8014;
 
-    public static readonly string Home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mosaiks-Aufnahme");
+    /// <summary>%LOCALAPPDATA%\MosaikCapture: settings and temporary recording files.</summary>
+    public static readonly string Home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MosaikCapture");
+
+    /// <summary>Work folders of running recordings (video segments and audio tracks).</summary>
+    public static readonly string RecordingWorkRoot = Path.Combine(Home, "recording");
+
+    /// <summary>Where versions before 0.2 kept their work folders; cleaned up once.</summary>
+    public static readonly string LegacyRecordingWorkRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mosaiks-Aufnahme", "Aufnahme");
 
     public static string FileName => Environment.GetEnvironmentVariable(TestConfigVariable) ?? Path.Combine(Home, "settings.ini");
 
@@ -20,33 +29,32 @@ static class CaptureSettings
     public static int Fps => NormalizeFps(Number("fps", 60));
     public static int Countdown => NormalizeCountdown(Number("countdown", 3));
 
-    // Only 30 and 60 fps are supported; anything else means 60.
+    /// <summary>Only 30 and 60 fps are supported; anything else means 60.</summary>
     internal static int NormalizeFps(int fps) => fps == 30 ? 30 : 60;
 
-    // Only 0, 3 and 5 seconds are supported; anything else means 3.
-    internal static int NormalizeCountdown(int seconds) => seconds == 0 || seconds == 5 ? seconds : 3;
+    /// <summary>Only 0, 3 and 5 seconds are supported; anything else means 3.</summary>
+    internal static int NormalizeCountdown(int seconds) => seconds is 0 or 5 ? seconds : 3;
 
-    // The host owns the INI file: audio toggles changed in the toolbar are sent to it as bit flags
-    // (1 = microphone, 2 = system sound, 4 = show clicks) and it persists them.
-    public static void SaveAudio(bool mic, bool sound, bool clicks)
+    /// <summary>
+    /// The host owns the INI file: audio toggles changed in the toolbar are sent to it as bit flags
+    /// (see <see cref="AudioFlags"/>) and it persists them.
+    /// </summary>
+    public static void SaveAudio(bool microphone, bool sound, bool clicks)
     {
-        IntPtr host = FindWindow(HostWindowClass, null);
-        if (host != IntPtr.Zero) PostMessage(host, SaveAudioMessage, new IntPtr(AudioFlags(mic, sound, clicks)), IntPtr.Zero);
+        IntPtr host = NativeMethods.FindWindow(HostWindowClass, null);
+        if (host != IntPtr.Zero) NativeMethods.PostMessage(host, SaveAudioMessage, new IntPtr(AudioFlags(microphone, sound, clicks)), IntPtr.Zero);
     }
 
-    internal static int AudioFlags(bool mic, bool sound, bool clicks) => (mic ? 1 : 0) | (sound ? 2 : 0) | (clicks ? 4 : 0);
+    /// <summary>1 = microphone, 2 = system sound, 4 = show clicks.</summary>
+    internal static int AudioFlags(bool microphone, bool sound, bool clicks) => (microphone ? 1 : 0) | (sound ? 2 : 0) | (clicks ? 4 : 0);
 
     static string Read(string key, string fallback)
     {
         var value = new StringBuilder(2048);
-        _ = GetPrivateProfileString("capture", key, fallback, value, value.Capacity, FileName);
+        _ = NativeMethods.GetPrivateProfileString("capture", key, fallback, value, value.Capacity, FileName);
         return value.ToString();
     }
 
     static int Number(string key, int fallback) =>
-        int.TryParse(Read(key, fallback.ToString(CultureInfo.CurrentCulture)), out int value) ? value : fallback;
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern uint GetPrivateProfileString(string section, string key, string fallback, StringBuilder value, int size, string path);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string? title);
-    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, int message, IntPtr w, IntPtr l);
+        int.TryParse(Read(key, fallback.ToString(CultureInfo.InvariantCulture)), out int value) ? value : fallback;
 }

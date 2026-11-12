@@ -1,36 +1,43 @@
 namespace MosaikCapture.Engine.Recording;
 
-// Which GPU output shows this monitor? (ddagrab counts the outputs of the first adapter.)
-static class Dxgi
+/// <summary>Which GPU output shows a monitor (ffmpeg's ddagrab counts the outputs of the first adapter).</summary>
+internal static class Dxgi
 {
-    public static bool Find(ShotOverlay.RECT mon, out int index, out ShotOverlay.RECT desk)
+    const int MaxOutputs = 16;
+
+    public static bool Find(RECT monitor, out int outputIndex, out RECT desktop)
     {
-        index = -1;
-        desk = mon;
-        var iid = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
-        if (CreateDXGIFactory1(ref iid, out IntPtr f) != 0) return false;
-        var factory = (IDXGIFactory1)Marshal.GetObjectForIUnknown(f);
-        Marshal.Release(f);
+        outputIndex = -1;
+        desktop = monitor;
+        var factoryId = typeof(IDXGIFactory1).GUID;
+        if (NativeMethods.CreateDXGIFactory1(ref factoryId, out IntPtr factoryPointer) != 0) return false;
+        var factory = (IDXGIFactory1)Marshal.GetObjectForIUnknown(factoryPointer);
+        Marshal.Release(factoryPointer);
         IDXGIAdapter? adapter = null;
         try
         {
-            if (factory.EnumAdapters(0, out adapter) != 0) return false;
-            for (uint i = 0; i < 16; i++)
+            if (factory.EnumAdapters(0, out adapter) != 0 || adapter == null) return false;
+            for (uint index = 0; index < MaxOutputs; index++)
             {
-                if (adapter.EnumOutputs(i, out IDXGIOutput o) != 0) break;
-                int hr = o.GetDesc(out DXGI_OUTPUT_DESC d);
-                Marshal.ReleaseComObject(o);
-                if (hr != 0) continue;
-                if (d.Desktop.left == mon.left && d.Desktop.top == mon.top && d.Desktop.right == mon.right && d.Desktop.bottom == mon.bottom)
+                if (adapter.EnumOutputs(index, out IDXGIOutput? output) != 0 || output == null) break;
+                int result = output.GetDesc(out DXGI_OUTPUT_DESC description);
+                Marshal.ReleaseComObject(output);
+                if (result != 0) continue;
+                var bounds = description.DesktopCoordinates;
+                if (bounds.left == monitor.left && bounds.top == monitor.top && bounds.right == monitor.right && bounds.bottom == monitor.bottom)
                 {
-                    index = (int)i;
-                    desk = d.Desktop;
+                    outputIndex = (int)index;
+                    desktop = bounds;
                     return true;
                 }
             }
             return false;
         }
-        catch (Exception) { return false; }
+        catch (Exception ex) when (ex is COMException or InvalidCastException)
+        {
+            ErrorLog.Write("Enumerating the GPU outputs", ex);
+            return false;
+        }
         finally
         {
             if (adapter != null) Marshal.ReleaseComObject(adapter);
@@ -42,8 +49,8 @@ static class Dxgi
     struct DXGI_OUTPUT_DESC
     {
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
-        public ShotOverlay.RECT Desktop;
-        public int Attached, Rotation;
+        public RECT DesktopCoordinates;
+        public int AttachedToDesktop, Rotation;
         public IntPtr Monitor;
     }
 
@@ -51,23 +58,21 @@ static class Dxgi
     [ComImport, Guid("770aae78-f26f-4dba-a829-253c83d1b387"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IDXGIFactory1
     {
-        void F1(); void F2(); void F3(); void F4();
-        [PreserveSig] int EnumAdapters(uint i, out IDXGIAdapter a);
+        void SetPrivateData(); void SetPrivateDataInterface(); void GetPrivateData(); void GetParent();
+        [PreserveSig] int EnumAdapters(uint index, out IDXGIAdapter? adapter);
     }
 
     [ComImport, Guid("2411e7e1-12ac-4ccf-bd14-9798e8534dc0"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IDXGIAdapter
     {
-        void F1(); void F2(); void F3(); void F4();
-        [PreserveSig] int EnumOutputs(uint i, out IDXGIOutput o);
+        void SetPrivateData(); void SetPrivateDataInterface(); void GetPrivateData(); void GetParent();
+        [PreserveSig] int EnumOutputs(uint index, out IDXGIOutput? output);
     }
 
     [ComImport, Guid("ae02eedb-c735-4690-8d52-5a8dc20213aa"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IDXGIOutput
     {
-        void F1(); void F2(); void F3(); void F4();
-        [PreserveSig] int GetDesc(out DXGI_OUTPUT_DESC d);
+        void SetPrivateData(); void SetPrivateDataInterface(); void GetPrivateData(); void GetParent();
+        [PreserveSig] int GetDesc(out DXGI_OUTPUT_DESC description);
     }
-
-    [DllImport("dxgi.dll")] static extern int CreateDXGIFactory1(ref Guid iid, out IntPtr factory);
 }

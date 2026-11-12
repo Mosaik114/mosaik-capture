@@ -3,12 +3,12 @@ namespace MosaikCapture.Engine.Tests.Recording;
 // Logic of the windows shown while recording. The windows only get a (hidden) handle; nothing is shown.
 public sealed class LiveWindowTests
 {
-    static readonly ShotOverlay.RECT Monitor = new() { left = 0, top = 0, right = 1920, bottom = 1080 };
+    static readonly RECT Monitor = new() { left = 0, top = 0, right = 1920, bottom = 1080 };
 
     [Fact]
     public void FrameWindowIsTheAreaPlusSixPixels() => WpfThread.Run(() =>
     {
-        var frame = new RecFrame();
+        var frame = new RecordingFrame();
 
         Assert.Equal(new Int32Rect(34, 34, 612, 352), frame.Build(new Int32Rect(40, 40, 600, 340), Monitor, 1));
         var canvas = Assert.IsType<System.Windows.Controls.Canvas>(frame.Content);
@@ -20,7 +20,7 @@ public sealed class LiveWindowTests
     [Fact]
     public void FrameNeverReachesOntoAnotherMonitor() => WpfThread.Run(() =>
     {
-        var frame = new RecFrame();
+        var frame = new RecordingFrame();
 
         Assert.Equal(new Int32Rect(0, 0, 606, 346), frame.Build(new Int32Rect(0, 0, 600, 340), Monitor, 1));
         Assert.Equal(new Int32Rect(0, 0, 1920, 1080), frame.Build(new Int32Rect(0, 0, 1920, 1080), Monitor, 1));
@@ -30,7 +30,7 @@ public sealed class LiveWindowTests
     [Fact]
     public void FrameUsesWpfUnitsOnScaledMonitors() => WpfThread.Run(() =>
     {
-        var frame = new RecFrame();
+        var frame = new RecordingFrame();
 
         Assert.Equal(new Int32Rect(34, 34, 612, 352), frame.Build(new Int32Rect(40, 40, 600, 340), Monitor, 2));
         var canvas = (System.Windows.Controls.Canvas)frame.Content;
@@ -41,7 +41,7 @@ public sealed class LiveWindowTests
     [Fact]
     public void PausedFrameUsesTheMutedColor() => WpfThread.Run(() =>
     {
-        var frame = new RecFrame();
+        var frame = new RecordingFrame();
         frame.Build(new Int32Rect(40, 40, 600, 340), Monitor, 1);
         var canvas = (System.Windows.Controls.Canvas)frame.Content;
         var muted = (Brush)frame.Resources["Muted"];
@@ -61,7 +61,7 @@ public sealed class LiveWindowTests
         WpfThread.Run(() =>
         {
             var calls = new List<string>();
-            var countdown = new RecCountdown();
+            var countdown = new CountdownWindow();
 
             countdown.Run(new Int32Rect(100, 100, 640, 360), Monitor, () => calls.Add("launch"), () => calls.Add("done"), () => calls.Add("abort"));
 
@@ -73,7 +73,7 @@ public sealed class LiveWindowTests
     [Fact]
     public void LiveWindowsAreToolWindowsThatNeverTakeFocus() => WpfThread.Run(() =>
     {
-        var windows = new Window[] { new RecFrame(), new RecCountdown(), new RecBar(), new RecCard() };
+        var windows = new Window[] { new RecordingFrame(), new CountdownWindow(), new RecordingToolbar(), new RecordingCard() };
 
         foreach (var window in windows)
         {

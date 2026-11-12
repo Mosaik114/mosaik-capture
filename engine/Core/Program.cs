@@ -1,9 +1,11 @@
 namespace MosaikCapture.Engine.Core;
 
-// Entry point of the capture engine and process-wide crash handling.
-static class Program
+/// <summary>Entry point of the capture engine and process-wide crash handling.</summary>
+internal static class Program
 {
-    const string RestartArg = "--idle";
+    const string RestartArgument = "--idle";
+    static readonly TimeSpan MinimumUptimeForRestart = TimeSpan.FromMinutes(1);
+
     internal static DateTime started = DateTime.Now;
     internal static int restarting;
 
@@ -14,21 +16,25 @@ static class Program
     {
         // A single failure (e.g. after standby, when a device is missing) is only logged
         // and must not take down the whole engine.
-        app.DispatcherUnhandledException += (s, e) => { ErrorLog.Write(e.Exception); e.Handled = true; };
-        TaskScheduler.UnobservedTaskException += (s, e) => { ErrorLog.Write(e.Exception); e.SetObserved(); };
+        app.DispatcherUnhandledException += (_, e) => { ErrorLog.Write("Unhandled UI exception", e.Exception); e.Handled = true; };
+        TaskScheduler.UnobservedTaskException += (_, e) => { ErrorLog.Write("Unobserved task exception", e.Exception); e.SetObserved(); };
         // Not recoverable (failure outside the UI thread): log it and restart fresh.
-        AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
-            ErrorLog.Write("Absturz", e.ExceptionObject as Exception);
+            ErrorLog.Write("Crash", e.ExceptionObject as Exception);
             if (e.IsTerminating) Restart();
         };
     }
 
-    // Only restarts if the engine has been running for a while; otherwise a crash at startup would loop.
+    /// <summary>Restarts only if the engine has been running for a while; otherwise a crash at startup would loop.</summary>
     internal static void Restart()
     {
         if (Interlocked.Exchange(ref restarting, 1) == 1) return;
-        if (DateTime.Now - started < TimeSpan.FromMinutes(1)) { ErrorLog.Write("Kein Neustart: Absturz in der ersten Minute", null); return; }
-        Shell.Open(Assembly.GetEntryAssembly()!.Location, RestartArg);
+        if (DateTime.Now - started < MinimumUptimeForRestart)
+        {
+            ErrorLog.Write("No restart: crashed within the first minute", null);
+            return;
+        }
+        Shell.Open(Assembly.GetEntryAssembly()!.Location, RestartArgument);
     }
 }

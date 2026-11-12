@@ -214,7 +214,7 @@
           "xunit.v3.runner.common": "[4.0.2]"
         }
       },
-      "Mosaiks-Capture-Engine": {
+      "mosaikcapture.engine": {
         "type": "Project",
         "dependencies": {
           "Microsoft.Windows.SDK.Contracts": "[10.0.26100.9457, )"

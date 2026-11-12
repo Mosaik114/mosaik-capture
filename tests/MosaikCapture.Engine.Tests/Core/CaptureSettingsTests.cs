@@ -127,7 +127,7 @@ public sealed class CaptureSettingsTests
         try
         {
             Environment.SetEnvironmentVariable(CaptureSettings.TestConfigVariable, null);
-            string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mosaiks-Aufnahme", "settings.ini");
+            string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MosaikCapture", "settings.ini");
             Assert.Equal(expected, CaptureSettings.FileName);
         }
         finally { Environment.SetEnvironmentVariable(CaptureSettings.TestConfigVariable, previous); }

@@ -22,7 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Reference images for the opt-in pixel tests (trait Category=Pixel). -->
+    <!-- Reference images for the pixel tests (trait Category=Pixel; skipped when the fonts of the references are missing). -->
     <None Include="References\*.png" CopyToOutputDirectory="PreserveNewest" />
     <!-- Lets MOSAIK_UPDATE_REFERENCES=1 write new reference images back into the source tree. -->
     <AssemblyMetadata Include="ReferenceSourceDirectory" Value="$(MSBuildProjectDirectory)\References" />

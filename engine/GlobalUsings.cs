@@ -18,7 +18,7 @@ global using System.Windows.Media.Animation;
 global using System.Windows.Media.Imaging;
 global using System.Windows.Threading;
 global using MosaikCapture.Engine.Core;
-global using MosaikCapture.Engine.Diagnostics;
 global using MosaikCapture.Engine.Recording;
 global using MosaikCapture.Engine.Screenshot;
+global using RECT = MosaikCapture.Engine.Core.NativeMethods.RECT;
 global using Shapes = System.Windows.Shapes;
