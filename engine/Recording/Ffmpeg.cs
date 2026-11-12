@@ -53,13 +53,14 @@ internal static class Ffmpeg
     static volatile bool detectionFailed;
     static readonly object jobGate = new();
     static IntPtr job;
-    static volatile string? exe, probe;
+    /// <summary>Where ffmpeg and ffprobe are; tests can point it elsewhere.</summary>
+    internal static IFfmpegLocator Locator { get; set; } = new FfmpegLocator(SearchLocations);
 
-    /// <summary>ffmpeg.exe, or null; searched again on every call until found (installing ffmpeg needs no restart).</summary>
-    public static string? Exe => exe ??= Find("ffmpeg.exe");
+    /// <summary>ffmpeg.exe, or null (see <see cref="FfmpegLocator"/>).</summary>
+    public static string? Exe => Locator.Ffmpeg;
 
     /// <summary>ffprobe.exe, preferably the one next to <see cref="Exe"/> (same install), or null.</summary>
-    public static string? Probe => probe ??= FindProbe(Exe);
+    public static string? Probe => Locator.Probe;
 
     public static bool Available => Exe != null && Probe != null;
 
@@ -124,13 +125,13 @@ internal static class Ffmpeg
     // ffmpeg sees every recording, so well-known install locations come first (winget, Program Files,
     // Chocolatey, Scoop) and only fully qualified local PATH entries are used: a relative entry such as "."
     // or a network share could otherwise inject a foreign ffmpeg.exe.
-    static string? Find(string name) => Find(name, SearchLocations());
-
     /// <summary>ffprobe next to the found ffmpeg first, so both come from the same install; otherwise the usual search.</summary>
-    internal static string? FindProbe(string? ffmpeg)
+    internal static string? FindProbe(string? ffmpeg) => FindProbe(ffmpeg, SearchLocations());
+
+    internal static string? FindProbe(string? ffmpeg, IEnumerable<string?> locations)
     {
         string? directory = ffmpeg == null ? null : Path.GetDirectoryName(ffmpeg);
-        return (directory == null ? null : Find("ffprobe.exe", new[] { directory })) ?? Find("ffprobe.exe");
+        return (directory == null ? null : Find("ffprobe.exe", new[] { directory })) ?? Find("ffprobe.exe", locations);
     }
 
     internal static IEnumerable<string> SearchLocations()

@@ -36,9 +36,6 @@ internal sealed class ClickHighlighter
     int nextRipple;
     volatile bool enabled;
 
-    /// <summary>Unhooking takes milliseconds; a hook thread that hangs longer is left behind (it is a background thread).</summary>
-    static readonly TimeSpan HookStopTimeout = TimeSpan.FromSeconds(2);
-
     /// <summary>Installing the hook takes milliseconds; after this the recording goes on without click highlights.</summary>
     static readonly TimeSpan HookStartTimeout = TimeSpan.FromSeconds(1);
 
@@ -62,10 +59,17 @@ internal sealed class ClickHighlighter
         started.Thread = new Thread(() => RunHook(started, installed)) { IsBackground = true, Name = "Mosaik Capture click hook" };
         run = started;
         started.Thread.Start();
-        // Installing the hook takes milliseconds; the recording must not wait for a hook that never comes.
-        if (installed.Task.Wait(HookStartTimeout) && installed.Task.Result) return;
+        WatchInstallAsync(started, installed.Task).LogFailures("Starting the click highlights");
+    }
+
+    // The UI thread never waits for the hook: clicks simply start arriving once it is installed.
+    // A hook that fails or takes too long is given up; the recording goes on without click highlights.
+    async Task WatchInstallAsync(HookRun started, Task<bool> installed)
+    {
+        if (await Task.WhenAny(installed, Task.Delay(HookStartTimeout)) == installed && installed.Result) return;
         ErrorLog.Write("The mouse hook for click highlights is not available; recording without them", null);
-        Stop();
+        if (run == started) Stop();
+        else started.Cancelled = true;
     }
 
     /// <summary>
@@ -80,7 +84,7 @@ internal sealed class ClickHighlighter
         stopping.Cancelled = true;
         uint threadId = stopping.ThreadId;
         if (threadId != 0) NativeMethods.PostThreadMessage(threadId, NativeMethods.WM_QUIT, IntPtr.Zero, IntPtr.Zero);
-        stopping.Thread.Join(HookStopTimeout);
+        // No join: the (background) thread unhooks itself when it sees WM_QUIT or the cancel flag.
     }
 
     void RunHook(HookRun current, TaskCompletionSource<bool> installed)

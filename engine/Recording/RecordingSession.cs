@@ -98,7 +98,7 @@ internal sealed class RecordingSession : IRecordingSession
     VideoEncoder? encoder;           // chosen once, so all segments can be joined without re-encoding (one resume at a time)
     long recordedTicks;              // length of the finished segments (Stopwatch ticks); Interlocked
     int pauseCount;                  // under gate: a resume that started before the latest pause gives up
-    int resuming;                    // 1 while a resume waits for ffmpeg; Interlocked
+    int resuming;                    // 1 while a resume is starting a segment; Interlocked (full fences)
     volatile bool wantRunning;       // the user's intent: resumed and not paused since (shown at once, even while ffmpeg starts)
 
     public RecordingSession(Int32Rect area, int output, RECT desktop, AudioSettings audioSettings, RecordingSessionServices? services = null)
@@ -149,25 +149,39 @@ internal sealed class RecordingSession : IRecordingSession
 
     // ---------- Segments ----------
 
+    /// <summary>
+    /// Records again (also the first time). Only one resume runs at a time; it keeps going until the
+    /// latest intent is met, so pause/resume clicks while ffmpeg starts always end in the state clicked last.
+    /// </summary>
     public async Task ResumeAsync()
     {
         wantRunning = true;
-        if (current != null || Interlocked.CompareExchange(ref resuming, 1, 0) != 0) return;
-        try
+        // The running resume re-checks the intent after it let go of the flag (both sides use full fences),
+        // so a resume that finds the flag taken can simply leave it to that one.
+        while (wantRunning && current == null && Interlocked.CompareExchange(ref resuming, 1, 0) == 0)
         {
-            int pausesBefore;
-            Task? previous;
-            lock (gate)
+            try
             {
-                pausesBefore = pauseCount;
-                previous = segments.Count > 0 ? segments[segments.Count - 1].Stopped : null;
+                await StartWhenReadyAsync().ConfigureAwait(false);
             }
-            // ffmpeg of the previous segment must have released the GPU output; nothing here needs the UI thread
-            if (previous != null) await Task.WhenAny(previous, Task.Delay(services.PreviousSegmentTimeout)).ConfigureAwait(false);
-            encoder ??= await services.Encoder().ConfigureAwait(false);
-            StartSegment(encoder.Value, pausesBefore);
+            finally { Interlocked.Exchange(ref resuming, 0); }
         }
-        finally { Volatile.Write(ref resuming, 0); }
+    }
+
+    // One attempt: wait for the previous ffmpeg and the encoder, then start unless paused meanwhile.
+    async Task StartWhenReadyAsync()
+    {
+        int pausesBefore;
+        Task? previous;
+        lock (gate)
+        {
+            pausesBefore = pauseCount;
+            previous = segments.Count > 0 ? segments[segments.Count - 1].Stopped : null;
+        }
+        // ffmpeg of the previous segment must have released the GPU output; nothing here needs the UI thread
+        if (previous != null) await Task.WhenAny(previous, Task.Delay(services.PreviousSegmentTimeout)).ConfigureAwait(false);
+        encoder ??= await services.Encoder().ConfigureAwait(false);
+        if (wantRunning) StartSegment(encoder.Value, pausesBefore);
     }
 
     // Decides under the lock, starts ffmpeg and reports outside of it.

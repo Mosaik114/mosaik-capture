@@ -8,20 +8,19 @@ internal sealed partial class ScreenshotEditor
 
     internal void PointerUp()
     {
-        if (mode == Mode.None) return;
-        Mode finished = mode;
-        mode = Mode.None;
+        if (interaction.Idle) return;
+        PointerMode finished = interaction.Finish();
         ReleaseMouseCapture();
         switch (finished)
         {
-            case Mode.MoveItem:
+            case PointerMode.MoveItem:
                 FinishMovingItem();
                 break;
-            case Mode.MoveCrop:
-            case Mode.ResizeCrop:
+            case PointerMode.MoveCrop:
+            case PointerMode.ResizeCrop:
                 FinishCropChange();
                 break;
-            case Mode.Draw:
+            case PointerMode.Draw:
                 FinishStroke();
                 break;
         }
@@ -58,19 +57,19 @@ internal sealed partial class ScreenshotEditor
     // False if nothing was placed and the stroke state must stay as it is (spotlight outside the crop).
     bool PlaceStroke(Shapes.Path drawn, Rect bounds)
     {
-        if (tool == Tool.Pixel || tool == Tool.Blur)
+        if (interaction.Tool == Tool.Pixel || interaction.Tool == Tool.Blur)
         {
-            var cover = tool == Tool.Pixel ? Pixelated(bounds) : Blurred(bounds);
+            var cover = interaction.Tool == Tool.Pixel ? Pixelated(bounds) : Blurred(bounds);
             if (cover != null) AddMarkup(cover);
         }
-        else if (tool == Tool.Spot)
+        else if (interaction.Tool == Tool.Spot)
         {
             bounds.Intersect(crop);
             if (bounds.IsEmpty) { RefreshSpotlightShade(null); return false; }
             AddMarkup(SpotlightFrame(bounds));
         }
-        else if (tool == Tool.Marker && !snapped) AddMarkup(TextHighlight(StrokePoints(drawn), style.MarkerWidth) ?? drawn);
-        else if (tool == Tool.Pen && !snapped)
+        else if (interaction.Tool == Tool.Marker && !snapped) AddMarkup(TextHighlight(StrokePoints(drawn), style.MarkerWidth) ?? drawn);
+        else if (interaction.Tool == Tool.Pen && !snapped)
         {
             var smooth = ShapeRecognizer.Smooth(StrokePoints(drawn));
             if (smooth != null) drawn.Data = smooth;
@@ -261,7 +260,7 @@ internal sealed partial class ScreenshotEditor
     // Preview of the next number at the pointer; true while it is visible.
     bool UpdateNumberPreview()
     {
-        bool show = tool == Tool.Number && mode == Mode.None && textBox == null && crop.Contains(pointer) && !toolbar.IsMouseOver;
+        bool show = interaction.Tool == Tool.Number && interaction.Idle && textBox == null && crop.Contains(pointer) && !toolbar.IsMouseOver;
         if (!show)
         {
             numberPreview?.Visibility = Visibility.Hidden;

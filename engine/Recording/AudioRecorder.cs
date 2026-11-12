@@ -25,7 +25,8 @@ internal interface IAudioRecorder
 /// </summary>
 /// <remarks>
 /// The capture thread polls both devices every <see cref="PollInterval"/> (WASAPI loopback cannot be
-/// event-driven in shared mode on all Windows 10 versions). Stopping wakes it at once through
+/// event-driven in shared mode on all Windows 10 versions). The capture buffers hold 200 ms, so a 25 ms
+/// poll drains them long before they overflow, even when a poll is delayed by a busy system. Stopping wakes it at once through
 /// <c>stopSignal</c>; if it still does not end in time, <see cref="Finished"/> tells when the files are
 /// released so their folder can be removed afterwards.
 /// </remarks>
@@ -33,7 +34,7 @@ internal interface IAudioRecorder
 internal sealed class AudioRecorder : IAudioRecorder
 {
     static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
-    static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(10);
+    static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
     const int OpenRetryMs = 1000, DeviceChangeRetryMs = 500;
 
     readonly AudioTrack systemSound, microphone;

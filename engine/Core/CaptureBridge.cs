@@ -18,6 +18,14 @@ namespace MosaikCapture.Engine.Core;
 /// <item><term>0x8003</term><description>quit (ignored while a recording is busy)</description></item>
 /// <item><term>0x800A</term><description>query state: bit 0 = busy, bit 1 = live (counting down or recording)</description></item>
 /// </list>
+/// <para>
+/// Trust model: the window is found by its title, so any process of the same user in the same session can
+/// post these messages (window messages do not cross sessions, and UIPI keeps lower-integrity processes out).
+/// Such a process can already do everything the user can, and nothing here is privileged: the worst case
+/// is that a capture overlay opens or an idle engine quits. The host verifies the engine's process image
+/// before it relies on it. Capture commands arriving faster than <see cref="CommandsPerSecond"/> per
+/// second are ignored, so a flood cannot keep reopening the overlay.
+/// </para>
 /// </remarks>
 internal static class CaptureBridge
 {
@@ -26,6 +34,11 @@ internal static class CaptureBridge
     internal const int CommandBase = 0x8000;
     internal const int ScreenshotMessage = 0x8001, RecordingMessage = 0x8002, QuitMessage = 0x8003, StateMessage = 0x800A;
     internal const string AfterArgument = "--after";
+
+    /// <summary>More capture commands per second than this are ignored (a person presses a hotkey far less often).</summary>
+    internal const int CommandsPerSecond = 10;
+
+    static readonly CommandRateLimit commandLimit = new(CommandsPerSecond, TimeSpan.FromSeconds(1));
     const int ForwardAttempts = 100, ForwardDelayMs = 50;
 
     /// <summary>How long a restarted engine waits for the crashed one to exit.</summary>
@@ -156,7 +169,8 @@ internal static class CaptureBridge
             case ScreenshotMessage:
             case RecordingMessage:
                 handled = true;
-                Execute(message - CommandBase);
+                if (commandLimit.Allow(Stopwatch.GetTimestamp())) Execute(message - CommandBase);
+                else ErrorLog.Write("Ignored a capture command: too many per second", null);
                 break;
             case QuitMessage when !ScreenRecorder.Busy:
                 handled = true;

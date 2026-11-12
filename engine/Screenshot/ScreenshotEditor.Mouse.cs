@@ -33,7 +33,7 @@ internal sealed partial class ScreenshotEditor
         textHost = null;
         CloseMenu();
         selectedItem = null;
-        mode = Mode.None;
+        interaction.Reset();
         discardArmed = false;
         pointer = Offscreen;
         frozenImage.Source = screenshot.FullScreen;
@@ -41,7 +41,7 @@ internal sealed partial class ScreenshotEditor
         root.Height = frozenImage.Height = screenshot.VirtualHeight / scale;
         crop = new Rect(screenshot.Crop.X / scale, screenshot.Crop.Y / scale, screenshot.Crop.Width / scale, screenshot.Crop.Height / scale);
         notice.Visibility = tooltip.Visibility = Visibility.Hidden;
-        SetTool(tool);
+        SetTool(interaction.Tool);
         SetColor(style.ColorIndex);
         SetWidth(style.WidthIndex);
         LayoutCrop();
@@ -95,40 +95,50 @@ internal sealed partial class ScreenshotEditor
 
     internal void PointerDown(Point position)
     {
-        if (openMenuGroup != null) { CloseMenu(); return; }
-        if (textBox != null) { CommitText(); return; }
+        var hit = interaction.Tool == Tool.Move ? ItemAt(position) : null;
+        var action = interaction.Press(openMenuGroup != null, textBox != null, hit != null, crop.Contains(position));
+        if (action == PressAction.CloseMenu) { CloseMenu(); return; }
+        if (action == PressAction.CommitText) { CommitText(); return; }
         discardArmed = false;
         pressPoint = position;
-        if (tool == Tool.Move)
+        switch (action)
         {
-            StartMoving(position);
-            return;
+            case PressAction.MoveItem:
+                StartMovingItem(hit!);
+                break;
+            case PressAction.MoveCrop:
+                StartMovingCrop();
+                break;
+            case PressAction.StartText:
+                StartTextInput(position, interaction.Tool == Tool.Label);
+                break;
+            case PressAction.PlaceNumber:
+                PlaceNumber(position);
+                UpdateNumberPreview();
+                break;
+            case PressAction.StartStroke:
+                StartStroke(position);
+                break;
         }
-        if (!crop.Contains(position)) return;
-        if (tool is Tool.Text or Tool.Label) { StartTextInput(position, tool == Tool.Label); return; }
-        if (tool == Tool.Number) { PlaceNumber(position); UpdateNumberPreview(); return; }
-        StartStroke(position);
     }
 
-    // Move tool: drag a markup item, or the whole crop when clicking inside it.
-    void StartMoving(Point position)
+    // Move tool: drag a markup item...
+    void StartMovingItem(FrameworkElement hit)
     {
-        var hit = ItemAt(position);
-        if (hit != null)
-        {
-            mode = Mode.MoveItem;
-            selectedItem = hit;
-            itemOffset = (TranslateTransform)hit.RenderTransform;
-            itemStartX = itemOffset.X;
-            itemStartY = itemOffset.Y;
-        }
-        else if (crop.Contains(position))
-        {
-            mode = Mode.MoveCrop;
-            cropAtPress = crop;
-            selectedItem = null;
-        }
-        else return;
+        interaction.Begin(PointerMode.MoveItem);
+        selectedItem = hit;
+        itemOffset = (TranslateTransform)hit.RenderTransform;
+        itemStartX = itemOffset.X;
+        itemStartY = itemOffset.Y;
+        CaptureMouse();
+    }
+
+    // ...or the whole crop when pressing inside it.
+    void StartMovingCrop()
+    {
+        interaction.Begin(PointerMode.MoveCrop);
+        cropAtPress = crop;
+        selectedItem = null;
         CaptureMouse();
     }
 
@@ -144,13 +154,13 @@ internal sealed partial class ScreenshotEditor
             StrokeThickness = style.StrokeWidth,
             RenderTransform = new TranslateTransform()
         };
-        if (tool == Tool.Arrow) stroke.Fill = brush;
-        else if (tool == Tool.Marker)
+        if (interaction.Tool == Tool.Arrow) stroke.Fill = brush;
+        else if (interaction.Tool == Tool.Marker)
         {
             stroke.Stroke = MarkerBrush();
             stroke.StrokeThickness = style.MarkerWidth;
         }
-        else if (tool is Tool.Pixel or Tool.Blur or Tool.Spot)
+        else if (interaction.Tool is Tool.Pixel or Tool.Blur or Tool.Spot)
         {
             // only a dashed frame; the result is created on release
             stroke.StrokeThickness = 1.5;
@@ -158,7 +168,7 @@ internal sealed partial class ScreenshotEditor
             stroke.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Text);
         }
         snapped = false;
-        if (tool is Tool.Pen or Tool.Marker)
+        if (interaction.Tool is Tool.Pen or Tool.Marker)
         {
             strokeLine = new PolyLineSegment();
             var figure = new PathFigure { StartPoint = position, IsFilled = false };
@@ -169,7 +179,7 @@ internal sealed partial class ScreenshotEditor
             holdPoint = position;
         }
         markup.Children.Add(stroke);
-        mode = Mode.Draw;
+        interaction.Begin(PointerMode.Draw);
         CaptureMouse();
     }
 
@@ -181,24 +191,24 @@ internal sealed partial class ScreenshotEditor
     internal void PointerMoved(Point position)
     {
         bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
-        switch (mode)
+        switch (interaction.Mode)
         {
-            case Mode.None:
+            case PointerMode.None:
                 pointer = position;
                 UpdateCursor(position);
                 break;
-            case Mode.MoveItem:
+            case PointerMode.MoveItem:
                 itemOffset.X = itemStartX + position.X - pressPoint.X;
                 itemOffset.Y = itemStartY + position.Y - pressPoint.Y;
                 if (SpotTag.Equals(selectedItem!.Tag)) RefreshSpotlightShade(null);
                 break;
-            case Mode.MoveCrop:
+            case PointerMode.MoveCrop:
                 MoveCrop(position);
                 break;
-            case Mode.ResizeCrop:
+            case PointerMode.ResizeCrop:
                 ResizeCrop(position);
                 break;
-            case Mode.Draw:
+            case PointerMode.Draw:
                 Drag(KeepInCrop(position), shift);
                 break;
         }
@@ -207,8 +217,8 @@ internal sealed partial class ScreenshotEditor
     void UpdateCursor(Point position)
     {
         if (UpdateNumberPreview()) Cursor = Cursors.None;   // the preview is the pointer
-        else if (tool == Tool.Move) Cursor = ItemAt(position) != null || crop.Contains(position) ? Cursors.SizeAll : Cursors.Arrow;
-        else Cursor = !crop.Contains(position) ? Cursors.Arrow : tool == Tool.Text ? Cursors.IBeam : Cursors.Cross;
+        else if (interaction.Tool == Tool.Move) Cursor = ItemAt(position) != null || crop.Contains(position) ? Cursors.SizeAll : Cursors.Arrow;
+        else Cursor = !crop.Contains(position) ? Cursors.Arrow : interaction.Tool == Tool.Text ? Cursors.IBeam : Cursors.Cross;
     }
 
     Size SurfaceSize => new(root.Width, root.Height);
@@ -229,7 +239,7 @@ internal sealed partial class ScreenshotEditor
 
     void Drag(Point position, bool shift)
     {
-        switch (tool)
+        switch (interaction.Tool)
         {
             case Tool.Arrow:
                 if (shift) position = SnapTo45Degrees(pressPoint, position);
@@ -245,10 +255,10 @@ internal sealed partial class ScreenshotEditor
             case Tool.Blur:
             case Tool.Spot:
                 if (shift) position = SquareFrom(pressPoint, position);
-                if (tool == Tool.Ellipse) { stroke!.Data = new EllipseGeometry(new Rect(pressPoint, position)); break; }
-                double radius = tool == Tool.Box ? 6 : tool == Tool.Spot ? 8 : 0;
+                if (interaction.Tool == Tool.Ellipse) { stroke!.Data = new EllipseGeometry(new Rect(pressPoint, position)); break; }
+                double radius = interaction.Tool == Tool.Box ? 6 : interaction.Tool == Tool.Spot ? 8 : 0;
                 stroke!.Data = new RectangleGeometry(new Rect(pressPoint, position), radius, radius);
-                if (tool == Tool.Spot) RefreshSpotlightShade(new Rect(pressPoint, position));   // show the spotlight while dragging
+                if (interaction.Tool == Tool.Spot) RefreshSpotlightShade(new Rect(pressPoint, position));   // show the spotlight while dragging
                 break;
             case Tool.Pen:
             case Tool.Marker:
@@ -264,7 +274,7 @@ internal sealed partial class ScreenshotEditor
         {
             // Shift = straight line, horizontal for the highlighter
             strokeLine.Points.Clear();
-            if (tool == Tool.Marker) position = new Point(position.X, pressPoint.Y);
+            if (interaction.Tool == Tool.Marker) position = new Point(position.X, pressPoint.Y);
         }
         strokeLine.Points.Add(position);
         if ((position - holdPoint).Length > 2 || shift)

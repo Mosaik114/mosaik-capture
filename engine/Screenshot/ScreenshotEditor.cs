@@ -19,8 +19,6 @@ internal sealed partial class ScreenshotEditor : Window
     internal enum Tool { Move, Arrow, Box, Ellipse, Line, Pen, Marker, Spot, Text, Label, Number, Pixel, Blur }
     static readonly Key[] ToolKeys = { Key.V, Key.A, Key.R, Key.E, Key.L, Key.P, Key.M, Key.S, Key.T, Key.B, Key.N, Key.X, Key.W };
 
-    enum Mode { None, Draw, MoveItem, MoveCrop, ResizeCrop }
-
     // Button tags that drive Paint()
     const string PrimaryTag = "primary", ActiveTag = "on";
     // Tags of markup elements
@@ -84,11 +82,10 @@ internal sealed partial class ScreenshotEditor : Window
     ScreenCapture capture = null!;                // set by Load(), cleared by HideAndReset()
     double scale = 1;                             // device pixels per WPF unit
     Rect crop;                                    // in WPF units
-    Tool tool = Tool.Arrow;
+    readonly EditorInteraction interaction = new();
     FrameworkElement? numberPreview;              // semi-transparent preview of the next number at the pointer
     string? numberPreviewKey;
     Point pointer;
-    Mode mode;
     Point pressPoint;
     Rect cropAtPress;
     int activeHandle;
@@ -168,7 +165,7 @@ internal sealed partial class ScreenshotEditor : Window
         MouseMove += (_, e) => Guarded("Moving in the editor", () => PointerMoved(e.GetPosition(root)));
         MouseLeftButtonUp += (_, _) => Guarded("Releasing in the editor", PointerUp);
         MouseLeave += delegate { pointer = Offscreen; UpdateNumberPreview(); };
-        MouseWheel += (_, e) => Guarded("Changing the width", () => { if (textBox == null && mode == Mode.None) StepWidth(e.Delta > 0 ? 1 : -1); });
+        MouseWheel += (_, e) => Guarded("Changing the width", () => { if (textBox == null && interaction.Idle) StepWidth(e.Delta > 0 ? 1 : -1); });
         PreviewKeyDown += (_, e) => Guarded("Editor command " + e.Key, () => OnKey(e));
     }
 
@@ -181,7 +178,7 @@ internal sealed partial class ScreenshotEditor : Window
             ErrorLog.Write(what, ex);
             if (IsMouseCaptured) ReleaseMouseCapture();
             holdTimer.Stop();
-            mode = Mode.None;
+            interaction.Reset();
             ShowNotice(UiText.Editor.CommandFailed);
         }
     }
@@ -207,7 +204,7 @@ internal sealed partial class ScreenshotEditor : Window
             handle.MouseLeftButtonDown += (_, e) =>
             {
                 CommitText();
-                mode = Mode.ResizeCrop;
+                interaction.Begin(PointerMode.ResizeCrop);
                 activeHandle = index;
                 cropAtPress = crop;
                 CaptureMouse();
@@ -411,7 +408,7 @@ internal sealed partial class ScreenshotEditor : Window
         }
         group.Button = ToolbarButton(content, "", delegate
         {
-            if (Array.IndexOf(group.Tools, tool) >= 0 && group.Tools.Length > 1)
+            if (Array.IndexOf(group.Tools, interaction.Tool) >= 0 && group.Tools.Length > 1)
             {
                 if (openMenuGroup == group) CloseMenu(); else OpenMenu(group);
             }
@@ -430,7 +427,7 @@ internal sealed partial class ScreenshotEditor : Window
     string ToolLabel(ToolGroup group)
     {
         string label = UiText.Editor.ToolNames[(int)group.Current] + "   " + ToolKeys[(int)group.Current];
-        if (group.Tools.Length > 1 && Array.IndexOf(group.Tools, tool) >= 0) label += UiText.Editor.MoreHint;
+        if (group.Tools.Length > 1 && Array.IndexOf(group.Tools, interaction.Tool) >= 0) label += UiText.Editor.MoreHint;
         return label;
     }
 
@@ -459,7 +456,7 @@ internal sealed partial class ScreenshotEditor : Window
 
     Border MenuEntry(Tool entryTool)
     {
-        bool active = entryTool == tool;
+        bool active = entryTool == interaction.Tool;
         var icon = new Grid { Width = 26, HorizontalAlignment = HorizontalAlignment.Left };
         icon.Children.Add(ToolIcon(entryTool, new SolidColorBrush(ThemeColor(active ? Palette.Accent : Palette.Text))));
         var key = new TextBlock { Text = ToolKeys[(int)entryTool].ToString(), FontSize = 11.5, FontFamily = Palette.UiFont, Margin = new Thickness(28, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
@@ -476,7 +473,7 @@ internal sealed partial class ScreenshotEditor : Window
         Paint(entry, false);
         entry.MouseEnter += delegate { Paint(entry, true); };
         entry.MouseLeave += delegate { Paint(entry, false); };
-        entry.MouseLeftButtonUp += delegate { Guarded("Choosing a tool", () => SetTool(entryTool)); };
+        entry.MouseLeftButtonUp += delegate { Guarded("Choosing a interaction.Tool", () => SetTool(entryTool)); };
         return entry;
     }
 
@@ -571,7 +568,7 @@ internal sealed partial class ScreenshotEditor : Window
     {
         CommitText();
         CloseMenu();
-        tool = selected;
+        interaction.Tool = selected;
         foreach (var group in groups)
         {
             bool active = Array.IndexOf(group.Tools, selected) >= 0;

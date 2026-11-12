@@ -120,6 +120,71 @@ public sealed class RecordingSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task PauseThenResumeWhileTheFirstResumeWaitsEndsRecording()
+    {
+        var pending = new TaskCompletionSource<VideoEncoder>(TaskCreationOptions.RunContinuationsAsynchronously);
+        encoder = () => pending.Task;
+        var session = NewSession();
+
+        var first = session.ResumeAsync();
+        session.Pause();
+        var second = session.ResumeAsync();   // finds the first resume still busy and leaves it to that one
+        pending.SetResult(VideoEncoder.Software);
+        await Within(Task.WhenAll(first, second));
+
+        Assert.False(session.Paused);
+        Assert.Equal(1, session.SegmentCount);
+        Assert.Single(runner.Processes);
+    }
+
+    [Fact]
+    public async Task PauseResumePauseWhileWaitingEndsPaused()
+    {
+        var pending = new TaskCompletionSource<VideoEncoder>(TaskCreationOptions.RunContinuationsAsynchronously);
+        encoder = () => pending.Task;
+        var session = NewSession();
+
+        var first = session.ResumeAsync();
+        session.Pause();
+        var second = session.ResumeAsync();
+        session.Pause();
+        pending.SetResult(VideoEncoder.Software);
+        await Within(Task.WhenAll(first, second));
+
+        Assert.True(session.Paused);
+        Assert.Equal(0, session.SegmentCount);
+    }
+
+    [Theory]
+    [InlineData(7, false)]
+    [InlineData(8, true)]
+    [InlineData(31, false)]
+    [InlineData(40, true)]
+    public async Task RapidTogglesEndInTheLastIntent(int toggles, bool paused)
+    {
+        var session = NewSession();
+        var resumes = new List<Task>();
+
+        for (int i = 0; i < toggles; i++)
+        {
+            if (i % 2 == 0) resumes.Add(session.ResumeAsync());
+            else session.Pause();
+        }
+        await Within(Task.WhenAll(resumes));
+        int expected = paused ? 0 : 1;
+        for (int i = 0; i < 250 && Running() != expected; i++) await Task.Delay(20, TestContext.Current.CancellationToken);   // quits run in the background
+
+        Assert.Equal(paused, session.Paused);
+        Assert.Equal(expected, Running());
+        Assert.Equal(expected, session.Paused ? 0 : 1);
+
+        int Running()
+        {
+            lock (runner.Processes) return runner.Processes.Count(p => !p.Quit.Task.IsCompleted);
+        }
+    }
+
+    [Fact]
     public async Task OnlyOneResumeAtATime()
     {
         var session = NewSession();

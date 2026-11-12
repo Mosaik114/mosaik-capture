@@ -13,12 +13,12 @@ internal sealed partial class ScreenshotEditor
     // Pen/highlighter held still: the stroke becomes a clean shape that can still be resized afterwards.
     internal void PenHeld()
     {
-        if (mode != Mode.Draw || snapped || stroke == null || (tool != Tool.Pen && tool != Tool.Marker)) return;
+        if (!interaction.CanSnap || snapped || stroke == null) return;
         var pts = StrokePoints(stroke);
         Rect b = ShapeRecognizer.Bounds(pts);
         if (Math.Max(b.Width, b.Height) < MinSnapSize) return;
         ShapeKind kind;
-        if (tool == Tool.Marker)
+        if (interaction.Tool == Tool.Marker)
         {
             // highlighter: straight line, nearly horizontal becomes exactly horizontal
             kind = ShapeKind.Line;
@@ -43,7 +43,7 @@ internal sealed partial class ScreenshotEditor
             {
                 snapStart = snapShape is PathGeometry pg && pg.Figures.Count > 0 ? pg.Figures[0].StartPoint : ((LineGeometry)snapShape).StartPoint;
             }
-            Reshape(tool == Tool.Marker || snapShape == null ? holdPoint : LineEnd(snapShape));
+            Reshape(interaction.Tool == Tool.Marker || snapShape == null ? holdPoint : LineEnd(snapShape));
         }
         else stroke.Data = snapShape;
         var flash = new DoubleAnimation(0.35, 1, Motion.ShapeFlash);
@@ -64,7 +64,7 @@ internal sealed partial class ScreenshotEditor
         {
             Point a = snapStart;
             double ang = Math.Atan2(p.Y - a.Y, p.X - a.X) * 180 / Math.PI;
-            if (tool == Tool.Marker ? Math.Abs(Math.Sin(ang * Math.PI / 180)) < MarkerLevelSine : ShapeRecognizer.NearAxis(ang, ShapeRecognizer.AxisSnapDegrees)) p = ShapeRecognizer.SnapAxis(a, p);
+            if (interaction.Tool == Tool.Marker ? Math.Abs(Math.Sin(ang * Math.PI / 180)) < MarkerLevelSine : ShapeRecognizer.NearAxis(ang, ShapeRecognizer.AxisSnapDegrees)) p = ShapeRecognizer.SnapAxis(a, p);
             stroke!.Data = snapArrow ? ShapeRecognizer.Arrow(a, p, style.StrokeWidth) : (Geometry)new LineGeometry(a, p);
             return;
         }

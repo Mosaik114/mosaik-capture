@@ -14,5 +14,13 @@ internal static class Clocks
         return (fileTime - UnixEpochAsFileTime) / 10;
     }
 
-    public static long Now100Ns() => (long)(Stopwatch.GetTimestamp() * (10_000_000.0 / Stopwatch.Frequency));
+    /// <summary>The performance counter in 100 ns ticks, in exact integer math (no rounding drift over hours).</summary>
+    public static long Now100Ns() => To100Ns(Stopwatch.GetTimestamp(), Stopwatch.Frequency);
+
+    internal static long To100Ns(long counter, long frequency)
+    {
+        const long TicksPerSecond = 10_000_000;
+        long seconds = counter / frequency, rest = counter % frequency;
+        return seconds * TicksPerSecond + rest * TicksPerSecond / frequency;   // rest < frequency: no overflow
+    }
 }
