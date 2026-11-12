@@ -41,7 +41,47 @@ internal sealed class AudioTrack
     public IAudioClient? Client { get; private set; }
     public int RetryAt { get; set; }
 
+    /// <summary>Environment.TickCount when the device should be compared with the default again.</summary>
+    public int DeviceCheckAt { get; set; }
+
     public long FramesWritten => framesWritten;
+
+    /// <summary>Endpoint id of the open device, or null when closed.</summary>
+    public string? DeviceId { get; private set; }
+
+    /// <summary>
+    /// True if Windows' default device is now a different one than the track records from (e.g. headphones
+    /// plugged in). The track then reopens on the new device; the gap is padded with silence on the timeline.
+    /// </summary>
+    internal static bool ShouldReopen(string? openedDevice, string? defaultDevice) =>
+        openedDevice != null && defaultDevice != null && !string.Equals(openedDevice, defaultDevice, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The id of Windows' current default device for this track, or null if there is none.</summary>
+    public string? DefaultDeviceId(IMMDeviceEnumerator enumerator)
+    {
+        IMMDevice? device = null;
+        try
+        {
+            if (Wasapi.Failed(enumerator.GetDefaultAudioEndpoint(loopback ? Wasapi.RenderFlow : Wasapi.CaptureFlow, Wasapi.ConsoleRole, out device)) || device == null) return null;
+            return Wasapi.Failed(device.GetId(out string? id)) ? null : id;
+        }
+        catch (COMException ex)
+        {
+            ErrorLog.Write("Reading the default audio device", ex);
+            return null;
+        }
+        finally
+        {
+            if (device != null) Marshal.ReleaseComObject(device);
+        }
+    }
+
+    /// <summary>Records from <paramref name="source"/> from now on (also: tests with a fake client).</summary>
+    internal void Attach(IAudioCaptureClient source, string? deviceId)
+    {
+        capture = source;
+        DeviceId = deviceId;
+    }
 
     public void Begin()
     {
@@ -55,23 +95,24 @@ internal sealed class AudioTrack
         IntPtr format = IntPtr.Zero;
         try
         {
-            if (enumerator.GetDefaultAudioEndpoint(loopback ? Wasapi.RenderFlow : Wasapi.CaptureFlow, Wasapi.ConsoleRole, out device) != 0 || device == null) return false;
+            if (Wasapi.Failed(enumerator.GetDefaultAudioEndpoint(loopback ? Wasapi.RenderFlow : Wasapi.CaptureFlow, Wasapi.ConsoleRole, out device)) || device == null) return false;
+            string? deviceId = Wasapi.Failed(device.GetId(out string? id)) ? null : id;
             var clientId = Wasapi.AudioClientInterface;
-            if (device.Activate(ref clientId, Wasapi.ClsctxAll, IntPtr.Zero, out object? instance) != 0 || instance == null) return false;
+            if (Wasapi.Failed(device.Activate(ref clientId, Wasapi.ClsctxAll, IntPtr.Zero, out object? instance)) || instance == null) return false;
             var client = (IAudioClient)instance;
             uint flags = Wasapi.StreamFlagsAutoConvertPcm | Wasapi.StreamFlagsSrcDefaultQuality | (loopback ? Wasapi.StreamFlagsLoopback : 0u);
             format = Wasapi.AllocateFloatStereoFormat(Rate);
             object? service = null;
             var captureId = Wasapi.CaptureClientInterface;
             const long BufferDuration = 2_000_000;   // 200 ms
-            if (client.Initialize(Wasapi.SharedMode, flags, BufferDuration, 0, format, IntPtr.Zero) != 0 ||
-                client.GetService(ref captureId, out service) != 0 || service == null || client.Start() != 0)
+            if (Wasapi.Failed(client.Initialize(Wasapi.SharedMode, flags, BufferDuration, 0, format, IntPtr.Zero)) ||
+                Wasapi.Failed(client.GetService(ref captureId, out service)) || service == null || Wasapi.Failed(client.Start()))
             {
                 if (service != null) Marshal.ReleaseComObject(service);
                 Marshal.ReleaseComObject(client);
                 return false;
             }
-            capture = (IAudioCaptureClient)service;
+            Attach((IAudioCaptureClient)service, deviceId);
             Client = client;
             return true;
         }
@@ -93,6 +134,7 @@ internal sealed class AudioTrack
         catch (COMException) { }   // device already gone (unplugged or switched)
         if (capture != null && Marshal.IsComObject(capture)) Marshal.ReleaseComObject(capture);
         capture = null;
+        DeviceId = null;
         if (Client != null) { Marshal.ReleaseComObject(Client); Client = null; }
     }
 
@@ -106,9 +148,11 @@ internal sealed class AudioTrack
         var source = capture ?? throw new InvalidOperationException("The track is not open.");
         while (true)
         {
-            if (source.GetNextPacketSize(out uint pending) != 0) return false;
+            if (Wasapi.Failed(source.GetNextPacketSize(out uint pending))) return false;
             if (pending == 0) return true;
-            if (source.GetBuffer(out IntPtr data, out uint frames, out uint flags, out _, out ulong qpcPosition) != 0) return false;
+            int got = source.GetBuffer(out IntPtr data, out uint frames, out uint flags, out _, out ulong qpcPosition);
+            if (Wasapi.Failed(got)) return false;
+            if (got == Wasapi.BufferEmpty) return true;   // nothing to read after all (no buffer to release)
             try
             {
                 peak = Math.Max(peak, Write(data, frames, flags, (long)qpcPosition - start));
@@ -116,7 +160,7 @@ internal sealed class AudioTrack
             finally
             {
                 int released = source.ReleaseBuffer(frames);   // also after a write error, or the device stalls
-                if (released != 0) ErrorLog.Write("Releasing an audio buffer failed: 0x" + released.ToString("X8", CultureInfo.InvariantCulture), null);
+                if (Wasapi.Failed(released)) ErrorLog.Write("Releasing an audio buffer failed: 0x" + released.ToString("X8", CultureInfo.InvariantCulture), null);
             }
         }
     }

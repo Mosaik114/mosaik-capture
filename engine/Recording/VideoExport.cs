@@ -19,19 +19,20 @@ internal static class VideoExport
     public static void Export(RecordedVideo source, double from, double to, bool sound, bool gif,
         Action<double> progress, Action<RecordedVideo?, string?> done, CancellationToken cancellation = default)
     {
-        string target = ExportTarget(source.Path, gif);
         double length = Math.Max(0.1, to - from);
         var dispatcher = Application.Current.Dispatcher;
         var reporter = new MonotonicProgress(p => dispatcher.BeginInvoke(new Action(() => { if (!cancellation.IsCancellationRequested) progress(p); })));
         Task.Run(() =>
         {
+            string? target = null;
             try
             {
+                target = ReserveTarget(source.Path, gif);
                 return gif ? ExportGif(source, from, to, length, target, reporter, cancellation) : ExportMp4(source, from, to, sound, length, target, reporter, cancellation);
             }
             catch
             {
-                DeletePartial(target);
+                if (target != null) DeletePartial(target);
                 throw;
             }
         }, cancellation)
@@ -51,6 +52,25 @@ internal static class VideoExport
     /// Target file next to the source: its name plus <see cref="UiText.Files.TrimmedSuffix"/> as MP4, or its
     /// name as GIF; numbered instead of overwriting an earlier export.
     /// </summary>
+    /// <summary>
+    /// Like <see cref="ExportTarget"/>, but creates the (empty) file at once, so a second export started
+    /// meanwhile gets the next number instead of the same name. ffmpeg then overwrites it.
+    /// </summary>
+    internal static string ReserveTarget(string source, bool gif)
+    {
+        const int Attempts = 100;
+        for (int attempt = 0; ; attempt++)
+        {
+            string candidate = ExportTarget(source, gif);
+            try
+            {
+                using (new FileStream(candidate, FileMode.CreateNew, FileAccess.Write)) { }
+                return candidate;
+            }
+            catch (IOException) when (File.Exists(candidate) && attempt < Attempts) { }   // taken in the meantime: next number
+        }
+    }
+
     internal static string ExportTarget(string source, bool gif) =>
         UniqueFile.Next(Path.Combine(Path.GetDirectoryName(source)!, Path.GetFileNameWithoutExtension(source) + (gif ? ".gif" : UiText.Files.TrimmedSuffix + ".mp4")));
 

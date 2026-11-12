@@ -22,10 +22,10 @@ internal static class Dxgi
         desktop = monitor;
         var factoryId = typeof(IDXGIFactory1).GUID;
         if (NativeMethods.CreateDXGIFactory1(ref factoryId, out IntPtr factoryPointer) != 0) return OutputLookup.NotFound;
-        var factory = (IDXGIFactory1)Marshal.GetObjectForIUnknown(factoryPointer);
-        Marshal.Release(factoryPointer);
+        IDXGIFactory1? factory = null;
         try
         {
+            factory = (IDXGIFactory1)Marshal.GetObjectForIUnknown(factoryPointer);
             for (uint adapterIndex = 0; adapterIndex < MaxAdapters; adapterIndex++)
             {
                 if (factory.EnumAdapters(adapterIndex, out IDXGIAdapter? adapter) != 0 || adapter == null) break;
@@ -49,7 +49,8 @@ internal static class Dxgi
         }
         finally
         {
-            Marshal.ReleaseComObject(factory);
+            if (factory != null) Marshal.ReleaseComObject(factory);
+            Marshal.Release(factoryPointer);   // the reference CreateDXGIFactory1 handed out
         }
     }
 

@@ -124,6 +124,59 @@ public sealed class AudioTrackTests : IDisposable
     }
 
     [Fact]
+    public void SuccessCodesAreNoFailure()
+    {
+        client.PacketSizeResult = 1;                          // S_FALSE
+        client.Packet(0, 480, first: 1);
+        bool first = false, second = false;
+
+        var (left, _) = Record(track =>
+        {
+            client.NextGetBufferResult = Wasapi.BufferEmpty;  // the packet vanished after all
+            first = track.Drain(0, out _);
+            second = track.Drain(0, out _);                  // and the next round reads it normally
+        });
+
+        Assert.True(first, "AUDCLNT_S_BUFFER_EMPTY closed the track");
+        Assert.True(second);
+        Assert.Equal(480, left.Length);
+        Assert.Equal(1, client.Released);                     // nothing to release for the empty one
+    }
+
+    [Theory]
+    [InlineData("{a}", "{a}", false)]
+    [InlineData("{a}", "{A}", false)]       // ids compare without case
+    [InlineData("{a}", "{b}", true)]        // headphones plugged in: follow the new default
+    [InlineData(null, "{b}", false)]        // not open: nothing to switch
+    [InlineData("{a}", null, false)]        // no default device right now: keep recording
+    public void SwitchesOnlyWhenTheDefaultDeviceReallyChanged(string? opened, string? current, bool reopen) =>
+        Assert.Equal(reopen, AudioTrack.ShouldReopen(opened, current));
+
+    [Fact]
+    public void ReopeningOnAnotherDeviceKeepsTheTimeline()
+    {
+        string file = directory.File("switch.f32");
+        var track = new AudioTrack(file, client);
+        track.Begin();
+        client.Packet(0, 480, first: 1);
+        Drain(track);
+        track.Close();
+        Assert.Null(track.DeviceId);
+
+        using var newDevice = new FakeCaptureClient();
+        track.Attach(newDevice, "{new}");
+        newDevice.Packet(Ticks(48_000), 480, first: 5000);   // the new device starts one second later
+        Drain(track);
+        Assert.Equal("{new}", track.DeviceId);
+        track.End(0, 0);
+
+        byte[] bytes = File.ReadAllBytes(file);
+        Assert.Equal((48_000 + 480) * 8, bytes.Length);
+        Assert.Equal(0, BitConverter.ToSingle(bytes, 480 * 8));             // the gap is silence
+        Assert.Equal(5000, BitConverter.ToSingle(bytes, 48_000 * 8));       // and the new sound sits at its time
+    }
+
+    [Fact]
     public void PeakIsTheLoudestSampleForTheMeter()
     {
         client.Packet(0, 4, constant: -0.75f);
@@ -218,13 +271,27 @@ public sealed class AudioTrackTests : IDisposable
         public int GetNextPacketSize(out uint frames)
         {
             frames = packets.Count > 0 ? (uint)packets.Peek().Samples.Length / 2 : 0;
-            if (!FailNextPacketSize) return 0;
+            if (!FailNextPacketSize) return PacketSizeResult;
             FailNextPacketSize = false;
             return unchecked((int)0x88890004);   // AUDCLNT_E_DEVICE_INVALIDATED
         }
 
+        /// <summary>Returned once by the next GetBuffer instead of a packet (e.g. AUDCLNT_S_BUFFER_EMPTY).</summary>
+        public int? NextGetBufferResult { get; set; }
+
+        /// <summary>Returned by GetNextPacketSize when it succeeds (0 = S_OK, 1 = S_FALSE).</summary>
+        public int PacketSizeResult { get; set; }
+
         public int GetBuffer(out IntPtr data, out uint frames, out uint flags, out ulong devicePosition, out ulong qpcPosition)
         {
+            if (NextGetBufferResult is int result)
+            {
+                NextGetBufferResult = null;
+                data = IntPtr.Zero;
+                frames = flags = 0;
+                devicePosition = qpcPosition = 0;
+                return result;
+            }
             var (qpc, packetFlags, samples) = packets.Dequeue();
             current = Marshal.AllocHGlobal(samples.Length * sizeof(float));
             Marshal.Copy(samples, 0, current, samples.Length);

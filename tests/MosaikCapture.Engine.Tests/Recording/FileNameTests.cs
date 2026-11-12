@@ -58,6 +58,21 @@ public sealed class FileNameTests : IDisposable
     }
 
     [Fact]
+    public void QuickExportsReserveDifferentNames()
+    {
+        string source = directory.File("clip.mp4");
+
+        string first = VideoExport.ReserveTarget(source, gif: false);
+        string second = VideoExport.ReserveTarget(source, gif: false);
+        string gif = VideoExport.ReserveTarget(source, gif: true);
+
+        Assert.Equal("clip gekürzt.mp4", Path.GetFileName(first));
+        Assert.Equal("clip gekürzt (2).mp4", Path.GetFileName(second));
+        Assert.Equal("clip.gif", Path.GetFileName(gif));
+        Assert.True(File.Exists(first) && File.Exists(second) && File.Exists(gif), "the names are taken at once");
+    }
+
+    [Fact]
     public void ExportNeverOverwritesAnEarlierExport()
     {
         string source = directory.File("probe.mp4");

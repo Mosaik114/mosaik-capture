@@ -202,10 +202,19 @@ internal static class Ffmpeg
             process.Dispose();
             throw;
         }
-        AddToKillOnCloseJob(process);
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        return process;
+        try
+        {
+            AddToKillOnCloseJob(process);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            return process;
+        }
+        catch
+        {
+            Kill(process);   // started but not usable: never leave it running
+            process.Dispose();
+            throw;
+        }
     }
 
     // On .NET Framework Exited can fire before the last redirected lines arrived: the parameterless

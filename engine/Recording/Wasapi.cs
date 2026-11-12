@@ -14,6 +14,9 @@ internal interface IMMDeviceEnumerator
 internal interface IMMDevice
 {
     [PreserveSig] int Activate(ref Guid iid, int context, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object? instance);
+    void OpenPropertyStore();
+    /// <summary>The endpoint id; the marshaler frees the string with CoTaskMemFree.</summary>
+    [PreserveSig] int GetId([MarshalAs(UnmanagedType.LPWStr)] out string? id);
 }
 
 [ComImport, Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -57,6 +60,11 @@ internal static class Wasapi
     public const uint StreamFlagsSrcDefaultQuality = 0x08000000;
     public const uint BufferFlagsSilent = 0x2;
     public const uint BufferFlagsTimestampError = 0x4;
+    /// <summary>AUDCLNT_S_BUFFER_EMPTY: a success code, the packet was gone after all.</summary>
+    public const int BufferEmpty = 0x08890001;
+
+    /// <summary>HRESULTs: negative values are errors, zero and positive values (S_FALSE, AUDCLNT_S_...) succeed.</summary>
+    public static bool Failed(int hresult) => hresult < 0;
 
     /// <summary>
     /// Allocates a WAVEFORMATEXTENSIBLE for stereo 32-bit float at <paramref name="rate"/>;

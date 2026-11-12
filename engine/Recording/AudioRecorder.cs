@@ -37,6 +37,9 @@ internal sealed class AudioRecorder : IAudioRecorder
     static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
     const int OpenRetryMs = 1000, DeviceChangeRetryMs = 500;
 
+    /// <summary>How often the open tracks compare their device with Windows' current default device.</summary>
+    const int DeviceCheckMs = 1000;
+
     readonly AudioTrack systemSound, microphone;
     readonly ManualResetEventSlim stopSignal = new();
     readonly TaskCompletionSource<bool> finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -149,8 +152,18 @@ internal sealed class AudioRecorder : IAudioRecorder
         if (track.Client == null) return;
         if (!track.Drain(startTicks, out float peak))
         {
-            track.Close();   // e.g. a different output device was selected
+            track.Close();   // the device failed (e.g. unplugged or disabled): try again shortly
             track.RetryAt = Environment.TickCount + DeviceChangeRetryMs;
+        }
+        else if (unchecked(Environment.TickCount - track.DeviceCheckAt) >= 0)
+        {
+            track.DeviceCheckAt = Environment.TickCount + DeviceCheckMs;
+            if (AudioTrack.ShouldReopen(track.DeviceId, track.DefaultDeviceId(enumerator)))
+            {
+                ErrorLog.Write("The default audio device changed; recording from the new one", null);
+                track.Close();   // reopened on the next round; the gap becomes silence on the timeline
+                track.RetryAt = Environment.TickCount;
+            }
         }
         if (isMicrophone) microphoneLevel = peak;
     }

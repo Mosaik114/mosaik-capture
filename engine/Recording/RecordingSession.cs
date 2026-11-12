@@ -206,7 +206,7 @@ internal sealed class RecordingSession : IRecordingSession
         {
             process = services.Runner.Start(args, segment.Errors.Add, () => OnSegmentExited(segment));
         }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        catch (Exception ex)   // any failure: the segment must not stay half-registered
         {
             ErrorLog.Write("Starting ffmpeg", ex);
             bool wasCurrent;
@@ -216,8 +216,9 @@ internal sealed class RecordingSession : IRecordingSession
                 wasCurrent = current == segment;
                 if (wasCurrent) current = null;
             }
+            if (wasCurrent) wantRunning = false;
+            if (ex is not (Win32Exception or InvalidOperationException or IOException)) throw;   // a bug: rolled back, now surface it
             if (!wasCurrent) return;   // paused meanwhile: nothing broke from the user's point of view
-            wantRunning = false;
             reason = ex.Message;
             Broke?.Invoke();
             return;

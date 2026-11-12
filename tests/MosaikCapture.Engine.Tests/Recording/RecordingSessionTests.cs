@@ -89,13 +89,23 @@ public sealed class RecordingSessionTests : IDisposable
     [Fact]
     public async Task PauseWhileFfmpegStartsStopsTheNewProcessAtOnce()
     {
-        runner.StartGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The fake ffmpeg start blocks until released. Before, the resume continued wherever the encoder task
+        // completed; when that was the thread the test itself needed to continue on (xUnit's context), the test
+        // could not call Pause until the start timed out. Now the resume is driven onto a dedicated thread: the
+        // encoder result is set from that thread, and the session's ConfigureAwait(false) continuation, with the
+        // blocking start, runs right there, while the test continues on its own thread. (The test must not
+        // join that thread: its own continuation may run on it after the resume completes.)
+        var encoderGate = new TaskCompletionSource<VideoEncoder>();   // no RunContinuationsAsynchronously: continue inline
+        encoder = () => encoderGate.Task;
+        runner.StartGate = new ManualResetEventSlim();
         var session = NewSession();
 
-        var resume = session.ResumeAsync();
-        await Within(runner.StartEntered.Task);   // ffmpeg is being started on a pool thread, outside the lock
+        var resume = session.ResumeAsync();   // now waits for the encoder (the continuation is registered)
+        var starter = new Thread(() => encoderGate.SetResult(VideoEncoder.Software)) { IsBackground = true, Name = "Fake ffmpeg start" };
+        starter.Start();
+        await Within(runner.StartEntered.Task);   // ffmpeg is being "started" on that thread, outside the session lock
         session.Pause();
-        runner.StartGate.SetResult(true);
+        runner.StartGate.Set();
         await Within(resume);
 
         await Within(runner.Processes.Single().Quit.Task);
@@ -188,7 +198,8 @@ public sealed class RecordingSessionTests : IDisposable
         using var stop = new CancellationTokenSource();
         double lowest = 0;
         bool dipped = false;
-        var reader = Task.Run(() =>
+        // a dedicated thread, not a pool thread: the busy reader must not slow down the session's own continuations
+        var reader = new Thread(() =>
         {
             while (!stop.IsCancellationRequested)
             {
@@ -196,7 +207,9 @@ public sealed class RecordingSessionTests : IDisposable
                 if (now < lowest) dipped = true;
                 lowest = Math.Max(lowest, now);
             }
-        }, TestContext.Current.CancellationToken);
+        })
+        { IsBackground = true };
+        reader.Start();
 
         for (int i = 0; i < 50; i++)
         {
@@ -204,7 +217,7 @@ public sealed class RecordingSessionTests : IDisposable
             session.Pause();
         }
         stop.Cancel();
-        await Within(reader);
+        Assert.True(reader.Join(TimeSpan.FromSeconds(10)), "the reader did not stop");
 
         Assert.False(dipped, "Elapsed went backwards while pausing");
     }
@@ -242,7 +255,13 @@ public sealed class RecordingSessionTests : IDisposable
         runner.StartFailure = new Win32Exception("ffmpeg.exe is missing");
         var session = NewSession();
         bool lockFree = false;
-        session.Broke += () => lockFree = Task.Run(() => session.SegmentCount).Wait(TimeSpan.FromSeconds(2));
+        session.Broke += () =>
+        {
+            // a dedicated thread (not the pool) tries to take the session lock while Broke is being raised
+            var probe = new Thread(() => _ = session.SegmentCount) { IsBackground = true };
+            probe.Start();
+            lockFree = probe.Join(TimeSpan.FromSeconds(2));
+        };
 
         await Within(session.ResumeAsync());
 
@@ -250,6 +269,37 @@ public sealed class RecordingSessionTests : IDisposable
         Assert.Equal("ffmpeg.exe is missing", session.Reason);
         Assert.Equal(0, session.SegmentCount);
         Assert.True(session.Paused);
+    }
+
+    [Fact]
+    public async Task StartFailingAfterTheProcessExistedIsRolledBack()
+    {
+        runner.StartFailure = new IOException("pipe broken while starting");
+        var session = NewSession();
+        int broke = 0;
+        session.Broke += () => broke++;
+
+        await Within(session.ResumeAsync());
+
+        Assert.Equal(0, session.SegmentCount);
+        Assert.True(session.Paused);
+        Assert.Equal(1, broke);
+        Assert.Equal("pipe broken while starting", session.Reason);
+    }
+
+    [Fact]
+    public async Task UnexpectedStartErrorIsRolledBackAndSurfaces()
+    {
+        runner.StartFailure = new NullReferenceException("bug");
+        var session = NewSession();
+
+        await Assert.ThrowsAsync<NullReferenceException>(() => session.ResumeAsync());
+
+        Assert.Equal(0, session.SegmentCount);
+        Assert.True(session.Paused);
+        runner.StartFailure = null;
+        await Within(session.ResumeAsync());   // and the session still works
+        Assert.Equal(1, session.SegmentCount);
     }
 
     [Fact]
@@ -401,7 +451,8 @@ public sealed class RecordingSessionTests : IDisposable
         public readonly List<FakeProcess> Processes = new();
         public readonly List<(FfmpegProgram Program, IReadOnlyList<string> Arguments)> Runs = new();
         public readonly TaskCompletionSource<bool> StartEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource<bool>? StartGate;
+        /// <summary>Holds Start until set; only used from a dedicated thread, never from the thread pool.</summary>
+        public ManualResetEventSlim? StartGate;
         public Exception? StartFailure;
         public double ProbedDuration = 2;
         public int AssembleExitCode;
@@ -410,7 +461,7 @@ public sealed class RecordingSessionTests : IDisposable
         public IFfmpegProcess Start(FfmpegArgs args, Action<string> errorLine, Action exited)
         {
             StartEntered.TrySetResult(true);
-            StartGate?.Task.Wait(TimeSpan.FromSeconds(10));
+            if (StartGate != null && !StartGate.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("the test never released the fake start");
             if (StartFailure != null) throw StartFailure;
             File.WriteAllText(args.Arguments.LastItem(), "frames");
             var process = new FakeProcess(errorLine, exited);

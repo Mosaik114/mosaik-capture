@@ -120,6 +120,7 @@ internal static class CaptureBridge
             }
             Thread.Sleep(ForwardDelayMs);
         }
+        ErrorLog.Write("The running engine's window did not appear; the command was dropped", null);
     }
 
     static void RunMessageLoop(int command)
