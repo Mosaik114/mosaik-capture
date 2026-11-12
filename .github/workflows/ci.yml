@@ -40,11 +40,15 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: cargo test
         run: cargo test --locked
+      # Creates the real settings window in-process (own class, temp settings, unusual hotkeys)
+      - name: End-to-end test of the settings window
+        run: cargo test --locked -- --ignored
       - name: Self-test of the release build
         shell: pwsh
         run: |
           cargo build --release --locked
-          $p = Start-Process target/release/Mosaiks-Aufnahme.exe --self-test -Wait -PassThru
+          "{0:N0} bytes" -f (Get-Item target/release/MosaikCapture.exe).Length
+          $p = Start-Process target/release/MosaikCapture.exe --self-test -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
 
   dotnet:
@@ -64,9 +68,13 @@ jobs:
         run: dotnet build MosaikCapture.sln -c Release --no-restore
       - name: Format
         run: dotnet format MosaikCapture.sln --verify-no-changes --no-restore
-      # Pixel tests compare against references rendered with this machine's fonts; they run locally
+      # Pixel tests compare UI renders with references; they skip themselves (naming the font) when a
+      # reference font such as Segoe UI Variable is missing on the runner image, and use a
+      # blur-tolerant comparison here because font versions differ between Windows builds.
       - name: Test
-        run: dotnet test MosaikCapture.sln -c Release --no-build --filter "Category!=Pixel"
+        env:
+          MOSAIK_PIXEL_TOLERANCE: lenient
+        run: dotnet test MosaikCapture.sln -c Release --no-build --logger "console;verbosity=normal"
 
   package:
     name: Package

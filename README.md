@@ -34,7 +34,7 @@ pause/resume, trimming and GIF export.
 | **Pin to screen** | Keep a capture floating above other windows as a reference. |
 | **Screen recording** | Desktop Duplication through ffmpeg's `ddagrab` on the GPU, NVENC with automatic x264 fallback, 30 or 60 fps. System sound (WASAPI loopback) and microphone are recorded as separate tracks and stay in sync across pauses. |
 | **Trim & GIF** | A film-strip trimmer (`Space` play, `I`/`O` in/out, arrow keys step) exports MP4 or GIF. |
-| **Tiny footprint** | A ~360 KB tray app with no runtime dependencies; the engine starts on the first capture and stays resident. No network access, no telemetry, no elevation. |
+| **Tiny footprint** | A ~370 KB tray app with no runtime dependencies (CI prints the size of every build); the engine starts on the first capture and stays resident. No network access, no telemetry, no elevation. |
 
 <p align="center">
   <img src="docs/images/editor-annotations.png" alt="Annotations: highlighter on text, labelled plates, snapped circles, arrows, pixelated e-mail address" width="640">
@@ -57,12 +57,12 @@ off-screen by the real WPF code.</sub>
 
 ```mermaid
 flowchart LR
-    subgraph host["Mosaiks-Aufnahme.exe · Rust"]
+    subgraph host["MosaikCapture.exe · Rust"]
         HK["Global hotkeys<br/>RegisterHotKey"]
         UI["Settings window<br/>+ tray icon"]
         CFG[("settings.ini<br/>UTF-16, atomic writes")]
     end
-    subgraph engine["Mosaiks-Capture-Engine.exe · C#/WPF"]
+    subgraph engine["MosaikCapture.Engine.exe · C#/WPF"]
         SHOT["Screenshot<br/>overlay · editor · card · pin · OCR"]
         REC["Recording<br/>countdown · bar · trim · GIF"]
     end
@@ -94,7 +94,7 @@ sides. Details, including the recording pipeline and the testing strategy, are i
 1. Download `mosaik-capture-<version>-win-x64.zip` from the
    [latest release](https://github.com/Mosaik114/mosaik-capture/releases/latest) and unzip
    both executables into one folder.
-2. Start `Mosaiks-Aufnahme.exe`. It adds itself to the tray and (by default) to autostart.
+2. Start `MosaikCapture.exe`. It adds itself to the tray and (by default) to autostart.
 3. For screen recording, install ffmpeg: `winget install Gyan.FFmpeg.Essentials`.
 
 Requirements: Windows 10/11 x64 with .NET Framework 4.8 (built into current Windows).
@@ -114,7 +114,7 @@ with *Smart App Control* enabled Windows refuses to run them.
 
 Shortcuts, folders, microphone, system sound, click display, frame rate, countdown and
 autostart are configured in the settings window (tray icon → *Einstellungen*).
-Settings live in `%LOCALAPPDATA%\Mosaiks-Aufnahme\settings.ini`; screenshots go to
+Settings live in `%LOCALAPPDATA%\MosaikCapture\settings.ini`; screenshots go to
 `Pictures\Mosaiks-Screenshots`, recordings to `Videos\Mosaiks-Aufnahmen`.
 
 ## Build from source
@@ -134,40 +134,62 @@ without external resource tools, so both toolchains produce the same resources.
 
 | Check | Rust host | C# engine |
 |---|---|---|
-| Tests | 60 unit tests + an end-to-end test of the real settings window | 167 xUnit cases: shape recognition, highlighter snapping, geometry, ffmpeg argument building, real-ffmpeg trim/GIF/audio-sync runs, error-log rotation, IPC contract, 13 pixel-compared UI renders |
+| Tests | 82 unit tests (hotkeys, settings, migration, CLI, DPI, resource writer) + an end-to-end test that drives the real settings window | 251 xUnit cases: the recording state machine with fakes, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, IPC contract, pixel comparisons of 13 UI states |
 | Static analysis | `clippy::pedantic`, warnings as errors, every `unsafe` block carries a `// SAFETY:` note | Nullable reference types, .NET analyzers (`Recommended`), warnings as errors |
 | Formatting | `cargo fmt --check` | `dotnet format --verify-no-changes` |
 | Supply chain | `Cargo.lock`, a single dependency (`windows-sys`) | Central package management, `packages.lock.json`, locked restore |
 
-CI runs all of this on `windows-latest` for every push, builds the release zip and attaches
-it to tagged releases. Actions are pinned to commit SHAs, Dependabot watches Cargo, NuGet
-and Actions, and gitleaks scans the full history on every push and weekly.
+CI runs every one of these suites on `windows-latest` for each push — including the window
+end-to-end test and the real ffmpeg runs. The pixel tests run too, with a blur-tolerant
+comparison because the runner's fonts differ slightly, and skip with a named reason if a
+reference font is missing there. CI also prints the binary size, builds the release zip and
+attaches it to tagged releases. Actions are pinned to commit SHAs, Dependabot watches Cargo,
+NuGet and Actions, and gitleaks scans the full history on every push and weekly.
+
+## Design decisions and trade-offs
+
+- **Two processes instead of one.** Hotkeys must work even while the editor is busy or has
+  crashed, and the always-on part should cost almost nothing. The price is an IPC contract,
+  which is why both sides pin it in tests.
+- **WPF on .NET Framework 4.8, not .NET 8+.** 4.8 ships with Windows, so users need no
+  runtime and the engine stays a ~240 KB executable. Moving to .NET 8 would bring faster
+  startup and newer APIs at the cost of a runtime install or a ~150 MB self-contained build.
+- **ffmpeg as an external tool.** Desktop Duplication, NVENC and robust muxing come for free;
+  the engine only has to drive it carefully (absolute local paths, a job object, one encoder
+  per session, exact segment timing).
+- **Own WASAPI capture instead of ffmpeg's audio inputs.** Keeping system sound and microphone
+  on separate tracks with device timestamps is what makes pause/resume stay in sync.
+- **A hand-written resource writer in `build.rs`.** It avoids requiring `rc.exe`/`windres`
+  on contributors' machines; the cost — a bit of binary-format code — is paid back by
+  golden-layout tests.
+- **Next steps:** code-sign the binaries, add an installer (winget manifest), and
+  move the editor's UI construction from code into XAML resources to shorten the largest files.
 
 ## Project layout
 
 ```
 src/                 Rust tray app
-  main.rs            entry point, single instance, exit codes
+  main.rs            entry point, exit codes
   cli.rs             command-line parsing
+  single_instance.rs mutex and forwarding to the running instance
   hotkey.rs          "Shift+Alt+4" → RegisterHotKey (German and English key names)
   config.rs          settings model, defaults, validation (pure, unit-tested)
-  store.rs           settings.ini I/O with atomic replace
+  store.rs           settings.ini I/O with atomic replace and migration
   autostart.rs       per-user Run value
   engine.rs, ipc.rs  launching and messaging the capture engine
-  ui/                settings window, tray icon, theme, layout
-build.rs             embeds icon, manifest and version info
+  ui/                settings window, tray icon, theme, DPI-aware layout, folder picker
+build.rs, build/     embeds icon, manifest and version info (tested resource writer)
 engine/              C#/WPF capture engine (net48)
-  Core/              entry point, IPC bridge, settings, error log, palette
-  Screenshot/        overlay, editor (shapes, markup, mouse, result), card, pin, OCR
-  Recording/         session, ffmpeg, WASAPI audio, DXGI output mapping, bar, card, trim
+  Core/              entry point, IPC bridge, settings, error log, NativeMethods, UiText
+  Screenshot/        grabber, overlay, editor (shapes, markup, mouse, result), card, pin, OCR
+  Recording/         controller + interfaces, session, ffmpeg + argument builder, WASAPI, trim
 tests/               xUnit test project incl. reference images
 docs/                architecture notes and images
 ```
 
 ## How it was built
 
-This started as a personal tool and was split out of a larger private desktop project.
-It was developed with AI coding assistants (OpenAI Codex, Anthropic Claude) as pair
+This started as a personal tool that I use every day. It was developed with AI coding assistants (OpenAI Codex, Anthropic Claude) as pair
 programmers; requirements, design decisions, review and day-to-day testing are the author's.
 
 ## License

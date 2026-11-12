@@ -53,18 +53,22 @@ Invoke-Step 'C# capture engine' { dotnet build $engineProject -c Release -o $bin
 
 New-Item -ItemType Directory -Force $bin | Out-Null
 $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
-$rustExe = Get-ChildItem $targetDir -Recurse -Filter 'Mosaiks-Aufnahme.exe' |
+$rustExe = Get-ChildItem $targetDir -Recurse -Filter 'MosaikCapture.exe' |
     Where-Object { $_.Directory.Name -eq 'release' } |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $rustExe) { throw "Mosaiks-Aufnahme.exe not found under $targetDir" }
+if (-not $rustExe) { throw "MosaikCapture.exe not found under $targetDir" }
 Copy-Item $rustExe.FullName $bin -Force
 
 if ($Test) {
     Invoke-Step 'Rust tests' { cargo @cargo test --locked }
     Invoke-Step 'C# tests' { dotnet test $solution -c Release }
-    Invoke-Step 'Rust self-test' {
-        Start-Process (Join-Path $bin 'Mosaiks-Aufnahme.exe') '--self-test' -Wait -PassThru |
-            ForEach-Object { $global:LASTEXITCODE = $_.ExitCode }
+    # GUI-subsystem executables: wait on the process object to get their exit codes
+    foreach ($exe in 'MosaikCapture.exe', 'MosaikCapture.Engine.exe') {
+        Write-Host "==> Self-test $exe" -ForegroundColor Cyan
+        $report = Join-Path ([IO.Path]::GetTempPath()) 'mosaik-capture-self-test.json'
+        $process = [Diagnostics.Process]::Start((Join-Path $bin $exe), "--self-test `"$report`"")
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Self-test of $exe failed with exit code $($process.ExitCode)" }
     }
 }
 
