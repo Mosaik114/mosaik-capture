@@ -1,0 +1,5 @@
+[*.cs]
+# Literal arrays in test data and assertions read better than static fields.
+dotnet_diagnostic.CA1861.severity = none
+# Tests deliberately throw and log plain exceptions.
+dotnet_diagnostic.CA2201.severity = none

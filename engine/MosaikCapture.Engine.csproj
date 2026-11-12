@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Capture engine: screenshot overlay/editor and screen recording (WPF, .NET Framework 4.8). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>Mosaiks-Capture-Engine</AssemblyName>
+    <RootNamespace>MosaikCapture.Engine</RootNamespace>
+    <StartupObject>MosaikCapture.Engine.Core.Program</StartupObject>
+    <ApplicationIcon>..\assets\capture.ico</ApplicationIcon>
+    <ApplicationManifest>..\assets\app.manifest</ApplicationManifest>
+    <Product>Mosaiks Aufnahme</Product>
+    <Description>Capture engine of Mosaiks Aufnahme</Description>
+    <!-- Ship the exe alone, as before (no generated .exe.config pinning the runtime SKU). -->
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Windows.Media.Ocr and Windows.Graphics.Imaging (WinRT) for text recognition. -->
+    <PackageReference Include="Microsoft.Windows.SDK.Contracts" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="MosaikCapture.Engine.Tests" />
+  </ItemGroup>
+
+</Project>
