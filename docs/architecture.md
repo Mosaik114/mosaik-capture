@@ -28,17 +28,17 @@ Mosaik Capture is two cooperating Windows processes:
 
 ## Inter-process contract
 
-Both sides keep the contract in one place (`src/ipc.rs`, `engine/Core/CaptureBridge.cs`)
-and pin it with tests, so a change on one side fails that side's suite.
+The host keeps the contract in `src/ipc.rs` (its own messages) and `src/engine.rs` (the engine's), the engine in `engine/Core/CaptureBridge.cs`; both sides
+pin it with tests, so a change on one side fails that side's suite. Note that WM_APP+1…+4\nmean different things on each side: they are addressed to different windows.
 
 | Direction | Mechanism | Meaning |
 |---|---|---|
 | host → engine | `CreateProcess` `--screenshot` / `--recording` | first capture: start the engine with a command |
 | host → engine | `PostMessage` `WM_APP+1` / `+2` to the hidden window titled `MosaikCapture.Engine` | screenshot / toggle recording |
-| host → engine | `WM_APP+3` | quit (refused while a recording is running) |
+| host → engine | `WM_APP+3` | quit (ignored while the engine is busy: selection, countdown, recording or saving) |
 | host → engine | `SendMessageTimeout` `WM_APP+10` | state query: bit 0 = busy (selection/countdown/recording), bit 1 = recording live |
 | engine → host | `PostMessage` `WM_APP+20` to window class `MosaikCapture.Host` | microphone / system sound / click display toggled in the recording bar (bits 0–2), so the host persists them |
-| anyone → host | second start of the host with `--screenshot`, `--recording`, `--quit`, `--probe`, `recording` | forwarded to the running instance (`WM_APP+1…+4`, `+9`, `+10`); see the exit codes below |
+| anyone → host | second start of the host with `--screenshot`, `--recording`, `--quit`, `--probe`, and a bare `recording` (show settings at the recording section) | forwarded to the running instance (`WM_APP+1…+4`, `+9`, `+10`); see the exit codes below |
 
 Single instance on both sides uses session-local mutexes (`Local\MosaikCapture.Host`,
 `Local\MosaikCapture.Engine`). Settings are shared through
@@ -64,6 +64,7 @@ The host's exit codes are part of the contract for scripts and for the engine:
 
 The engine window is only trusted if its process runs `MosaikCapture.Engine.exe` from the
 host's own folder, so a foreign window with the same title is never messaged.
+
 ## Host internals (Rust)
 
 ```
@@ -102,7 +103,7 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
 |---|---|
 | `Core/` | `Program` (entry point, crash handling), `CaptureBridge` (CLI + IPC), `CaptureSettings`, `ErrorLog`, `NativeMethods` (every P/Invoke and Win32 constant), `UiText` (every German UI string), `ClipboardWriter` (the single clipboard path), `Motion` (shared timing), `Metrics` (shared sizes and shadows), `Palette`, `ToolWindows` |
 | `Screenshot/` | `Screenshots` (facade) → `ScreenshotController` → `IScreenshotUi` / `IScreenshotStore`; `ShapeRecognizer` and `TextLineFinder` (pure, tested), `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`), `PinnedScreenshot`, `TextRecognition` |
-| `Recording/` | `ScreenRecorder` (facade) → `RecordingController` (state machine) → `IRecordingUi` / `IRecordingBackend` / `IRecordingSession`; `RecordingSession`, `RecordingSession` (behind `IFfmpegRunner` / `IAudioRecorder`, unit-tested with fakes), `Ffmpeg` (every call bounded by `FfmpegTimeouts`, cancellable), `FfmpegArgs`, `TailBuffer`, `AudioRecorder`/`AudioTrack` (WASAPI), `Dxgi`, toolbar, frame, countdown, card, `TrimWindow`, `VideoExport` |
+| `Recording/` | `ScreenRecorder` (facade) → `RecordingController` (state machine) → `IRecordingUi` / `IRecordingBackend` / `IRecordingSession`; `RecordingSession` (behind `IFfmpegRunner` / `IAudioRecorder`, unit-tested with fakes), `Ffmpeg` (every call bounded by `FfmpegTimeouts`, cancellable), `FfmpegArgs`, `TailBuffer`, `AudioRecorder`/`AudioTrack` (WASAPI), `Dxgi`, toolbar, frame, countdown, card, `TrimWindow`, `VideoExport` |
 | `Diagnostics/` | `--self-test` and `--live-test` |
 
 ### Screenshot
