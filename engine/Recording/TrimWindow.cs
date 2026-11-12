@@ -33,7 +33,7 @@ internal sealed partial class TrimWindow : Window
     RECT workArea;
     double duration = 1, selectionStart, selectionEnd = 1, playhead, grabOffset;
     bool playing, withSound, exporting, exported;
-    CancellationTokenSource? exportCancellation;
+    CancellationTokenSource? exportCancellation, stripCancellation;
     DragTarget dragging;
     int generation;
 
@@ -164,6 +164,7 @@ internal sealed partial class TrimWindow : Window
     void Dismiss()
     {
         if (exporting) CancelExport();
+        CancelFilmStrip();
         generation++;
         playbackTimer.Stop();
         playing = false;

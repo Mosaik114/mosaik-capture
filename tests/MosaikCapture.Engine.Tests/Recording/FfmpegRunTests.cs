@@ -83,15 +83,15 @@ public sealed class FfmpegRunTests
     }
 
     [Fact]
-    public void PreviewImagesFailQuietlyWhenFfmpegCannotRun()
+    public async Task PreviewImagesFailQuietlyWhenFfmpegCannotRun()
     {
         var locator = Ffmpeg.Locator;
         try
         {
             Ffmpeg.Locator = new MissingFfmpeg();
 
-            Assert.Null(RecordedVideo.Frame("C:\\missing.mp4", 1, 640));
-            Assert.Null(RecordedVideo.Strip("C:\\missing.mp4", 6, 3, 60));
+            Assert.Null(await RecordedVideo.FrameAsync("C:\\missing.mp4", 1, 640, TestContext.Current.CancellationToken));
+            Assert.Null(await RecordedVideo.StripAsync("C:\\missing.mp4", 6, 3, 60, TestContext.Current.CancellationToken));
         }
         finally { Ffmpeg.Locator = locator; }
     }

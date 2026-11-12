@@ -65,7 +65,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     }
 
     [Fact]
-    public void SystemSoundAndMicrophoneStayInSyncAfterAPause()
+    public async Task SystemSoundAndMicrophoneStayInSyncAfterAPause()
     {
         FfmpegTool.SkipIfMissing();
         var segments = TwoSegments("two-tracks");
@@ -75,7 +75,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
 
         Assemble(segments, new List<string> { system, mic }, target);
 
-        var result = WpfThread.Run(() => RecordedVideo.Load(target));
+        var result = await RecordedVideo.LoadAsync(target, TestContext.Current.CancellationToken);
         Assert.InRange(result.Duration, 4.9, 5.1);
         Assert.True(result.Audio, "audio missing");
         var beeps = Beeps(target);
@@ -85,7 +85,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     }
 
     [Fact]
-    public void OneTrackOrNoAudioAtAll()
+    public async Task OneTrackOrNoAudioAtAll()
     {
         FfmpegTool.SkipIfMissing();
         var segments = TwoSegments("one-track");
@@ -98,7 +98,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
         segments = TwoSegments("no-audio");
         target = work.File("ohne-ton.mp4");
         Assemble(segments, new List<string>(), target);
-        var result = WpfThread.Run(() => RecordedVideo.Load(target));
+        var result = await RecordedVideo.LoadAsync(target, TestContext.Current.CancellationToken);
         Assert.InRange(result.Duration, 4.9, 5.1);
         Assert.False(result.Audio, "should have no audio");
     }
@@ -106,11 +106,11 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     // ---------- Loading, trimming, GIF ----------
 
     [Fact]
-    public void LoadReadsDurationSizeAudioAndThumbnail()
+    public async Task LoadReadsDurationSizeAudioAndThumbnail()
     {
         string video = probe.Path;
 
-        var result = WpfThread.Run(() => RecordedVideo.Load(video));
+        var result = await RecordedVideo.LoadAsync(video, TestContext.Current.CancellationToken);
 
         Assert.InRange(result.Duration, 5.95, 6.05);
         Assert.Equal(1280, result.Width);
@@ -124,9 +124,9 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     }
 
     [Fact]
-    public void TrimKeepsTheSelectionAndTheSoundWithMonotonicProgress()
+    public async Task TrimKeepsTheSelectionAndTheSoundWithMonotonicProgress()
     {
-        var source = WpfThread.Run(() => RecordedVideo.Load(probe.CopyTo(work)));
+        var source = await RecordedVideo.LoadAsync(probe.CopyTo(work), TestContext.Current.CancellationToken);
         var progress = new List<double>();
 
         var (result, error) = FfmpegTool.Export(source, 1.0, 4.5, sound: true, gif: false, progress);
@@ -143,9 +143,9 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     }
 
     [Fact]
-    public void TrimWithoutSoundAndASecondExportDoesNotOverwriteTheFirst()
+    public async Task TrimWithoutSoundAndASecondExportDoesNotOverwriteTheFirst()
     {
-        var source = WpfThread.Run(() => RecordedVideo.Load(probe.CopyTo(work)));
+        var source = await RecordedVideo.LoadAsync(probe.CopyTo(work), TestContext.Current.CancellationToken);
 
         var (first, _) = FfmpegTool.Export(source, 0, 2, sound: false, gif: false, new List<double>());
         var (second, error) = FfmpegTool.Export(source, 0, 2, sound: false, gif: false, new List<double>());
@@ -158,9 +158,9 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     }
 
     [Fact]
-    public void GifIsAtMost960PixelsWideAndKeepsTheAspectRatio()
+    public async Task GifIsAtMost960PixelsWideAndKeepsTheAspectRatio()
     {
-        var source = WpfThread.Run(() => RecordedVideo.Load(probe.CopyTo(work)));
+        var source = await RecordedVideo.LoadAsync(probe.CopyTo(work), TestContext.Current.CancellationToken);
         var progress = new List<double>();
 
         var (result, error) = FfmpegTool.Export(source, 2, 5, sound: false, gif: true, progress);
@@ -190,21 +190,21 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     }
 
     [Fact]
-    public void LoadFailsForAFileFfprobeCannotRead()
+    public async Task LoadFailsForAFileFfprobeCannotRead()
     {
         FfmpegTool.SkipIfMissing();
         string broken = work.File("broken.mp4");
         File.WriteAllBytes(broken, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 });
 
-        var error = Assert.Throws<InvalidOperationException>(() => RecordedVideo.Load(broken));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => RecordedVideo.LoadAsync(broken, TestContext.Current.CancellationToken));
 
         Assert.False(string.IsNullOrWhiteSpace(error.Message));
     }
 
     [Fact]
-    public void CancelledExportKillsFfmpegReportsNothingAndLeavesNoFile()
+    public async Task CancelledExportKillsFfmpegReportsNothingAndLeavesNoFile()
     {
-        var source = WpfThread.Run(() => RecordedVideo.Load(probe.CopyTo(work)));
+        var source = await RecordedVideo.LoadAsync(probe.CopyTo(work), TestContext.Current.CancellationToken);
 
         bool reported = WpfThread.Run(() =>
         {
@@ -224,11 +224,14 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     // ---------- Thumbnails ----------
 
     [Fact]
-    public void FilmStripAndSingleFrameHaveTheRequestedSize()
+    public async Task FilmStripAndSingleFrameHaveTheRequestedSize()
     {
         string video = probe.Path;
 
-        var (strip, frame, missing) = WpfThread.Run(() => (RecordedVideo.Strip(video, 6, 8, 60), RecordedVideo.Frame(video, 3, 640), RecordedVideo.Frame(work.File("missing.mp4"), 1, 640)));
+        var token = TestContext.Current.CancellationToken;
+        var strip = await RecordedVideo.StripAsync(video, 6, 8, 60, token);
+        var frame = await RecordedVideo.FrameAsync(video, 3, 640, token);
+        var missing = await RecordedVideo.FrameAsync(work.File("missing.mp4"), 1, 640, token);
 
         Assert.NotNull(strip);
         Assert.Equal(8 * 106, strip!.PixelWidth);   // 8 frames of 106 px (16:9 at 60 px height)

@@ -3,18 +3,28 @@ namespace MosaikCapture.Engine.Recording;
 // Trim window: film strip, selection handles and playhead.
 internal sealed partial class TrimWindow
 {
-    // As many frames as fit side by side, rendered in the background.
+    // As many frames as fit side by side, rendered by ffmpeg without blocking a thread; closing or
+    // reopening the window cancels a strip that is still being made.
     void LoadFilmStrip(RecordedVideo recorded, int openedAt)
     {
         double aspect = recorded.Width > 0 && recorded.Height > 0 ? (double)recorded.Width / recorded.Height : 16.0 / 9;
         int frames = Math.Max(2, Math.Min(24, (int)Math.Ceiling(StripWidth / (StripHeight * aspect))));
-        string path = recorded.Path;
-        double length = duration;
-        Task.Run(() => RecordedVideo.Strip(path, length, frames, (int)StripHeight * 2)).ContinueWith(task =>
-        {
-            if (task.IsFaulted) ErrorLog.Write("Rendering the film strip", task.Exception);
-            else if (openedAt == generation) strip.Source = task.Result;
-        }, TaskScheduler.FromCurrentSynchronizationContext());
+        CancelFilmStrip();
+        stripCancellation = new CancellationTokenSource();
+        ShowFilmStripAsync(recorded.Path, duration, frames, openedAt, stripCancellation.Token).LogFailures("Rendering the film strip");
+    }
+
+    async Task ShowFilmStripAsync(string path, double length, int frames, int openedAt, CancellationToken cancellation)
+    {
+        var image = await RecordedVideo.StripAsync(path, length, frames, (int)StripHeight * 2, cancellation);   // back on the UI thread
+        if (openedAt == generation && !cancellation.IsCancellationRequested) strip.Source = image;
+    }
+
+    void CancelFilmStrip()
+    {
+        stripCancellation?.Cancel();
+        stripCancellation?.Dispose();
+        stripCancellation = null;
     }
 
     // ---------- Timeline ----------

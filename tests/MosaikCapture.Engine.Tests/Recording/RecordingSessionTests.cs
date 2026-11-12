@@ -113,6 +113,34 @@ public sealed class RecordingSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task FinishWaitsForAnFfmpegThatIsStillStarting()
+    {
+        // same set-up as above: the resume runs on a dedicated thread and blocks in the fake start
+        var encoderGate = new TaskCompletionSource<VideoEncoder>();
+        encoder = () => encoderGate.Task;
+        runner.StartGate = new ManualResetEventSlim();
+        var session = NewSession();
+        var resume = session.ResumeAsync();
+        new Thread(() => encoderGate.SetResult(VideoEncoder.Software)) { IsBackground = true }.Start();
+        await Within(runner.StartEntered.Task);
+
+        var finishing = session.FinishAsync(root.File("out.mp4"), TestContext.Current.CancellationToken);   // stop right away
+        await Task.Yield();
+        Assert.False(finishing.IsCompleted, "Finish must wait for the segment whose ffmpeg is still starting");
+        Assert.Empty(runner.Runs);   // nothing probed while that ffmpeg may still write
+
+        runner.StartGate.Set();
+        await Within(resume);
+        var video = await WithinResult(finishing);
+
+        var process = runner.Processes.Single();
+        Assert.True(process.Quit.Task.IsCompleted, "the late ffmpeg was asked to quit");
+        Assert.True(process.Disposed);
+        Assert.NotNull(video);
+        Assert.Contains(runner.Runs, run => run.Program == FfmpegProgram.Probe);
+    }
+
+    [Fact]
     public async Task PausedShowsTheIntentEvenWhileTheResumeIsPending()
     {
         var pending = new TaskCompletionSource<VideoEncoder>(TaskCreationOptions.RunContinuationsAsynchronously);

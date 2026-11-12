@@ -47,7 +47,7 @@ First public release as a standalone project.
   window end-to-end test.
 - C# engine moved to an SDK-style project with nullable types and analyzers; recording and
   screenshot flows extracted into tested state machines; one home each for P/Invoke, UI
-  strings, metrics and timing; 442 tests including real ffmpeg runs and pixel comparisons.
+  strings, metrics and timing; 443 tests including real ffmpeg runs and pixel comparisons.
 - `build.ps1`, GitHub Actions CI with packaging and release upload, secret scanning,
   Dependabot.
 

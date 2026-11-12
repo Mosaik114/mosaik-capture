@@ -293,19 +293,20 @@ public sealed class PixelTests : IDisposable
 
     [Fact]
     [Trait("Category", "Ffmpeg")]
-    public void TrimWindowWithFilmStripSelectionAndPlayhead()
+    public async Task TrimWindowWithFilmStripSelectionAndPlayhead()
     {
         PixelComparison.RequireFonts();
         FfmpegTool.SkipIfMissing();
         using var work = new TempDirectory();
         string video = work.File("probe.mp4");
         FfmpegTool.TestVideo(video, 6);
+        var recorded = await RecordedVideo.LoadAsync(video, TestContext.Current.CancellationToken);
 
         WpfThread.Run(() =>
         {
             var check = new PixelComparison();
             var editor = new TrimWindow { Offscreen = true };
-            editor.Open(RecordedVideo.Load(video), WorkArea);
+            editor.Open(recorded, WorkArea);
             Assert.True(WpfThread.PumpUntil(() => editor.FilmStripLoaded, 20000), "film strip did not arrive");
             editor.ShowSelection(1.2, 4.1, 3.4);
             check.Check("recording_trim", Draw((FrameworkElement)editor.Content));

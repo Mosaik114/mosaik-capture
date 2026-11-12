@@ -308,11 +308,13 @@ internal static class Ffmpeg
     // until its input ends (stdin closes with the engine, so a recording ends at once).
     static void AddToKillOnCloseJob(Process process)
     {
+        IntPtr killOnClose;
         lock (jobGate)
         {
             if (job == IntPtr.Zero && !TryCreateJob(out job)) return;
+            killOnClose = job;   // read under the lock: created by whichever thread came first
         }
-        if (!NativeMethods.AssignProcessToJobObject(job, process.Handle))
+        if (!NativeMethods.AssignProcessToJobObject(killOnClose, process.Handle))
             ErrorLog.Write("Adding ffmpeg to the job object", new Win32Exception(Marshal.GetLastWin32Error()));
     }
 

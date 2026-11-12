@@ -6,9 +6,22 @@ internal static class Program
     const string RestartArgument = "--idle";
     static readonly TimeSpan MinimumUptimeForRestart = TimeSpan.FromMinutes(1);
 
+    static long startTimestamp = Stopwatch.GetTimestamp();
+    static int restartAttempted;
+
     /// <summary>Stopwatch timestamp of the start; monotonic, so clock changes (sleep, DST, sync) do not matter.</summary>
-    internal static long startedAt = Stopwatch.GetTimestamp();
-    internal static int restarting;
+    internal static long StartTimestamp
+    {
+        get => Interlocked.Read(ref startTimestamp);
+        set => Interlocked.Exchange(ref startTimestamp, value);
+    }
+
+    /// <summary>A restart was attempted already (a second crash report must not start another engine).</summary>
+    internal static bool RestartAttempted
+    {
+        get => Volatile.Read(ref restartAttempted) == 1;
+        set => Volatile.Write(ref restartAttempted, value ? 1 : 0);
+    }
 
     [STAThread]
     static void Main(string[] args) => CaptureBridge.Run(args);
@@ -27,7 +40,7 @@ internal static class Program
                 return;
             }
             // a bug: restart if possible, otherwise just end (the host starts the engine again when needed)
-            ErrorLog.Write("Unhandled UI exception: restarting", e.Exception);
+            ErrorLog.Write("Unhandled UI exception: restartStarted", e.Exception);
             if (ResponseTo(e.Exception, Restart) == UiFailureResponse.Shutdown) app.Shutdown();
         };
         TaskScheduler.UnobservedTaskException += (_, e) => { ErrorLog.Write("Unobserved task exception", e.Exception); e.SetObserved(); };
@@ -81,15 +94,16 @@ internal static class Program
         _ => false,
     };
 
+    /// <summary>How long this engine has been running.</summary>
+    internal static TimeSpan Uptime => TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - StartTimestamp) / (double)Stopwatch.Frequency);
+
     /// <summary>
     /// Restarts only if the engine has been running for a while; otherwise a crash at startup would loop.
     /// Returns whether a new engine was started (then this one should end).
     /// </summary>
-    internal static TimeSpan Uptime => TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - startedAt) / (double)Stopwatch.Frequency);
-
     internal static bool Restart()
     {
-        if (Interlocked.Exchange(ref restarting, 1) == 1) return false;
+        if (Interlocked.Exchange(ref restartAttempted, 1) == 1) return false;
         if (Uptime < MinimumUptimeForRestart)
         {
             ErrorLog.Write("No restart: crashed within the first minute", null);

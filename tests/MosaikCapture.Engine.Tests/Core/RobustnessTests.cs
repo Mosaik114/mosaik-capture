@@ -51,13 +51,13 @@ public sealed class RobustnessTests
     [Fact]
     public void UptimeCountsFromTheStart()
     {
-        long started = Program.startedAt;
+        long started = Program.StartTimestamp;
         try
         {
-            Program.startedAt = Stopwatch.GetTimestamp() - 90 * Stopwatch.Frequency;
+            Program.StartTimestamp = Stopwatch.GetTimestamp() - 90 * Stopwatch.Frequency;
             Assert.InRange(Program.Uptime.TotalSeconds, 89.9, 95);
         }
-        finally { Program.startedAt = started; }
+        finally { Program.StartTimestamp = started; }
     }
 
     [Fact]

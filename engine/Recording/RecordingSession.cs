@@ -78,8 +78,13 @@ internal sealed class RecordingSession : IRecordingSession
         public long StopwatchStart { get; set; }
         /// <summary>Under <c>gate</c>: null until ffmpeg was started.</summary>
         public IFfmpegProcess? Process { get; set; }
-        /// <summary>Under <c>gate</c>: completes once ffmpeg has exited after a pause.</summary>
-        public Task? Stopped { get; set; }
+        /// <summary>
+        /// Completes once this segment's ffmpeg is gone (quit after a pause, or never started). It exists from
+        /// the moment the segment does, so Finish and Discard also wait for an ffmpeg that is still starting.
+        /// </summary>
+        public TaskCompletionSource<bool> StopSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Stopped => StopSignal.Task;
         /// <summary>First frame relative to <see cref="StartEpochMicros"/>, in seconds (ffprobe).</summary>
         public double ProbedStart { get; set; }
         /// <summary>Length in seconds (ffprobe).</summary>
@@ -216,6 +221,7 @@ internal sealed class RecordingSession : IRecordingSession
                 wasCurrent = current == segment;
                 if (wasCurrent) current = null;
             }
+            segment.StopSignal.TrySetResult(true);   // nothing to wait for
             if (wasCurrent) wantRunning = false;
             if (ex is not (Win32Exception or InvalidOperationException or IOException)) throw;   // a bug: rolled back, now surface it
             if (!wasCurrent) return;   // paused meanwhile: nothing broke from the user's point of view
@@ -228,7 +234,7 @@ internal sealed class RecordingSession : IRecordingSession
         {
             segment.Process = process;
             pausedMeanwhile = current != segment;
-            if (pausedMeanwhile) segment.Stopped = QuitInBackground(process);   // Pause came before the process existed
+            if (pausedMeanwhile) QuitInBackground(segment);   // Pause came before the process existed
         }
         if (!pausedMeanwhile) services.NudgeFirstFrame(Area.X + Area.Width - 2, Area.Y + Area.Height - 2);
     }
@@ -268,16 +274,25 @@ internal sealed class RecordingSession : IRecordingSession
             if (segment == null) return;
             recordedTicks += Stopwatch.GetTimestamp() - segment.StopwatchStart;   // before current goes: Elapsed never dips
             current = null;
-            if (segment.Process != null) segment.Stopped = QuitInBackground(segment.Process);   // otherwise StartSegment stops it
+            if (segment.Process != null) QuitInBackground(segment);   // otherwise StartSegment stops it once it exists
         }
     }
 
-    static Task QuitInBackground(IFfmpegProcess process) => Task.Run(() =>
+    // Called under the lock with the segment's process set; its stop signal completes when ffmpeg is gone.
+    static void QuitInBackground(Segment segment)
     {
-        process.RequestQuit();
-        if (!process.WaitForExit(GracefulQuitTimeout)) process.Kill();
-        process.Dispose();
-    });
+        var process = segment.Process!;
+        Task.Run(() =>
+        {
+            try
+            {
+                process.RequestQuit();
+                if (!process.WaitForExit(GracefulQuitTimeout)) process.Kill();
+                process.Dispose();
+            }
+            finally { segment.StopSignal.TrySetResult(true); }
+        });
+    }
 
     List<Segment> SnapshotSegments()
     {
@@ -287,7 +302,7 @@ internal sealed class RecordingSession : IRecordingSession
     async Task WaitForSegmentsAsync(TimeSpan timeout)
     {
         Task[] stopped;
-        lock (gate) stopped = segments.Select(s => s.Stopped).OfType<Task>().ToArray();
+        lock (gate) stopped = segments.Select(s => s.Stopped).ToArray();
         var all = Task.WhenAll(stopped);
         if (await Task.WhenAny(all, Task.Delay(timeout)).ConfigureAwait(false) != all) ErrorLog.Write("A recording segment did not stop in time", null);
     }
@@ -295,7 +310,7 @@ internal sealed class RecordingSession : IRecordingSession
     void WaitForSegments(TimeSpan timeout)
     {
         Task[] stopped;
-        lock (gate) stopped = segments.Select(s => s.Stopped).OfType<Task>().ToArray();
+        lock (gate) stopped = segments.Select(s => s.Stopped).ToArray();
         if (!Task.WaitAll(stopped, timeout)) ErrorLog.Write("A recording segment did not stop in time", null);
     }
 

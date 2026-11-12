@@ -117,23 +117,23 @@ public sealed class ErrorLogTests : IDisposable
     [Fact]
     public void NoRestartWhenCrashingInTheFirstMinute()
     {
-        long started = Program.startedAt;
-        int restarting = Program.restarting;
+        long started = Program.StartTimestamp;
+        bool attempted = Program.RestartAttempted;
         try
         {
-            Program.startedAt = Stopwatch.GetTimestamp();
-            Program.restarting = 0;
+            Program.StartTimestamp = Stopwatch.GetTimestamp();
+            Program.RestartAttempted = false;
 
             Program.Restart();
             Program.Restart();   // the guard makes a second crash report a no-op
 
             Assert.Single(Regex.Matches(Log(), "No restart: crashed within the first minute"));
-            Assert.Equal(1, Program.restarting);
+            Assert.True(Program.RestartAttempted);
         }
         finally
         {
-            Program.startedAt = started;
-            Program.restarting = restarting;
+            Program.StartTimestamp = started;
+            Program.RestartAttempted = attempted;
         }
     }
 }
