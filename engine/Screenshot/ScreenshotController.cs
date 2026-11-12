@@ -124,7 +124,7 @@ internal sealed class ScreenshotController : IScreenshotFlow
         try
         {
             ui.CloseAll();
-            ui.ShowProblem(UiText.ScreenshotCard.Problem, error.Message);
+            ui.ShowProblem(UiText.ScreenshotCard.Problem, error is System.ComponentModel.Win32Exception ? UiText.ScreenshotCard.ScreenUnavailable : error.Message);
         }
         catch (Exception secondary)   // the windows themselves are broken: nothing more to show
         {

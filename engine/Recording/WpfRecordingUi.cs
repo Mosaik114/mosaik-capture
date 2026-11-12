@@ -16,7 +16,7 @@ internal sealed class WpfRecordingUi : IRecordingUi
     RecordingFrame Frame => frame ??= new RecordingFrame();
     RecordingToolbar Toolbar => toolbar ??= new RecordingToolbar();
     CountdownWindow Countdown => countdown ??= new CountdownWindow();
-    ClickHighlighter Clicks => clicks ??= new ClickHighlighter();
+    ClickHighlighter Clicks => clicks ??= new ClickHighlighter(() => ScreenRecorder.Live && !ScreenRecorder.Paused);
 
     public RECT WorkAreaAtCursor() => NativeMethods.WorkAreaAtCursor();
 
@@ -82,7 +82,7 @@ internal sealed class RecordingBackend : IRecordingBackend
 
     public void PrepareEncoder() => _ = Ffmpeg.DetectEncoderAsync();
 
-    public bool TryFindOutput(RECT monitor, out int output, out RECT desktop) => Dxgi.Find(monitor, out output, out desktop);
+    public OutputLookup FindOutput(RECT monitor, out int output, out RECT desktop) => Dxgi.Find(monitor, out output, out desktop);
 
     public IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio)
     {

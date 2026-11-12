@@ -10,11 +10,27 @@ namespace MosaikCapture.Engine.Recording;
 internal sealed class ClickHighlighter
 {
     const int PoolSize = 6;
+
+    /// <summary>One hook thread: its id (published before anyone waits on it) and whether it should end.</summary>
+    sealed class HookRun
+    {
+        int threadId;
+        volatile bool cancelled;
+
+        public Thread Thread { get; set; } = null!;
+        public uint ThreadId
+        {
+            get => (uint)Volatile.Read(ref threadId);
+            set => Volatile.Write(ref threadId, (int)value);
+        }
+        public bool Cancelled { get => cancelled; set => cancelled = value; }
+    }
+
     readonly NativeMethods.LowLevelMouseProc hookProc;
+    readonly Func<bool> shouldShow;
     readonly List<Ripple> pool = new();
     Dispatcher? dispatcher;
-    Thread? hookThread;
-    uint hookThreadId;
+    HookRun? run;
     IntPtr toolbar;
     Int32Rect area;
     int nextRipple;
@@ -26,7 +42,12 @@ internal sealed class ClickHighlighter
     /// <summary>Installing the hook takes milliseconds; after this the recording goes on without click highlights.</summary>
     static readonly TimeSpan HookStartTimeout = TimeSpan.FromSeconds(1);
 
-    public ClickHighlighter() => hookProc = OnMouseEvent;   // kept in a field so the delegate is not collected
+    /// <param name="shouldShow">Whether clicks are shown right now (recording runs and is not paused).</param>
+    public ClickHighlighter(Func<bool> shouldShow)
+    {
+        this.shouldShow = shouldShow;
+        hookProc = OnMouseEvent;   // kept in a field so the delegate is not collected
+    }
 
     public bool Enabled { get => enabled; set => enabled = value; }
 
@@ -34,35 +55,48 @@ internal sealed class ClickHighlighter
     {
         area = recordedArea;
         toolbar = toolbarWindow;
-        if (hookThread != null) return;
+        if (run != null) return;
         dispatcher = Dispatcher.CurrentDispatcher;
         var installed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() => RunHook(installed)) { IsBackground = true, Name = "Mosaik Capture click hook" };
-        hookThread = thread;
-        thread.Start();
+        var started = new HookRun();
+        started.Thread = new Thread(() => RunHook(started, installed)) { IsBackground = true, Name = "Mosaik Capture click hook" };
+        run = started;
+        started.Thread.Start();
         // Installing the hook takes milliseconds; the recording must not wait for a hook that never comes.
         if (installed.Task.Wait(HookStartTimeout) && installed.Task.Result) return;
         ErrorLog.Write("The mouse hook for click highlights is not available; recording without them", null);
         Stop();
     }
 
+    /// <summary>
+    /// Ends the hook thread. A thread that is still installing its hook (after a start timeout) sees the
+    /// cancel flag right after installing and removes the hook itself, so no global hook is left behind.
+    /// </summary>
     public void Stop()
     {
-        var thread = hookThread;
-        if (thread == null) return;
-        hookThread = null;
-        NativeMethods.PostThreadMessage(hookThreadId, NativeMethods.WM_QUIT, IntPtr.Zero, IntPtr.Zero);
-        thread.Join(HookStopTimeout);
+        var stopping = run;
+        if (stopping == null) return;
+        run = null;
+        stopping.Cancelled = true;
+        uint threadId = stopping.ThreadId;
+        if (threadId != 0) NativeMethods.PostThreadMessage(threadId, NativeMethods.WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+        stopping.Thread.Join(HookStopTimeout);
     }
 
-    void RunHook(TaskCompletionSource<bool> installed)
+    void RunHook(HookRun current, TaskCompletionSource<bool> installed)
     {
-        hookThreadId = NativeMethods.GetCurrentThreadId();
         NativeMethods.PeekMessage(out _, IntPtr.Zero, 0, 0, 0);   // creates the message queue before Stop can post to it
+        current.ThreadId = NativeMethods.GetCurrentThreadId();   // published only once the queue exists
         IntPtr hook = NativeMethods.SetWindowsHookEx(NativeMethods.WH_MOUSE_LL, hookProc, NativeMethods.GetModuleHandle(null), 0);
         if (hook == IntPtr.Zero)
         {
             ErrorLog.Write("Installing the mouse hook for click highlights", new Win32Exception(Marshal.GetLastWin32Error()));
+            installed.TrySetResult(false);
+            return;
+        }
+        if (current.Cancelled)   // stopped while installing: Stop may have posted before the hook existed
+        {
+            NativeMethods.UnhookWindowsHookEx(hook);
             installed.TrySetResult(false);
             return;
         }
@@ -96,7 +130,7 @@ internal sealed class ClickHighlighter
 
     void Show(int x, int y, bool right)
     {
-        if (!enabled || ScreenRecorder.Paused || !ScreenRecorder.Live) return;
+        if (!enabled || !shouldShow()) return;
         if (x < area.X || y < area.Y || x >= area.X + area.Width || y >= area.Y + area.Height) return;
         if (toolbar != IntPtr.Zero && NativeMethods.GetWindowRect(toolbar, out RECT bar) &&
             x >= bar.left && x < bar.right && y >= bar.top && y < bar.bottom) return;   // click on the toolbar

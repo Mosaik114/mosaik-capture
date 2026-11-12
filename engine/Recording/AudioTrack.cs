@@ -1,15 +1,22 @@
 namespace MosaikCapture.Engine.Recording;
 
 /// <summary>
-/// One audio track written to a WAV file (stereo 32-bit float). Packets arrive with timestamps;
+/// One audio track written as raw samples (stereo 32-bit float, 48 kHz, no header: a WAV header cannot
+/// describe more than 4 GB, about three hours, and its signed sizes break after 93 minutes). Packets arrive with timestamps;
 /// gaps (silence, microphone off) are filled with zeros and overlaps are cut, so the file stays on
 /// the shared timeline that starts at the recorder's start time.
 /// </summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "The file stream is always closed by End(), which the capture loop calls in its finally block.")]
 internal sealed class AudioTrack
 {
-    public const int Rate = 48000;
-    const int BytesPerFrame = 8;                  // two float channels
+    public const int Rate = 48000, Channels = 2;
+    const int BytesPerFrame = 4 * Channels;       // 32-bit float per channel
+
+    /// <summary>
+    /// ffmpeg input options for a track file. The format is fixed: the capture client is opened with exactly
+    /// this mix format and AUTOCONVERTPCM, so Windows converts whatever the device uses.
+    /// </summary>
+    public static readonly string[] InputArguments = { "-f", "f32le", "-ar", Rate.ToString(CultureInfo.InvariantCulture), "-ac", Channels.ToString(CultureInfo.InvariantCulture) };
     const long Tolerance = Rate / 50;             // 20 ms before padding or trimming
     const long TicksPerSecond = 10_000_000;       // QPC positions are in 100 ns units
     static readonly byte[] Zeros = new byte[Rate * BytesPerFrame / 10];
@@ -39,7 +46,6 @@ internal sealed class AudioTrack
     public void Begin()
     {
         stream = new FileStream(file, FileMode.Create, FileAccess.Write, FileShare.Read, 1 << 16);
-        stream.Write(new byte[44], 0, 44);   // room for the WAV header written by End()
     }
 
     /// <summary>Opens the default render (loopback) or capture device; false if not possible right now.</summary>
@@ -109,7 +115,8 @@ internal sealed class AudioTrack
             }
             finally
             {
-                source.ReleaseBuffer(frames);   // also after a write error, or the device stalls
+                int released = source.ReleaseBuffer(frames);   // also after a write error, or the device stalls
+                if (released != 0) ErrorLog.Write("Releasing an audio buffer failed: 0x" + released.ToString("X8", CultureInfo.InvariantCulture), null);
             }
         }
     }
@@ -145,7 +152,7 @@ internal sealed class AudioTrack
 
     void WriteSilence(long frames)
     {
-        long bytes = frames * BytesPerFrame;
+        long bytes = BytesFor(frames);
         while (bytes > 0)
         {
             int chunk = (int)Math.Min(bytes, Zeros.Length);
@@ -155,31 +162,22 @@ internal sealed class AudioTrack
         framesWritten += frames;
     }
 
-    /// <summary>Pads with silence up to <paramref name="end"/> and writes the WAV header with the final sizes.</summary>
+    /// <summary>Frames on the timeline from <paramref name="start"/> to <paramref name="end"/> (100 ns ticks); 64-bit, so hours of audio fit.</summary>
+    internal static long FramesBetween(long start, long end) => (end - start) * Rate / TicksPerSecond;
+
+    /// <summary>Bytes of <paramref name="frames"/> frames on disk.</summary>
+    internal static long BytesFor(long frames) => frames * BytesPerFrame;
+
+    /// <summary>Pads with silence up to <paramref name="end"/> so the track covers the whole timeline, then closes the file.</summary>
     public void End(long start, long end)
     {
         Close();
         if (stream == null) return;
         try
         {
-            long target = (end - start) * Rate / TicksPerSecond;
+            long target = FramesBetween(start, end);
             if (target > framesWritten) WriteSilence(target - framesWritten);
-            long dataBytes = framesWritten * BytesPerFrame;
-            stream.Position = 0;
-            var header = new BinaryWriter(stream);
-            header.Write(Encoding.ASCII.GetBytes("RIFF"));
-            header.Write((int)Math.Min(int.MaxValue, 36 + dataBytes));
-            header.Write(Encoding.ASCII.GetBytes("WAVEfmt "));
-            header.Write(16);
-            header.Write((short)3);   // IEEE float
-            header.Write((short)2);
-            header.Write(Rate);
-            header.Write(Rate * BytesPerFrame);
-            header.Write((short)BytesPerFrame);
-            header.Write((short)32);
-            header.Write(Encoding.ASCII.GetBytes("data"));
-            header.Write((int)Math.Min(int.MaxValue, dataBytes));
-            header.Flush();
+            stream.Flush();
         }
         catch (IOException ex) { ErrorLog.Write("Finishing " + Path.GetFileName(file), ex); }
         finally

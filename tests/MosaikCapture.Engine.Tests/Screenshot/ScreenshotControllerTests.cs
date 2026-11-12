@@ -165,6 +165,20 @@ public sealed class ScreenshotControllerTests
     }
 
     [Fact]
+    public void UnreadableScreenTellsTheUserInGerman()
+    {
+        ui.FailWith = new System.ComponentModel.Win32Exception(5, "Copying the screen failed");
+
+        controller.Start();
+
+        Assert.Equal("ShowProblem Screenshot fehlgeschlagen | " + UiText.ScreenshotCard.ScreenUnavailable, ui.Calls.Last());
+    }
+
+    [Fact]
+    public void InvalidScreenAreaThrowsWin32Exception() =>
+        Assert.Throws<System.ComponentModel.Win32Exception>(() => ScreenGrabber.Capture(0, 0, -5, 10, 96));
+
+    [Fact]
     public async Task ErrorWhileDeliveringRecoversAndTheNextScreenshotWorks()
     {
         ui.FailOn = "ShowCard";
@@ -183,6 +197,7 @@ public sealed class ScreenshotControllerTests
         public readonly List<string> Calls = new();
         public IScreenshotFlow? Flow;
         public string? FailOn;
+        public Exception? FailWith;
         public BitmapSource? PinnedImage;
 
         public bool EditorOpen { get; set; }
@@ -191,6 +206,7 @@ public sealed class ScreenshotControllerTests
         {
             lock (Calls) Calls.Add(call);
             if (FailOn != null && call.StartsWith(FailOn, StringComparison.Ordinal)) throw new InvalidOperationException("window broke");
+            if (FailWith != null && call == "OpenOverlay") throw FailWith;
         }
 
         public void Bind(IScreenshotFlow flow) => Flow = flow;

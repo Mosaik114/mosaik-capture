@@ -48,14 +48,14 @@ public sealed class AssembleArgumentsTests : IDisposable
     {
         var args = Assemble(new List<string> { "C:\\Temp\\system.wav" });
 
-        Assert.Equal(new[] { "-i", List, "-i", "C:\\Temp\\system.wav", "-filter_complex" }, args.Skip(8).Take(5));
+        Assert.Equal(new[] { "-i", List, "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "C:\\Temp\\system.wav", "-filter_complex" }, args.Skip(8).Take(11));
         Assert.Equal(
             "[1:a]asplit=2[s0_0][s0_1];" +
             "[s0_0]atrim=start=1:duration=2,asetpts=PTS-STARTPTS,apad=whole_dur=2[t0_0];" +
             "[s0_1]atrim=start=5.5:duration=0.428571,asetpts=PTS-STARTPTS,apad=whole_dur=0.428571[t0_1];" +
             "[t0_0][t0_1]concat=n=2:v=0:a=1[c0];[c0]anull[a]", FilterOf(args));
         Assert.Equal(new[] { "-map", "0:v", "-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-c:v", "copy", "-movflags", "+faststart", "C:\\Videos\\out.mp4" },
-            args.Skip(14));
+            args.Skip(20));
     }
 
     [Fact]
@@ -63,7 +63,7 @@ public sealed class AssembleArgumentsTests : IDisposable
     {
         var args = Assemble(new List<string> { "C:\\Temp\\system.wav", "C:\\Temp\\microphone.wav" });
 
-        Assert.Equal(new[] { "-i", "C:\\Temp\\system.wav", "-i", "C:\\Temp\\microphone.wav" }, args.Skip(10).Take(4));
+        Assert.Equal(new[] { "-i", "C:\\Temp\\system.wav", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "C:\\Temp\\microphone.wav" }, args.Skip(16).Take(10));
         string filter = FilterOf(args);
         Assert.Contains("[2:a]asplit=2[s1_0][s1_1];", filter);
         Assert.Contains("concat=n=2:v=0:a=1[c1];", filter);

@@ -49,7 +49,8 @@ internal interface IRecordingBackend
     /// <summary>Starts the encoder detection early so it is done when the countdown ends.</summary>
     void PrepareEncoder();
     void RemoveLeftovers();
-    bool TryFindOutput(RECT monitor, out int output, out RECT desktop);
+    /// <summary>The GPU output that shows the monitor, for ddagrab.</summary>
+    OutputLookup FindOutput(RECT monitor, out int output, out RECT desktop);
     /// <summary>Creates a session and starts its audio (audio already runs during the countdown).</summary>
     IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio);
     string NewRecordingPath(DateTime begun);

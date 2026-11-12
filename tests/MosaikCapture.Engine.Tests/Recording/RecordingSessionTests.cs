@@ -104,6 +104,22 @@ public sealed class RecordingSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task PausedShowsTheIntentEvenWhileTheResumeIsPending()
+    {
+        var pending = new TaskCompletionSource<VideoEncoder>(TaskCreationOptions.RunContinuationsAsynchronously);
+        encoder = () => pending.Task;
+        var session = NewSession();
+
+        var resume = session.ResumeAsync();
+        Assert.False(session.Paused);   // resumed: shown as running while ffmpeg starts
+        session.Pause();
+        Assert.True(session.Paused);    // paused at once, not only when the resume gives up
+        pending.SetResult(VideoEncoder.Software);
+        await Within(resume);
+        Assert.True(session.Paused);
+    }
+
+    [Fact]
     public async Task OnlyOneResumeAtATime()
     {
         var session = NewSession();

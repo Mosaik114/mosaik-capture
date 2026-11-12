@@ -32,7 +32,10 @@
   </PropertyGroup>
 
   <!-- Compile against the reference assemblies package instead of whatever targeting pack happens to be
-       installed: identical inputs on every machine, and a lock file that matches between dev and CI. -->
+       installed: identical inputs on every machine, and a lock file that matches between dev and CI.
+       Why net48: the engine is a WPF app on the .NET Framework that ships with every Windows 10/11, so the
+       release is a single exe without a runtime to install; the tests must load it, so they target the same.
+       The condition keeps the package out of any other target framework a future project might use. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" PrivateAssets="all" />
   </ItemGroup>

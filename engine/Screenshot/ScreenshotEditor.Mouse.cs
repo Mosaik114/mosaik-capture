@@ -3,8 +3,6 @@ namespace MosaikCapture.Engine.Screenshot;
 // Screenshot editor: opening, layout and pointer handling (fields and construction in ScreenshotEditor.cs).
 internal sealed partial class ScreenshotEditor
 {
-    const double MinCropSize = 8;
-
     // ---------- Open / layout ----------
 
     public void Open(ScreenCapture screenshot)
@@ -30,8 +28,7 @@ internal sealed partial class ScreenshotEditor
         scale = screenshot.Scale;
         Palette.Apply(Resources);
         markup.Children.Clear();
-        undo.Clear();
-        redo.Clear();
+        history.Clear();
         textBox = null;
         textHost = null;
         CloseMenu();
@@ -45,8 +42,8 @@ internal sealed partial class ScreenshotEditor
         crop = new Rect(screenshot.Crop.X / scale, screenshot.Crop.Y / scale, screenshot.Crop.Width / scale, screenshot.Crop.Height / scale);
         notice.Visibility = tooltip.Visibility = Visibility.Hidden;
         SetTool(tool);
-        SetColor(colorIndex);
-        SetWidth(widthIndex);
+        SetColor(style.ColorIndex);
+        SetWidth(style.WidthIndex);
         LayoutCrop();
     }
 
@@ -57,15 +54,7 @@ internal sealed partial class ScreenshotEditor
         return new Rect((monitor.left - capture.VirtualLeft) / scale, (monitor.top - capture.VirtualTop) / scale, monitor.Width / scale, monitor.Height / scale);
     }
 
-    double SnapToPixel(double value) => Math.Round(value * scale) / scale;
-
-    Int32Rect CropInPixels()
-    {
-        int x = (int)Math.Round(crop.X * scale), y = (int)Math.Round(crop.Y * scale);
-        int width = Math.Min((int)Math.Round(crop.Width * scale), capture.FullScreen.PixelWidth - x);
-        int height = Math.Min((int)Math.Round(crop.Height * scale), capture.FullScreen.PixelHeight - y);
-        return new Int32Rect(x, y, Math.Max(1, width), Math.Max(1, height));
-    }
+    Int32Rect CropInPixels() => CropGeometry.InPixels(crop, scale, capture.FullScreen.PixelWidth, capture.FullScreen.PixelHeight);
 
     /// <summary>Fits dimming, frame, handles, size chip and toolbar to the crop.</summary>
     internal void LayoutCrop()
@@ -81,14 +70,15 @@ internal sealed partial class ScreenshotEditor
         Canvas.SetTop(frame, crop.Y - 1);
         for (int i = 0; i < resizeHandles.Length; i++)
         {
-            Canvas.SetLeft(resizeHandles[i], crop.X + crop.Width * HandleX[i] - 9.5);
-            Canvas.SetTop(resizeHandles[i], crop.Y + crop.Height * HandleY[i] - 9.5);
+            Point center = CropGeometry.HandleCenter(crop, i);
+            Canvas.SetLeft(resizeHandles[i], center.X - Metrics.HandleHitSize / 2);
+            Canvas.SetTop(resizeHandles[i], center.Y - Metrics.HandleHitSize / 2);
         }
         Int32Rect pixels = CropInPixels();
         sizeText.Text = UiText.Common.Size(pixels.Width, pixels.Height);
         Rect monitor = MonitorArea();
         Canvas.SetLeft(sizeChip, crop.X);
-        Canvas.SetTop(sizeChip, crop.Y - 34 >= monitor.Top + 4 ? crop.Y - 34 : crop.Y + 10);
+        Canvas.SetTop(sizeChip, CropGeometry.SizeChipTop(crop, monitor));
         PlaceToolbar(monitor);
     }
 
@@ -96,13 +86,9 @@ internal sealed partial class ScreenshotEditor
     void PlaceToolbar(Rect monitor)
     {
         toolbar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        double width = toolbar.DesiredSize.Width, height = toolbar.DesiredSize.Height;
-        double x = Math.Max(monitor.Left + 12, Math.Min(monitor.Right - 12 - width, crop.X + (crop.Width - width) / 2));
-        double y = crop.Bottom + 14;
-        if (y + height + 50 > monitor.Bottom) y = crop.Top - 14 - height >= monitor.Top + 50 ? crop.Top - 14 - height : crop.Bottom - height - 24;
-        y = Math.Max(monitor.Top + 12, Math.Min(monitor.Bottom - height - 12, y));
-        Canvas.SetLeft(toolbar, x);
-        Canvas.SetTop(toolbar, y);
+        Point position = CropGeometry.ToolbarPosition(crop, toolbar.DesiredSize, monitor);
+        Canvas.SetLeft(toolbar, position.X);
+        Canvas.SetTop(toolbar, position.Y);
     }
 
     // ---------- Pointer ----------
@@ -148,21 +134,21 @@ internal sealed partial class ScreenshotEditor
 
     void StartStroke(Point position)
     {
-        var brush = new SolidColorBrush(InkColors[colorIndex]);
+        var brush = new SolidColorBrush(style.Ink);
         stroke = new Shapes.Path
         {
             StrokeLineJoin = PenLineJoin.Round,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
             Stroke = brush,
-            StrokeThickness = StrokeWidths[widthIndex],
+            StrokeThickness = style.StrokeWidth,
             RenderTransform = new TranslateTransform()
         };
         if (tool == Tool.Arrow) stroke.Fill = brush;
         else if (tool == Tool.Marker)
         {
             stroke.Stroke = MarkerBrush();
-            stroke.StrokeThickness = MarkerWidths[widthIndex];
+            stroke.StrokeThickness = style.MarkerWidth;
         }
         else if (tool is Tool.Pixel or Tool.Blur or Tool.Spot)
         {
@@ -189,8 +175,7 @@ internal sealed partial class ScreenshotEditor
 
     SolidColorBrush MarkerBrush()
     {
-        Color ink = InkColors[colorIndex];
-        return new SolidColorBrush(Color.FromArgb(0x66, ink.R, ink.G, ink.B));
+        return new SolidColorBrush(style.MarkerInk);
     }
 
     internal void PointerMoved(Point position)
@@ -226,28 +211,21 @@ internal sealed partial class ScreenshotEditor
         else Cursor = !crop.Contains(position) ? Cursors.Arrow : tool == Tool.Text ? Cursors.IBeam : Cursors.Cross;
     }
 
+    Size SurfaceSize => new(root.Width, root.Height);
+
     void MoveCrop(Point position)
     {
-        double x = Math.Max(0, Math.Min(root.Width - cropAtPress.Width, cropAtPress.X + position.X - pressPoint.X));
-        double y = Math.Max(0, Math.Min(root.Height - cropAtPress.Height, cropAtPress.Y + position.Y - pressPoint.Y));
-        crop = new Rect(SnapToPixel(x), SnapToPixel(y), cropAtPress.Width, cropAtPress.Height);
+        crop = CropGeometry.Moved(cropAtPress, position - pressPoint, SurfaceSize, scale);
         LayoutCrop();
     }
 
     void ResizeCrop(Point position)
     {
-        double left = cropAtPress.Left, top = cropAtPress.Top, right = cropAtPress.Right, bottom = cropAtPress.Bottom;
-        double x = Math.Max(0, Math.Min(root.Width, position.X)), y = Math.Max(0, Math.Min(root.Height, position.Y));
-        if (HandleX[activeHandle] == 0) left = Math.Min(x, right - MinCropSize);
-        else if (HandleX[activeHandle] == 1) right = Math.Max(x, left + MinCropSize);
-        if (HandleY[activeHandle] == 0) top = Math.Min(y, bottom - MinCropSize);
-        else if (HandleY[activeHandle] == 1) bottom = Math.Max(y, top + MinCropSize);
-        crop = new Rect(SnapToPixel(left), SnapToPixel(top), SnapToPixel(right) - SnapToPixel(left), SnapToPixel(bottom) - SnapToPixel(top));
+        crop = CropGeometry.Resized(cropAtPress, activeHandle, position, SurfaceSize, scale);
         LayoutCrop();
     }
 
-    Point KeepInCrop(Point position) =>
-        new(Math.Max(crop.Left, Math.Min(crop.Right, position.X)), Math.Max(crop.Top, Math.Min(crop.Bottom, position.Y)));
+    Point KeepInCrop(Point position) => CropGeometry.KeepInside(crop, position);
 
     void Drag(Point position, bool shift)
     {
@@ -255,7 +233,7 @@ internal sealed partial class ScreenshotEditor
         {
             case Tool.Arrow:
                 if (shift) position = SnapTo45Degrees(pressPoint, position);
-                stroke!.Data = ShapeRecognizer.Arrow(pressPoint, position, StrokeWidths[widthIndex]);
+                stroke!.Data = ShapeRecognizer.Arrow(pressPoint, position, style.StrokeWidth);
                 break;
             case Tool.Line:
                 if (shift) position = SnapTo45Degrees(pressPoint, position);
@@ -298,19 +276,9 @@ internal sealed partial class ScreenshotEditor
         }
     }
 
-    // Same length, direction rounded to 45 degree steps, kept in the crop.
-    Point SnapTo45Degrees(Point start, Point end)
-    {
-        double angle = Math.Round(Math.Atan2(end.Y - start.Y, end.X - start.X) / (Math.PI / 4)) * (Math.PI / 4), length = (end - start).Length;
-        return KeepInCrop(new Point(start.X + length * Math.Cos(angle), start.Y + length * Math.Sin(angle)));
-    }
+    Point SnapTo45Degrees(Point start, Point end) => CropGeometry.SnapTo45Degrees(start, end, crop);
 
-    // The corner of a square with the larger side, kept in the crop.
-    Point SquareFrom(Point start, Point end)
-    {
-        double width = end.X - start.X, height = end.Y - start.Y, side = Math.Max(Math.Abs(width), Math.Abs(height));
-        return KeepInCrop(new Point(start.X + (width < 0 ? -side : side), start.Y + (height < 0 ? -side : side)));
-    }
+    Point SquareFrom(Point start, Point end) => CropGeometry.SquareCorner(start, end, crop);
 
     List<Point> StrokePoints(Shapes.Path path)
     {

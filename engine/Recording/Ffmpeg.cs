@@ -42,7 +42,15 @@ internal static class Ffmpeg
     /// <summary>Characters kept from the end of ffmpeg's error output (the actual error is printed last).</summary>
     const int ErrorTail = 8000;
 
-    static readonly Lazy<Task<VideoEncoder>> encoderDetection = new(() => Task.Run(DetectEncoder), LazyThreadSafetyMode.ExecutionAndPublication);
+    /// <summary>Kept from the standard output of calls without progress (ffprobe answers are a few lines).</summary>
+    const int OutputTail = 64_000;
+
+    /// <summary>A detection that failed (not: found no NVENC) is tried again after this.</summary>
+    static readonly TimeSpan DetectionRetry = TimeSpan.FromMinutes(5);
+    static readonly object detectionGate = new();
+    static Task<VideoEncoder>? detection;
+    static DateTime detectionFailedAt;
+    static volatile bool detectionFailed;
     static readonly object jobGate = new();
     static IntPtr job;
     static volatile string? exe, probe;
@@ -55,8 +63,24 @@ internal static class Ffmpeg
 
     public static bool Available => Exe != null && Probe != null;
 
-    /// <summary>Starts the encoder detection (once ffmpeg exists) and returns its result; never faults.</summary>
-    public static Task<VideoEncoder> DetectEncoderAsync() => Exe == null ? Task.FromResult(VideoEncoder.Software) : encoderDetection.Value;
+    /// <summary>
+    /// Starts the encoder detection (once ffmpeg exists) and returns its result; never faults. The result is
+    /// kept, except after a failed detection (timeout, ffmpeg not startable), which is retried after a while.
+    /// </summary>
+    public static Task<VideoEncoder> DetectEncoderAsync()
+    {
+        if (Exe == null) return Task.FromResult(VideoEncoder.Software);
+        lock (detectionGate)
+        {
+            bool retry = detection != null && detection.IsCompleted && detectionFailed && DateTime.UtcNow - detectionFailedAt > DetectionRetry;
+            if (detection == null || retry)
+            {
+                detectionFailed = false;
+                detection = Task.Run(DetectEncoder);
+            }
+            return detection;
+        }
+    }
 
     /// <summary>The detected encoder, waiting up to <paramref name="timeout"/>; software if unknown by then.</summary>
     public static async Task<VideoEncoder> EncoderOrSoftwareAsync(TimeSpan timeout)
@@ -86,6 +110,11 @@ internal static class Ffmpeg
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or TimeoutException)
         {
             ErrorLog.Write("Detecting the video encoder", ex);
+            lock (detectionGate)
+            {
+                detectionFailed = true;
+                detectionFailedAt = DateTime.UtcNow;
+            }
             return VideoEncoder.Software;
         }
     }
@@ -162,7 +191,7 @@ internal static class Ffmpeg
         };
         process.OutputDataReceived += (_, e) => { if (e.Data != null) outputLine?.Invoke(e.Data); };
         process.ErrorDataReceived += (_, e) => { if (e.Data != null) errorLine?.Invoke(e.Data); };
-        if (exited != null) process.Exited += (_, _) => exited();
+        if (exited != null) process.Exited += (_, _) => ReportExit(process, exited);
         try
         {
             process.Start();
@@ -178,6 +207,15 @@ internal static class Ffmpeg
         return process;
     }
 
+    // On .NET Framework Exited can fire before the last redirected lines arrived: the parameterless
+    // WaitForExit waits for the end of both streams, so the callback sees ffmpeg's final error line.
+    static void ReportExit(Process process, Action exited)
+    {
+        try { process.WaitForExit(); }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or Win32Exception) { }   // already disposed by a stop
+        exited();
+    }
+
     /// <summary>
     /// Runs to completion (call from a background thread) and returns the exit code. <paramref name="progress"/>
     /// receives the seconds reported by <c>-progress pipe:1</c>.
@@ -188,11 +226,12 @@ internal static class Ffmpeg
         Action<double>? progress = null, CancellationToken cancellation = default)
     {
         cancellation.ThrowIfCancellationRequested();
-        var outputText = new StringBuilder();
+        // with -progress ffmpeg prints a status block every half second: only the progress is used then
+        var outputText = new TailBuffer(progress == null ? OutputTail : ErrorTail);
         var errorText = new TailBuffer(ErrorTail);
         using var process = Start(exe, args, line =>
         {
-            lock (outputText) outputText.AppendLine(line);
+            outputText.Add(line);
             if (progress != null && FfmpegOutput.ProgressSeconds(line) is double seconds) progress(seconds);
         }, errorText.Add);
         var waited = Stopwatch.StartNew();
@@ -210,7 +249,7 @@ internal static class Ffmpeg
             }
         }
         process.WaitForExit();   // has exited: this only waits for the last redirected output lines
-        lock (outputText) output = outputText.ToString();
+        output = outputText.ToString();
         error = errorText.ToString().Trim();
         return process.ExitCode;
     }

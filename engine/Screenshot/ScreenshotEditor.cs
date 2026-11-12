@@ -26,13 +26,6 @@ internal sealed partial class ScreenshotEditor : Window
     // Tags of markup elements
     const string SpotTag = "spot", CoverTag = "cover", NumberTag = "nr", PlateTag = "plate";
 
-    sealed class Step
-    {
-        public Step(Action undo, Action redo) { Undo = undo; Redo = redo; }
-        public Action Undo { get; }
-        public Action Redo { get; }
-    }
-
     sealed class ToolGroup
     {
         public ToolGroup(Tool[] tools)
@@ -49,15 +42,6 @@ internal sealed partial class ScreenshotEditor : Window
         public SolidColorBrush IconBrush { get; } = new(Colors.White);
     }
 
-    static readonly Color[] InkColors =
-    {
-        Color.FromRgb(0xD9, 0x77, 0x57), Color.FromRgb(0xF0, 0x80, 0x6A), Color.FromRgb(0xF2, 0xC9, 0x4C),
-        Color.FromRgb(0x6F, 0xBF, 0x8E), Color.FromRgb(0x6F, 0xA8, 0xDC), Color.FromRgb(0xFA, 0xF9, 0xF5)
-    };
-    // per size step (very fine .. very thick)
-    static readonly double[] StrokeWidths = { 2, 3, 5, 8, 12 }, MarkerWidths = { 10, 14, 22, 32, 44 }, TextSizes = { 16, 20, 26, 34, 44 }, BadgeSizes = { 20, 24, 30, 38, 48 };
-    // resize handles clockwise from the top-left corner, as fractions of the crop
-    static readonly double[] HandleX = { 0, 0.5, 1, 1, 1, 0.5, 0, 0 }, HandleY = { 0, 0, 0, 0.5, 1, 1, 1, 0.5 };
     static readonly Cursor[] HandleCursors =
     {
         Cursors.SizeNWSE, Cursors.SizeNS, Cursors.SizeNESW, Cursors.SizeWE, Cursors.SizeNWSE, Cursors.SizeNS, Cursors.SizeNESW, Cursors.SizeWE
@@ -71,14 +55,15 @@ internal sealed partial class ScreenshotEditor : Window
     readonly Image frozenImage;
     readonly Shapes.Path dimming;
     readonly Shapes.Rectangle frame;
-    readonly Border[] resizeHandles = new Border[8];
+    readonly Border[] resizeHandles = new Border[CropGeometry.HandleCount];
     readonly Border sizeChip, toolbar, tooltip, notice, toolMenu;
     readonly TextBlock sizeText, tooltipText, noticeText;
     readonly StackPanel toolbarRow, menuItems;
     readonly List<ToolGroup> groups = new();
     readonly List<Shapes.Ellipse> colorRings = new();
     readonly List<Border> widthButtons = new();
-    readonly List<Step> undo = new(), redo = new();
+    readonly UndoHistory history = new();
+    readonly InkStyle style = new();
     /// <summary>Pen or highlighter held still this long: the stroke snaps to a shape.</summary>
     static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
     /// <summary>How long a notice (copied, saved, ...) stays.</summary>
@@ -100,7 +85,6 @@ internal sealed partial class ScreenshotEditor : Window
     double scale = 1;                             // device pixels per WPF unit
     Rect crop;                                    // in WPF units
     Tool tool = Tool.Arrow;
-    int colorIndex, widthIndex = 2;
     FrameworkElement? numberPreview;              // semi-transparent preview of the next number at the pointer
     string? numberPreviewKey;
     Point pointer;
@@ -283,13 +267,13 @@ internal sealed partial class ScreenshotEditor : Window
 
     void AddColorButtons()
     {
-        for (int i = 0; i < InkColors.Length; i++)
+        for (int i = 0; i < InkStyle.Colors.Length; i++)
         {
             var button = new Grid { Width = Metrics.ColorButtonWidth, Height = Metrics.ButtonSize, Background = Brushes.Transparent, Cursor = Cursors.Hand };
             var ring = new Shapes.Ellipse { Width = Metrics.ColorRingSize, Height = Metrics.ColorRingSize, StrokeThickness = Metrics.ColorRingThickness, Visibility = Visibility.Hidden };
             ring.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Text);
             button.Children.Add(ring);
-            button.Children.Add(new Shapes.Ellipse { Width = Metrics.ColorDotSize, Height = Metrics.ColorDotSize, Fill = new SolidColorBrush(InkColors[i]) });
+            button.Children.Add(new Shapes.Ellipse { Width = Metrics.ColorDotSize, Height = Metrics.ColorDotSize, Fill = new SolidColorBrush(InkStyle.Colors[i]) });
             colorRings.Add(ring);
             int index = i;
             button.MouseLeftButtonUp += delegate { SetColor(index); };
@@ -603,7 +587,7 @@ internal sealed partial class ScreenshotEditor : Window
 
     internal void SetColor(int index)
     {
-        colorIndex = index;
+        style.SetColor(index);
         for (int i = 0; i < colorRings.Count; i++) colorRings[i].Visibility = i == index ? Visibility.Visible : Visibility.Hidden;
         if (textBox != null) StyleTextBox();
         UpdateNumberPreview();
@@ -611,7 +595,7 @@ internal sealed partial class ScreenshotEditor : Window
 
     internal void SetWidth(int index)
     {
-        widthIndex = index;
+        style.SetWidth(index);
         for (int i = 0; i < widthButtons.Count; i++)
         {
             widthButtons[i].Tag = i == index ? ActiveTag : null;
@@ -624,10 +608,9 @@ internal sealed partial class ScreenshotEditor : Window
     // One size step via the mouse wheel or +/-.
     void StepWidth(int direction)
     {
-        int index = Math.Max(0, Math.Min(StrokeWidths.Length - 1, widthIndex + direction));
-        if (index == widthIndex) return;
-        SetWidth(index);
-        ShowNotice(UiText.Editor.SizeNote(UiText.Editor.WidthNames[index]));
+        if (!style.StepWidth(direction)) return;
+        SetWidth(style.WidthIndex);
+        ShowNotice(UiText.Editor.SizeNote(UiText.Editor.WidthNames[style.WidthIndex]));
     }
 
     void ShowTooltip(FrameworkElement target, string text)

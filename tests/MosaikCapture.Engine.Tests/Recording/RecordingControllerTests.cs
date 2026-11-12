@@ -133,7 +133,7 @@ public sealed class RecordingControllerTests
     [Fact]
     public void MonitorWithoutDesktopDuplicationCannotBeRecorded()
     {
-        backend.HasOutput = false;
+        backend.Output = OutputLookup.NotFound;
         controller.Toggle();
 
         ui.Pick!(Picked, Monitor, Work);
@@ -141,6 +141,70 @@ public sealed class RecordingControllerTests
         Assert.Equal(RecordingPhase.Idle, controller.Phase);
         Assert.Empty(backend.Sessions);
         Assert.Equal("ShowProblem Aufnahme nicht möglich | Dieser Monitor ist für die Aufnahme nicht erreichbar", ui.Calls.Last());
+    }
+
+    [Fact]
+    public void MonitorOnAnotherGpuSaysSo()
+    {
+        backend.Output = OutputLookup.OtherGpu;
+        controller.Toggle();
+
+        ui.Pick!(Picked, Monitor, Work);
+
+        Assert.Equal(RecordingPhase.Idle, controller.Phase);
+        Assert.Equal("ShowProblem Aufnahme nicht möglich | " + UiText.Recording.MonitorOnOtherGpu, ui.Calls.Last());
+    }
+
+    [Fact]
+    public async Task PausingWhileTheResumeIsStillPendingShowsPausedAtOnce()
+    {
+        using var root = new TempDirectory();
+        var encoder = new TaskCompletionSource<VideoEncoder>(TaskCreationOptions.RunContinuationsAsynchronously);
+        RecordingSession? real = null;
+        backend.CreateSession = (area, audio) => real = new RecordingSession(area, 0, Monitor, audio, new RecordingSessionServices
+        {
+            Runner = new NeverStartedRunner(),
+            CreateAudio = (_, _) => new SilentAudio(),
+            WorkRoot = root.Path,
+            Encoder = () => encoder.Task,
+            NudgeFirstFrame = (_, _) => { },
+        });
+        controller.Toggle();
+        ui.Pick!(Picked, Monitor, Work);
+        var launch = controller.LaunchAsync();   // waits for the encoder
+        ui.CountdownFinished!();
+        Assert.False(controller.Paused);
+
+        controller.TogglePause();
+
+        Assert.True(controller.Paused);
+        Assert.Equal(new[] { "SetFramePaused True", "RefreshToolbar" }, ui.Calls.Skip(ui.Calls.Count - 2));
+        encoder.SetResult(VideoEncoder.Software);
+        await Within(launch);
+        Assert.Equal(0, real!.SegmentCount);   // the pending resume gave up
+        Assert.True(controller.Paused);
+    }
+
+    sealed class NeverStartedRunner : IFfmpegRunner
+    {
+        public IFfmpegProcess Start(FfmpegArgs args, Action<string> errorLine, Action exited) => throw new InvalidOperationException("no ffmpeg in this test");
+
+        public int Run(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, out string output, out string error) => throw new InvalidOperationException("no ffmpeg in this test");
+    }
+
+    sealed class SilentAudio : IAudioRecorder
+    {
+        public string SystemSoundFile => "";
+        public string MicrophoneFile => "";
+        public bool SystemSoundUsed => false;
+        public bool MicrophoneUsed => false;
+        public float MicrophoneLevel => 0;
+        public Task Finished => Task.CompletedTask;
+        public void Start() { }
+        public bool Stop() => true;
+        public double Offset(long ticks) => 0;
+        public void SetMicrophone(bool on) { }
+        public void SetSystemSound(bool on) { }
     }
 
     [Fact]
@@ -500,7 +564,8 @@ public sealed class RecordingControllerTests
         public readonly List<string> Calls = new();
         public readonly List<FakeSession> Sessions = new();
         public readonly List<AudioSettings> Saved = new();
-        public bool HasOutput = true;
+        public OutputLookup Output = OutputLookup.Found;
+        public Func<Int32Rect, AudioSettings, IRecordingSession>? CreateSession;
         public Exception? StartFailure;
         public AudioSettings Settings = new(false, true, true);
         public AudioSettings? StartedWith;
@@ -511,17 +576,18 @@ public sealed class RecordingControllerTests
 
         public void RemoveLeftovers() => Calls.Add("RemoveLeftovers");
 
-        public bool TryFindOutput(RECT monitor, out int output, out RECT desktop)
+        public OutputLookup FindOutput(RECT monitor, out int output, out RECT desktop)
         {
             output = 0;
             desktop = monitor;
-            return HasOutput;
+            return Output;
         }
 
         public IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio)
         {
             if (StartFailure != null) throw StartFailure;
             StartedWith = audio;
+            if (CreateSession != null) return CreateSession(area, audio);
             var session = new FakeSession(area, audio);
             Sessions.Add(session);
             return session;

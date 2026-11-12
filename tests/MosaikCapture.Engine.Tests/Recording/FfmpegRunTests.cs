@@ -49,6 +49,26 @@ public sealed class FfmpegRunTests
         Assert.Contains("127.0.0.1", output);
     }
 
+    [Fact]
+    public void ExitIsReportedOnlyAfterTheLastErrorLine()
+    {
+        string cmd = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
+        for (int round = 0; round < 20; round++)
+        {
+            var errors = new TailBuffer(1000);
+            using var exited = new ManualResetEventSlim();
+            string seenAtExit = "";
+            using var process = Ffmpeg.Start(cmd, new FfmpegArgs().Add("/d", "/c", "echo first 1>&2 & echo last-line 1>&2"), null, errors.Add, () =>
+            {
+                seenAtExit = errors.ToString();
+                exited.Set();
+            });
+
+            Assert.True(exited.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken), "no exit reported");
+            Assert.Contains("last-line", seenAtExit);
+        }
+    }
+
     [Theory]
     [InlineData(0, 120)]
     [InlineData(60, 720)]       // a minute of video may take ten minutes plus the base

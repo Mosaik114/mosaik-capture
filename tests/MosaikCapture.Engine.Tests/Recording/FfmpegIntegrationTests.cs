@@ -16,12 +16,12 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
 
     // ---------- Assembling after pauses ----------
 
-    /// <summary>Silent 48 kHz track (like the recorder writes) with a short beep at <paramref name="beepAt"/> seconds.</summary>
+    /// <summary>Silent raw 48 kHz stereo float track (like the recorder writes) with a short beep at <paramref name="beepAt"/> seconds.</summary>
     string ToneWithBeep(string name, double length, double beepAt)
     {
         string path = work.File(name);
         FfmpegTool.Run("-f", "lavfi", "-i", "sine=f=1000:r=48000:d=" + FfmpegArgs.Number(length),
-            "-af", "volume='between(t," + FfmpegArgs.Number(beepAt) + "," + FfmpegArgs.Number(beepAt + 0.2) + ")':eval=frame", "-c:a", "pcm_s16le", path);
+            "-af", "volume='between(t," + FfmpegArgs.Number(beepAt) + "," + FfmpegArgs.Number(beepAt + 0.2) + ")':eval=frame", "-ac", "2", "-f", "f32le", path);
         return path;
     }
 
@@ -68,8 +68,8 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     {
         FfmpegTool.SkipIfMissing();
         var segments = TwoSegments("two-tracks");
-        string system = ToneWithBeep("ton.wav", 10, 6.0);    // ends up at 2.5 s
-        string mic = ToneWithBeep("mikro.wav", 10, 1.5);     // ends up at 0.5 s
+        string system = ToneWithBeep("system.f32", 10, 6.0);    // ends up at 2.5 s
+        string mic = ToneWithBeep("microphone.f32", 10, 1.5);     // ends up at 0.5 s
         string target = work.File("zusammen.mp4");
 
         Assemble(segments, new List<string> { system, mic }, target);
@@ -89,7 +89,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
         FfmpegTool.SkipIfMissing();
         var segments = TwoSegments("one-track");
         string target = work.File("eine-spur.mp4");
-        Assemble(segments, new List<string> { ToneWithBeep("nur-ton.wav", 10, 6.0) }, target);
+        Assemble(segments, new List<string> { ToneWithBeep("only-system.f32", 10, 6.0) }, target);
         var beeps = Beeps(target);
         Assert.Single(beeps);
         Assert.InRange(beeps[0], 2.45, 2.55);

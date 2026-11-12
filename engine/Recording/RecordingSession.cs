@@ -99,6 +99,7 @@ internal sealed class RecordingSession : IRecordingSession
     long recordedTicks;              // length of the finished segments (Stopwatch ticks); Interlocked
     int pauseCount;                  // under gate: a resume that started before the latest pause gives up
     int resuming;                    // 1 while a resume waits for ffmpeg; Interlocked
+    volatile bool wantRunning;       // the user's intent: resumed and not paused since (shown at once, even while ffmpeg starts)
 
     public RecordingSession(Int32Rect area, int output, RECT desktop, AudioSettings audioSettings, RecordingSessionServices? services = null)
     {
@@ -119,7 +120,8 @@ internal sealed class RecordingSession : IRecordingSession
     public bool AudioLost { get; private set; }
     public event Action? Broke;
 
-    public bool Paused => current == null && Volatile.Read(ref resuming) == 0;
+    /// <summary>What the user asked for last: true after Pause, false right after Resume (ffmpeg may still be starting).</summary>
+    public bool Paused => !wantRunning;
     public float MicrophoneLevel => audio.MicrophoneLevel;
 
     /// <summary>Number of segments started so far (tests).</summary>
@@ -149,6 +151,7 @@ internal sealed class RecordingSession : IRecordingSession
 
     public async Task ResumeAsync()
     {
+        wantRunning = true;
         if (current != null || Interlocked.CompareExchange(ref resuming, 1, 0) != 0) return;
         try
         {
@@ -197,6 +200,7 @@ internal sealed class RecordingSession : IRecordingSession
                 if (wasCurrent) current = null;
             }
             if (!wasCurrent) return;   // paused meanwhile: nothing broke from the user's point of view
+            wantRunning = false;
             reason = ex.Message;
             Broke?.Invoke();
             return;
@@ -236,6 +240,7 @@ internal sealed class RecordingSession : IRecordingSession
     public void Pause()
     {
         Segment? segment;
+        wantRunning = false;
         lock (gate)
         {
             pauseCount++;
@@ -323,7 +328,7 @@ internal sealed class RecordingSession : IRecordingSession
         return null;
     }
 
-    // While the audio thread still holds its WAV files, the folder is removed once it lets go.
+    // While the audio thread still holds its track files, the folder is removed once it lets go.
     void DeleteWorkDirectory()
     {
         if (audio.Finished.IsCompleted) DeleteWorkDirectoryNow();
@@ -353,7 +358,7 @@ internal sealed class RecordingSession : IRecordingSession
     internal static FfmpegArgs Assemble(string concatList, IList<string> tracks, IList<double> from, IList<double> length, string path)
     {
         var args = FfmpegArgs.Quiet().Add("-f", "concat", "-safe", "0", "-i", concatList);
-        foreach (string track in tracks) args.Add("-i", track);
+        foreach (string track in tracks) args.Add(AudioTrack.InputArguments).Add("-i", track);   // raw samples: the format must be named
         if (tracks.Count > 0)
         {
             args.Add("-filter_complex", AudioFilter(tracks.Count, from, length), "-map", "0:v", "-map", "[a]", "-c:a", "aac", "-b:a", "192k");

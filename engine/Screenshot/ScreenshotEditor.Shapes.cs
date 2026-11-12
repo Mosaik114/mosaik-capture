@@ -26,7 +26,7 @@ internal sealed partial class ScreenshotEditor
         }
         else
         {
-            snapShape = ShapeRecognizer.Recognize(pts, StrokeWidths[widthIndex], out kind);
+            snapShape = ShapeRecognizer.Recognize(pts, style.StrokeWidth, out kind);
             if (snapShape == null) return;
         }
         snapped = true;
@@ -65,7 +65,7 @@ internal sealed partial class ScreenshotEditor
             Point a = snapStart;
             double ang = Math.Atan2(p.Y - a.Y, p.X - a.X) * 180 / Math.PI;
             if (tool == Tool.Marker ? Math.Abs(Math.Sin(ang * Math.PI / 180)) < MarkerLevelSine : ShapeRecognizer.NearAxis(ang, ShapeRecognizer.AxisSnapDegrees)) p = ShapeRecognizer.SnapAxis(a, p);
-            stroke!.Data = snapArrow ? ShapeRecognizer.Arrow(a, p, StrokeWidths[widthIndex]) : (Geometry)new LineGeometry(a, p);
+            stroke!.Data = snapArrow ? ShapeRecognizer.Arrow(a, p, style.StrokeWidth) : (Geometry)new LineGeometry(a, p);
             return;
         }
         double f = Math.Max(0.1, (p - snapCenter).Length / snapReach);

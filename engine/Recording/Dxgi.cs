@@ -1,48 +1,76 @@
 namespace MosaikCapture.Engine.Recording;
 
+/// <summary>Result of looking up the GPU output of a monitor.</summary>
+internal enum OutputLookup
+{
+    /// <summary>On the first GPU: ddagrab can record it.</summary>
+    Found,
+    /// <summary>Connected to another GPU: ffmpeg's ddagrab only uses the first adapter (it has no adapter option).</summary>
+    OtherGpu,
+    /// <summary>No GPU output shows it (e.g. a remote session or a mirrored display).</summary>
+    NotFound,
+}
+
 /// <summary>Which GPU output shows a monitor (ffmpeg's ddagrab counts the outputs of the first adapter).</summary>
 internal static class Dxgi
 {
-    const int MaxOutputs = 16;
+    const int MaxOutputs = 16, MaxAdapters = 8;
 
-    public static bool Find(RECT monitor, out int outputIndex, out RECT desktop)
+    public static OutputLookup Find(RECT monitor, out int outputIndex, out RECT desktop)
     {
         outputIndex = -1;
         desktop = monitor;
         var factoryId = typeof(IDXGIFactory1).GUID;
-        if (NativeMethods.CreateDXGIFactory1(ref factoryId, out IntPtr factoryPointer) != 0) return false;
+        if (NativeMethods.CreateDXGIFactory1(ref factoryId, out IntPtr factoryPointer) != 0) return OutputLookup.NotFound;
         var factory = (IDXGIFactory1)Marshal.GetObjectForIUnknown(factoryPointer);
         Marshal.Release(factoryPointer);
-        IDXGIAdapter? adapter = null;
         try
         {
-            if (factory.EnumAdapters(0, out adapter) != 0 || adapter == null) return false;
-            for (uint index = 0; index < MaxOutputs; index++)
+            for (uint adapterIndex = 0; adapterIndex < MaxAdapters; adapterIndex++)
             {
-                if (adapter.EnumOutputs(index, out IDXGIOutput? output) != 0 || output == null) break;
-                int result = output.GetDesc(out DXGI_OUTPUT_DESC description);
-                Marshal.ReleaseComObject(output);
-                if (result != 0) continue;
-                var bounds = description.DesktopCoordinates;
-                if (bounds.left == monitor.left && bounds.top == monitor.top && bounds.right == monitor.right && bounds.bottom == monitor.bottom)
+                if (factory.EnumAdapters(adapterIndex, out IDXGIAdapter? adapter) != 0 || adapter == null) break;
+                try
                 {
-                    outputIndex = (int)index;
-                    desktop = bounds;
-                    return true;
+                    int index = OutputOf(adapter, monitor, out desktop);
+                    if (index < 0) continue;
+                    if (adapterIndex > 0) return OutputLookup.OtherGpu;
+                    outputIndex = index;
+                    return OutputLookup.Found;
                 }
+                finally { Marshal.ReleaseComObject(adapter); }
             }
-            return false;
+            desktop = monitor;
+            return OutputLookup.NotFound;
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException)
         {
             ErrorLog.Write("Enumerating the GPU outputs", ex);
-            return false;
+            return OutputLookup.NotFound;
         }
         finally
         {
-            if (adapter != null) Marshal.ReleaseComObject(adapter);
             Marshal.ReleaseComObject(factory);
         }
+    }
+
+    // The index of the adapter's output that shows exactly this monitor, or -1.
+    static int OutputOf(IDXGIAdapter adapter, RECT monitor, out RECT desktop)
+    {
+        desktop = monitor;
+        for (uint index = 0; index < MaxOutputs; index++)
+        {
+            if (adapter.EnumOutputs(index, out IDXGIOutput? output) != 0 || output == null) break;
+            int result = output.GetDesc(out DXGI_OUTPUT_DESC description);
+            Marshal.ReleaseComObject(output);
+            if (result != 0) continue;
+            var bounds = description.DesktopCoordinates;
+            if (bounds.left == monitor.left && bounds.top == monitor.top && bounds.right == monitor.right && bounds.bottom == monitor.bottom)
+            {
+                desktop = bounds;
+                return (int)index;
+            }
+        }
+        return -1;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

@@ -8,10 +8,10 @@ internal interface IAudioRecorder
     bool SystemSoundUsed { get; }
     bool MicrophoneUsed { get; }
     float MicrophoneLevel { get; }
-    /// <summary>Completes when the capture thread has ended and the WAV files are closed.</summary>
+    /// <summary>Completes when the capture thread has ended and the track files are closed.</summary>
     Task Finished { get; }
     void Start();
-    /// <summary>Stops and finalizes the WAV files; false if they must not be used.</summary>
+    /// <summary>Stops and finalizes the track files; false if they must not be used.</summary>
     bool Stop();
     /// <summary>Seconds from the start of the tracks to the given moment (100 ns ticks).</summary>
     double Offset(long ticks);
@@ -20,7 +20,7 @@ internal interface IAudioRecorder
 }
 
 /// <summary>
-/// Records system sound (loopback) and the microphone via WASAPI into two WAV files on a shared
+/// Records system sound (loopback) and the microphone via WASAPI into two raw sample files on a shared
 /// timeline, so they can be laid under the video segments with exact timing.
 /// </summary>
 /// <remarks>
@@ -46,8 +46,8 @@ internal sealed class AudioRecorder : IAudioRecorder
 
     public AudioRecorder(string directory, bool microphoneOn, bool systemSoundOn)
     {
-        SystemSoundFile = Path.Combine(directory, "system.wav");
-        MicrophoneFile = Path.Combine(directory, "microphone.wav");
+        SystemSoundFile = Path.Combine(directory, "system.f32");
+        MicrophoneFile = Path.Combine(directory, "microphone.f32");
         systemSound = new AudioTrack(SystemSoundFile, loopback: true) { Want = true, Mute = !systemSoundOn };
         microphone = new AudioTrack(MicrophoneFile, loopback: false) { Want = microphoneOn };
         SystemSoundUsed = systemSoundOn;
@@ -93,7 +93,7 @@ internal sealed class AudioRecorder : IAudioRecorder
     }
 
     /// <summary>
-    /// Stops recording and finalizes the WAV files. False if the capture thread did not finish in
+    /// Stops recording and finalizes the track files. False if the capture thread did not finish in
     /// time or failed: then the files must not be used.
     /// </summary>
     public bool Stop()

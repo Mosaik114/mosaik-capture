@@ -79,6 +79,7 @@ static class UiText
         public const string NotSaved = "Nicht gespeichert";
         public const string SavedNotCopied = "Gespeichert, nicht kopiert";
         public const string Problem = "Screenshot fehlgeschlagen";
+        public const string ScreenUnavailable = "Der Bildschirm lässt sich gerade nicht lesen (z. B. gesperrt)";
         public static string FolderNotWritable(string folder) => "Ordner nicht beschreibbar: " + folder;
     }
 
@@ -132,6 +133,7 @@ static class UiText
         public const string FfmpegInstallHint = "Für Aufnahmen: winget install ffmpeg";
         public const string NotPossible = "Aufnahme nicht möglich";
         public const string MonitorUnreachable = "Dieser Monitor ist für die Aufnahme nicht erreichbar";
+        public const string MonitorOnOtherGpu = "Dieser Monitor hängt an einer anderen Grafikkarte; aufnehmen lässt sich nur der Hauptgrafikkarten-Monitor";
         public const string Failed = "Aufnahme fehlgeschlagen";
         public const string Saved = "Aufnahme gespeichert";
         public const string SavedWithoutAudio = "Aufnahme ohne Ton gespeichert";

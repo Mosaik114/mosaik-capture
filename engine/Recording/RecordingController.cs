@@ -102,10 +102,11 @@ internal sealed class RecordingController
     {
         workArea = work;
         area = RecordingArea.Fit(area, monitor);
-        if (!backend.TryFindOutput(monitor, out int output, out RECT desktop))
+        var lookup = backend.FindOutput(monitor, out int output, out RECT desktop);
+        if (lookup != OutputLookup.Found)
         {
             Phase = RecordingPhase.Idle;
-            ui.ShowProblem(UiText.Recording.NotPossible, UiText.Recording.MonitorUnreachable, work);
+            ui.ShowProblem(UiText.Recording.NotPossible, lookup == OutputLookup.OtherGpu ? UiText.Recording.MonitorOnOtherGpu : UiText.Recording.MonitorUnreachable, work);
             return;
         }
         try

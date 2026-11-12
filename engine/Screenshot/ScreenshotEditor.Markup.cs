@@ -69,7 +69,7 @@ internal sealed partial class ScreenshotEditor
             if (bounds.IsEmpty) { RefreshSpotlightShade(null); return false; }
             AddMarkup(SpotlightFrame(bounds));
         }
-        else if (tool == Tool.Marker && !snapped) AddMarkup(TextHighlight(StrokePoints(drawn), MarkerWidths[widthIndex]) ?? drawn);
+        else if (tool == Tool.Marker && !snapped) AddMarkup(TextHighlight(StrokePoints(drawn), style.MarkerWidth) ?? drawn);
         else if (tool == Tool.Pen && !snapped)
         {
             var smooth = ShapeRecognizer.Smooth(StrokePoints(drawn));
@@ -251,8 +251,8 @@ internal sealed partial class ScreenshotEditor
 
     void PlaceNumber(Point p)
     {
-        double h = BadgeSizes[widthIndex];
-        var g = NumberBadge(NextNumber(), InkColors[colorIndex], h);
+        double h = style.BadgeSize;
+        var g = NumberBadge(NextNumber(), style.Ink, h);
         Canvas.SetLeft(g, Math.Round(p.X - g.Width / 2));
         Canvas.SetTop(g, Math.Round(p.Y - h / 2));
         AddMarkup(g);
@@ -268,11 +268,11 @@ internal sealed partial class ScreenshotEditor
             return false;
         }
         int n = NextNumber();
-        string key = n + "|" + colorIndex + "|" + widthIndex;
+        string key = n + "|" + style.ColorIndex + "|" + style.WidthIndex;
         if (key != numberPreviewKey)
         {
             if (numberPreview != null) root.Children.Remove(numberPreview);
-            numberPreview = NumberBadge(n, InkColors[colorIndex], BadgeSizes[widthIndex]);
+            numberPreview = NumberBadge(n, style.Ink, style.BadgeSize);
             numberPreview.Opacity = 0.7;
             numberPreview.IsHitTestVisible = false;
             root.Children.Insert(root.Children.IndexOf(markup) + 1, numberPreview);
@@ -301,7 +301,7 @@ internal sealed partial class ScreenshotEditor
 
     void StartTextInput(Point p, bool plate)
     {
-        double fs = TextSizes[widthIndex];
+        double fs = style.TextSize;
         var tb = new TextBox
         {
             FontFamily = Palette.UiFont,
@@ -341,17 +341,17 @@ internal sealed partial class ScreenshotEditor
     void StyleTextBox()
     {
         var tb = textBox!;
-        double fs = TextSizes[widthIndex];
+        double fs = style.TextSize;
         tb.FontSize = fs;
         if (textHost is Border host)
         {
-            Color c = InkColors[colorIndex];
+            Color c = style.Ink;
             host.Background = new SolidColorBrush(c);
             host.CornerRadius = new CornerRadius(Math.Round(fs * 0.3));
             host.Padding = PlatePad(fs);
             tb.Foreground = tb.CaretBrush = Bright(c) ? new SolidColorBrush(Color.FromRgb(0x26, 0x26, 0x24)) : Brushes.White;
         }
-        else tb.Foreground = tb.CaretBrush = new SolidColorBrush(InkColors[colorIndex]);
+        else tb.Foreground = tb.CaretBrush = new SolidColorBrush(style.Ink);
     }
 
     // Finishes text input: the text box becomes fixed text at the same position.

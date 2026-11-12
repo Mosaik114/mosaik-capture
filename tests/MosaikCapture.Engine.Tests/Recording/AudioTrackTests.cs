@@ -21,17 +21,17 @@ public sealed class AudioTrackTests : IDisposable
 
     static long Ticks(long frames) => frames * TicksPerSecond / Rate;
 
-    /// <summary>Runs <paramref name="drive"/> on a fresh track; returns the left channel and the whole WAV file.</summary>
+    /// <summary>Runs <paramref name="drive"/> on a fresh track; returns the left channel and the whole raw file.</summary>
     (float[] Left, byte[] File) Record(Action<AudioTrack> drive, long endTicks = 0)
     {
-        string file = directory.File("track.wav");
+        string file = directory.File("track.f32");
         var track = new AudioTrack(file, client);
         track.Begin();
         drive(track);
         track.End(0, endTicks);
         byte[] bytes = File.ReadAllBytes(file);
-        var left = new float[(bytes.Length - 44) / 8];
-        for (int i = 0; i < left.Length; i++) left[i] = BitConverter.ToSingle(bytes, 44 + i * 8);
+        var left = new float[bytes.Length / 8];
+        for (int i = 0; i < left.Length; i++) left[i] = BitConverter.ToSingle(bytes, i * 8);
         return (left, bytes);
     }
 
@@ -146,26 +146,47 @@ public sealed class AudioTrackTests : IDisposable
     }
 
     [Fact]
-    public void EndPadsToTheEndAndWritesAFloatStereoWavHeader()
+    public void EndPadsToTheEndAndWritesRawFloatStereoWithoutHeader()
     {
         client.Packet(0, 480, first: 1);
 
         var (left, bytes) = Record(t => Drain(t), endTicks: TicksPerSecond);
 
         Assert.Equal(Rate, left.Length);
-        Assert.Equal("RIFF", Encoding.ASCII.GetString(bytes, 0, 4));
-        Assert.Equal(36 + Rate * 8, BitConverter.ToInt32(bytes, 4));
-        Assert.Equal("WAVEfmt ", Encoding.ASCII.GetString(bytes, 8, 8));
-        Assert.Equal(16, BitConverter.ToInt32(bytes, 16));
-        Assert.Equal(3, BitConverter.ToInt16(bytes, 20));        // IEEE float
-        Assert.Equal(2, BitConverter.ToInt16(bytes, 22));        // stereo
-        Assert.Equal(Rate, BitConverter.ToInt32(bytes, 24));
-        Assert.Equal(Rate * 8, BitConverter.ToInt32(bytes, 28));
-        Assert.Equal(8, BitConverter.ToInt16(bytes, 32));
-        Assert.Equal(32, BitConverter.ToInt16(bytes, 34));
-        Assert.Equal("data", Encoding.ASCII.GetString(bytes, 36, 4));
-        Assert.Equal(Rate * 8, BitConverter.ToInt32(bytes, 40));
-        Assert.Equal(44 + Rate * 8, bytes.Length);
+        Assert.Equal(Rate * 8, bytes.Length);       // nothing but samples
+        Assert.Equal(1, left[0]);                   // the first sample is the first byte
+        Assert.Equal(1, BitConverter.ToSingle(bytes, 4));   // right channel
+    }
+
+    [Theory]
+    [InlineData(1.0, 48_000L)]
+    [InlineData(5598.0, 268_704_000L)]                   // 93.3 minutes: where a signed 32-bit WAV size used to overflow
+    [InlineData(4 * 3600.0, 691_200_000L)]               // four hours: 5.5 GB, beyond any RIFF size field
+    public void LongRecordingsAreCountedIn64Bit(double seconds, long frames)
+    {
+        long end = (long)Math.Round(seconds * TicksPerSecond);
+
+        Assert.Equal(frames, AudioTrack.FramesBetween(0, end));
+        Assert.Equal(frames * 8, AudioTrack.BytesFor(frames));
+        if (seconds > 5000) Assert.True(AudioTrack.BytesFor(frames) > int.MaxValue);
+        if (seconds > 3 * 3600) Assert.True(AudioTrack.BytesFor(frames) > uint.MaxValue);
+    }
+
+    [Fact]
+    public void FfmpegIsToldTheRawFormat() =>
+        Assert.Equal(new[] { "-f", "f32le", "-ar", "48000", "-ac", "2" }, AudioTrack.InputArguments);
+
+    [Fact]
+    public void FailedReleaseIsLoggedAndDrainingGoesOn()
+    {
+        client.ReleaseResult = unchecked((int)0x88890004);
+        client.Packet(0, 480, first: 1);
+        client.Packet(Ticks(480), 480, first: 481);
+
+        var (left, _) = Record(t => Drain(t));
+
+        Assert.Equal(960, left.Length);
+        Assert.Equal(2, client.Released);
     }
 
     [Fact]
@@ -215,10 +236,14 @@ public sealed class AudioTrackTests : IDisposable
             return 0;
         }
 
+        public int ReleaseResult { get; set; }
+        public int Released { get; private set; }
+
         public int ReleaseBuffer(uint frames)
         {
+            Released++;
             Dispose();
-            return 0;
+            return ReleaseResult;
         }
 
         public void Dispose()

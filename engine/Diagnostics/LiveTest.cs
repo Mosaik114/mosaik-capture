@@ -33,7 +33,7 @@ internal static class LiveTest
             {
                 var area = CaptureWindowArea(window, out RECT monitor);
                 CheckScreenshot(directory, area);
-                if (!Dxgi.Find(monitor, out int output, out RECT desktop)) throw new InvalidOperationException("The test monitor is not available to Desktop Duplication");
+                if (Dxgi.Find(monitor, out int output, out RECT desktop) != OutputLookup.Found) throw new InvalidOperationException("The test monitor is not available to Desktop Duplication");
                 session = new RecordingSession(area, output, desktop, new AudioSettings(false, false, false));
                 session.StartAudio();
                 await session.ResumeAsync();

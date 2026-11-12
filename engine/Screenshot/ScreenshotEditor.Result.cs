@@ -18,24 +18,16 @@ internal sealed partial class ScreenshotEditor
         RefreshSpotlightShade(null);
     }
 
-    void PushUndo(Action undoAction, Action redoAction)
-    {
-        undo.Add(new Step(undoAction, redoAction));
-        redo.Clear();
-    }
+    void PushUndo(Action undoAction, Action redoAction) => history.Push(undoAction, redoAction);
 
-    void Undo() => Replay(undo, redo, step => step.Undo());
+    void Undo() => Replay(history.Undo);
 
-    void Redo() => Replay(redo, undo, step => step.Redo());
+    void Redo() => Replay(history.Redo);
 
-    void Replay(List<Step> from, List<Step> to, Action<Step> apply)
+    void Replay(Func<bool> step)
     {
         CommitText();
-        if (from.Count == 0) return;
-        var step = from[from.Count - 1];
-        from.RemoveAt(from.Count - 1);
-        apply(step);
-        to.Add(step);
+        if (!step()) return;
         RefreshSpotlightShade(null);
         UpdateNumberPreview();
     }
@@ -161,7 +153,7 @@ internal sealed partial class ScreenshotEditor
     void Cancel()
     {
         CommitText();
-        if (undo.Count > 0 && !discardArmed)
+        if (history.HasChanges && !discardArmed)
         {
             discardArmed = true;
             ShowNotice(UiText.Editor.ConfirmDiscard);
@@ -181,8 +173,7 @@ internal sealed partial class ScreenshotEditor
         CloseMenu();
         Hide();
         markup.Children.Clear();
-        undo.Clear();
-        redo.Clear();
+        history.Clear();
         frozenImage.Source = null;
         notice.Visibility = tooltip.Visibility = Visibility.Hidden;
         capture = null!;

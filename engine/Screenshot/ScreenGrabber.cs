@@ -1,3 +1,5 @@
+using System.ComponentModel;
+
 namespace MosaikCapture.Engine.Screenshot;
 
 /// <summary>Reads the screen: pixels, monitors and the visible windows.</summary>
@@ -12,26 +14,28 @@ internal static class ScreenGrabber
 
     /// <summary>
     /// Copies screen content via GDI into a frozen WPF bitmap (without the mouse pointer).
-    /// Throws if Windows refuses (e.g. on a locked desktop).
     /// </summary>
+    /// <exception cref="Win32Exception">Windows refused (e.g. on a locked or secure desktop, or the size is invalid).</exception>
     public static BitmapSource Capture(int x, int y, int width, int height, double dpi)
     {
+        if (width <= 0 || height <= 0) throw new Win32Exception(NativeMethods.ERROR_INVALID_PARAMETER, "Invalid screen area " + width + " x " + height);
         IntPtr screen = IntPtr.Zero, memory = IntPtr.Zero, bitmap = IntPtr.Zero;
         try
         {
             screen = NativeMethods.GetDC(IntPtr.Zero);
-            if (screen == IntPtr.Zero) throw new InvalidOperationException("GetDC failed");
+            if (screen == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetDC failed");
             memory = NativeMethods.CreateCompatibleDC(screen);
             bitmap = NativeMethods.CreateCompatibleBitmap(screen, width, height);
-            if (memory == IntPtr.Zero || bitmap == IntPtr.Zero) throw new InvalidOperationException("Creating a " + width + " x " + height + " screen bitmap failed");
+            if (memory == IntPtr.Zero || bitmap == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Creating a " + width + " x " + height + " screen bitmap failed");
             IntPtr previous = NativeMethods.SelectObject(memory, bitmap);
             bool copied = NativeMethods.BitBlt(memory, 0, 0, width, height, screen, x, y, NativeMethods.SRCCOPY | NativeMethods.CAPTUREBLT);
+            int copyError = Marshal.GetLastWin32Error();
             NativeMethods.SelectObject(memory, previous);
-            if (!copied) ErrorLog.Write("Copying the screen", new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()));
+            if (!copied) throw new Win32Exception(copyError, "Copying the screen failed");
             var header = new NativeMethods.BITMAPINFOHEADER { biSize = 40, biWidth = width, biHeight = -height, biPlanes = 1, biBitCount = 32 };
             var pixels = new byte[width * height * 4];
             if (NativeMethods.GetDIBits(memory, bitmap, 0, (uint)height, pixels, ref header, NativeMethods.DIB_RGB_COLORS) == 0)
-                ErrorLog.Write("Reading the screen bitmap failed", null);
+                throw new Win32Exception(NativeMethods.ERROR_INVALID_PARAMETER, "Reading the screen bitmap failed");
             var image = BitmapSource.Create(width, height, dpi, dpi, PixelFormats.Bgr32, null, pixels, width * 4);
             image.Freeze();
             return image;
@@ -68,7 +72,7 @@ internal static class ScreenGrabber
     public static void VisibleWindows(Int32Rect virtualScreen, List<Rect> windows)
     {
         windows.Clear();
-        uint ownProcess = (uint)Process.GetCurrentProcess().Id;
+        uint ownProcess = NativeMethods.GetCurrentProcessId();
         var className = new StringBuilder(64);
         var screen = new Rect(0, 0, virtualScreen.Width, virtualScreen.Height);
         NativeMethods.EnumWindows((hwnd, lParam) =>
