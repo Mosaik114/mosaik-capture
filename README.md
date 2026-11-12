@@ -127,7 +127,7 @@ names, so they follow the German UI (as do output file names like
 Prerequisites: [Rust](https://rustup.rs) (stable) and the [.NET SDK 10](https://dotnet.microsoft.com/download).
 
 ```powershell
-./build.ps1 -Test      # builds both programs into bin\ and runs all test suites
+./build.ps1 -Test      # builds both programs into bin\ and runs the Rust and C# test suites
 ./build.ps1 -Package   # additionally zips the executables into dist\
 ```
 
@@ -157,7 +157,7 @@ NuGet and Actions, and gitleaks scans the full history on every push and weekly.
   crashed, and the always-on part should cost almost nothing. The price is an IPC contract,
   which is why both sides pin it in tests.
 - **WPF on .NET Framework 4.8, not .NET 8+.** 4.8 ships with Windows, so users need no
-  runtime and the engine stays a ~240 KB executable. Moving to .NET 8 would bring faster
+  runtime and the engine stays a ~290 KB executable. Moving to .NET 8 would bring faster
   startup and newer APIs at the cost of a runtime install or a ~150 MB self-contained build.
 - **ffmpeg as an external tool.** Desktop Duplication, NVENC and robust muxing come for free;
   the engine only has to drive it carefully (absolute local paths, a job object, one encoder

@@ -53,6 +53,7 @@ First public release as a standalone project.
 - First standalone version (before this repository existed): screenshot and
   screen-recording tray app with its own hotkeys (Shift+Alt+4 / Shift+Alt+5), settings
   window and autostart. Its sources were imported unchanged as the first commit of this
-  repository on 2026-11-12.
+  repository on 2026-11-12 (tag [`original-import`](https://github.com/Mosaik114/mosaik-capture/tree/original-import)),
+  so the whole 1.0.0 restructuring can be read as a before/after diff.
 
 [1.0.0]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.0.0
