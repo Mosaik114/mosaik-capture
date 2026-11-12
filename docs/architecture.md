@@ -102,7 +102,7 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
 | Folder | Contents |
 |---|---|
 | `Core/` | `Program` (entry point, crash handling), `CaptureBridge` (CLI + IPC), `CaptureSettings`, `ErrorLog`, `NativeMethods` (every P/Invoke and Win32 constant), `UiText` (every German UI string), `ClipboardWriter` (the single clipboard path), `Motion` (shared timing), `Metrics` (shared sizes and shadows), `Palette`, `ToolWindows` |
-| `Screenshot/` | `Screenshots` (facade) → `ScreenshotController` → `IScreenshotUi` / `IScreenshotStore`; `ShapeRecognizer` and `TextLineFinder` (pure, tested), `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`), `PinnedScreenshot`, `TextRecognition` |
+| `Screenshot/` | `Screenshots` (facade) → `ScreenshotController` → `IScreenshotUi` / `IScreenshotStore`; `ShapeRecognizer` and `TextLineFinder` (pure, tested), `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`) with plain, tested models `UndoHistory`, `InkStyle`, `CropGeometry`, `PinnedScreenshot`, `TextRecognition` |
 | `Recording/` | `ScreenRecorder` (facade) → `RecordingController` (state machine) → `IRecordingUi` / `IRecordingBackend` / `IRecordingSession`; `RecordingSession` (behind `IFfmpegRunner` / `IAudioRecorder`, unit-tested with fakes), `Ffmpeg` (every call bounded by `FfmpegTimeouts`, cancellable), `FfmpegArgs`, `TailBuffer`, `AudioRecorder`/`AudioTrack` (WASAPI), `Dxgi`, toolbar, frame, countdown, card, `TrimWindow`, `VideoExport` |
 | `Diagnostics/` | `--self-test` and `--live-test` |
 
@@ -130,8 +130,8 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
 
 ```
 selection ─► countdown ─► ffmpeg (ddagrab → NVENC|x264 → segment-NN.mkv) ─┐
-                         WASAPI loopback ─► system.wav                    ├─► assemble ─► .mp4
-                         WASAPI capture  ─► mic.wav                       ─┘      │
+                         WASAPI loopback ─► system.f32                    ├─► assemble ─► .mp4
+                         WASAPI capture  ─► microphone.f32                ─┘      │
 pause/resume: closes the segment, opens a new one on the same clocks              └─► card ─► trim / GIF
 ```
 
@@ -141,14 +141,14 @@ pause/resume: closes the segment, opens a new one on the same clocks            
   failing). It only talks to three small interfaces, so all transitions are unit-tested with
   fakes; `ScreenRecorder` is a thin static facade for the WPF side.
 - **Capture on the GPU.** ffmpeg's `ddagrab` filter uses Desktop Duplication; `Dxgi` maps the
-  chosen monitor to the right DXGI output index. NVENC is probed once per process (off the UI
+  chosen monitor to the right DXGI output index across all adapters; ddagrab can only capture the primary GPU, so a monitor on another graphics card is reported to the user instead of failing silently. NVENC is probed once per process (off the UI
   thread, 4 s fallback to libx264), and each session fixes its encoder so all segments can be
   joined without re-encoding.
 - **Exact start.** ffmpeg is launched shortly *before* the countdown reaches zero, so the
   first frame coincides with the end of the countdown; the countdown, frame and recording bar
   are excluded from capture (`WDA_EXCLUDEFROMCAPTURE`).
 - **Audio in sync.** System sound and microphone are recorded by the engine itself (WASAPI
-  loopback and capture, `AUTOCONVERTPCM`) onto separate WAV tracks sharing one clock with the
+  loopback and capture, `AUTOCONVERTPCM`) onto separate headerless 32-bit float tracks (no WAV size limits, so recordings may run for hours) sharing one clock with the
   video segments. `AudioTrack` pads gaps and trims overlaps by device timestamps; at the end
   the segments are concatenated and the audio is aligned against the segment times measured
   with `ffprobe`, which keeps sound in sync across any number of pauses. If an audio device
