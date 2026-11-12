@@ -3,7 +3,8 @@
 //!
 //! A running engine owns a hidden window titled [`WINDOW_TITLE`] and accepts
 //! `WM_APP`-based commands. Window titles are not unique, so a window only counts as
-//! the engine if its process runs `MosaikCapture.Engine.exe` from this app's folder.
+//! the engine if its process runs `MosaikCapture.Engine.exe` from this app's folder —
+//! compared as the same file on disk, not as path text.
 //! If no engine is running, it is started with the capture mode on its command line.
 //!
 //! All calls run on the UI thread; the only wait is the state query in
@@ -11,13 +12,21 @@
 
 use std::cell::RefCell;
 use std::ffi::OsString;
+use std::fs::OpenOptions;
+use std::mem;
 use std::os::windows::ffi::OsStringExt;
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::ptr;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+use windows_sys::Win32::Storage::FileSystem::{
+    BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, GetFileInformationByHandle,
+};
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
@@ -121,9 +130,32 @@ const fn busy_from_reply(reply: Option<usize>) -> bool {
     }
 }
 
-/// Whether `image` is `expected`, compared like Windows compares paths (ignoring case).
-fn same_file_path(image: &Path, expected: &Path) -> bool {
-    image.to_string_lossy().to_lowercase() == expected.to_string_lossy().to_lowercase()
+/// The identity of a file: volume serial number and file index. Two paths with the
+/// same identity name the same file, whatever their spelling (case, 8.3 names,
+/// `\\?\` prefixes, junctions).
+fn file_id(path: &Path) -> Option<(u32, u64)> {
+    // Query access only; backup semantics would also allow opening directories.
+    let file = OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    // SAFETY: plain C struct for which all-zero is valid.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { mem::zeroed() };
+    // SAFETY: the handle is open for the duration of the call; `info` outlives it.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) } != 0;
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    ok.then_some((info.dwVolumeSerialNumber, index))
+}
+
+/// Whether both paths name the same existing file: by file identity, or, if that
+/// cannot be read, by canonical path.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (file_id(a), file_id(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b),
+    }
 }
 
 /// The executable of the process that owns `window`.
@@ -197,7 +229,7 @@ impl Engine {
             if after.is_null() {
                 return None;
             }
-            if process_image(after).is_some_and(|image| same_file_path(&image, &expected)) {
+            if process_image(after).is_some_and(|image| same_file(&image, &expected)) {
                 return Some(after);
             }
         }
@@ -240,13 +272,11 @@ impl Engine {
     /// an engine we launched is still starting.
     pub fn start_capture(&self, mode: CaptureMode) -> Delivery {
         let window = self.find_window();
-        let mut launched = self.launched.borrow_mut();
-        if window.is_some() {
-            *launched = None;
-        }
+        // Taken out of the cell, so no borrow is held across the calls below.
+        let mut launched = self.launched.take().filter(|_| window.is_none());
         let launch_in_progress =
             launched.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)));
-        match (next_step(window.is_some(), launch_in_progress), window) {
+        let delivery = match (next_step(window.is_some(), launch_in_progress), window) {
             (Step::Post, Some(window)) => {
                 // SAFETY: posting to a window handle has no memory-safety preconditions.
                 let posted = unsafe { PostMessageW(window, mode.message(), 0, 0) } != 0;
@@ -254,10 +284,12 @@ impl Engine {
             }
             (Step::Wait, _) => Delivery::AlreadyStarting,
             (Step::Spawn | Step::Post, _) => {
-                *launched = self.command(mode).spawn().ok();
+                launched = self.command(mode).spawn().ok();
                 if launched.is_some() { Delivery::Started } else { Delivery::Failed }
             }
-        }
+        };
+        self.launched.replace(launched);
+        delivery
     }
 
     /// `<exe_dir>\MosaikCapture.Engine.exe <flag>`, without a console window.
@@ -313,20 +345,25 @@ mod tests {
     }
 
     #[test]
-    fn engine_image_must_match_our_folder() {
-        let expected = Path::new(r"C:\Program Files\Mosaik\MosaikCapture.Engine.exe");
-        let upper = Path::new(r"C:\PROGRAM FILES\MOSAIK\MOSAIKCAPTURE.ENGINE.EXE");
-        assert!(same_file_path(upper, expected));
-        let elsewhere = Path::new(r"C:\Temp\MosaikCapture.Engine.exe");
-        assert!(!same_file_path(elsewhere, expected));
-        let other = Path::new(r"C:\Program Files\Mosaik\Other.exe");
-        assert!(!same_file_path(other, expected));
+    fn engine_image_is_compared_by_file_identity() {
+        let exe = std::env::current_exe().unwrap();
+        let upper = PathBuf::from(exe.to_string_lossy().to_uppercase());
+        assert!(same_file(&exe, &upper), "case does not matter");
+        let dotted = exe.parent().unwrap().join(".").join(exe.file_name().unwrap());
+        assert!(same_file(&exe, &dotted), "spelling does not matter");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", exe.display()));
+        assert!(same_file(&exe, &verbatim), "verbatim prefix does not matter");
+
+        let other = std::env::temp_dir();
+        assert!(!same_file(&exe, &other), "a different file");
+        let missing = exe.with_file_name("MosaikCapture.Engine.missing.exe");
+        assert!(!same_file(&missing, &missing), "missing files never match");
     }
 
     #[test]
     fn process_images_are_resolved() {
         let own = image_of_process(std::process::id()).expect("own process");
-        assert!(same_file_path(&own, &std::env::current_exe().unwrap()), "{}", own.display());
+        assert!(same_file(&own, &std::env::current_exe().unwrap()), "{}", own.display());
         assert_eq!(image_of_process(0), None);
     }
 

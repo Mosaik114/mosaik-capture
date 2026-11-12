@@ -3,6 +3,10 @@
 //!
 //! Only one instance runs per session. Starting the executable again forwards the
 //! command-line action (see [`cli`]) to the running instance.
+//!
+//! Tests: `cargo test` runs the unit tests. The end-to-end test of the real settings
+//! window (`ui::tests::settings_window_end_to_end`) creates a window and registers
+//! global hotkeys, so it only runs when `MOSAIK_UI_TESTS=1` is set; CI sets it.
 
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 

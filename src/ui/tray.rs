@@ -42,11 +42,41 @@ fn notify(window: HWND, icon: HICON, message: NOTIFY_ICON_MESSAGE) -> bool {
     unsafe { Shell_NotifyIconW(message, &raw const data) != 0 }
 }
 
-/// Adds the icon and switches it to the version-4 protocol (also used to restore it
-/// after Explorer restarts). Fails while the taskbar is not ready yet, e.g. during
-/// logon; the caller retries.
-pub fn add(window: HWND, icon: HICON) -> bool {
-    notify(window, icon, NIM_ADD) && notify(window, icon, NIM_SETVERSION)
+/// How far the icon has been set up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayState {
+    /// Not in the notification area (yet, or again after Explorer restarted).
+    Missing,
+    /// Added, but still on the old callback protocol.
+    Added,
+    /// Added and switched to the version-4 protocol.
+    Ready,
+}
+
+impl TrayState {
+    /// The state after attempting the step that belongs to `self`.
+    const fn after(self, succeeded: bool) -> Self {
+        match (self, succeeded) {
+            (Self::Missing, true) => Self::Added,
+            (Self::Added, true) | (Self::Ready, _) => Self::Ready,
+            (state, false) => state,
+        }
+    }
+}
+
+/// Takes the icon from `state` as far as possible towards [`TrayState::Ready`]: adds
+/// it if missing, then switches it to the version-4 protocol. A step that fails (the
+/// taskbar is not ready, e.g. during logon) is retried by the caller later; a step
+/// that succeeded is never repeated, so the icon is not added twice.
+pub fn advance(window: HWND, icon: HICON, state: TrayState) -> TrayState {
+    let state = match state {
+        TrayState::Missing => state.after(notify(window, icon, NIM_ADD)),
+        other => other,
+    };
+    match state {
+        TrayState::Added => state.after(notify(window, icon, NIM_SETVERSION)),
+        other => other,
+    }
 }
 
 /// Removes the icon.
@@ -166,6 +196,15 @@ mod tests {
     fn lparam(event: u32) -> LPARAM {
         // HIWORD carries the icon id in version 4.
         isize::try_from((ICON_ID << 16) | event).unwrap()
+    }
+
+    #[test]
+    fn setup_steps_are_not_repeated() {
+        assert_eq!(TrayState::Missing.after(false), TrayState::Missing);
+        assert_eq!(TrayState::Missing.after(true), TrayState::Added);
+        assert_eq!(TrayState::Added.after(false), TrayState::Added, "only SETVERSION is retried");
+        assert_eq!(TrayState::Added.after(true), TrayState::Ready);
+        assert_eq!(TrayState::Ready.after(false), TrayState::Ready);
     }
 
     #[test]

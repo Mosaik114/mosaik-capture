@@ -7,6 +7,7 @@
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
 
 use windows_sys::Win32::Foundation::HWND;
@@ -129,7 +130,7 @@ impl<V: Vtbl> Drop for Com<V> {
 
 /// Lets the user pick a folder, starting in `initial` if it exists. `None` if the
 /// dialog was cancelled or could not be shown. COM must be initialised on this thread.
-pub fn pick_folder(owner: HWND, initial: &str) -> Option<String> {
+pub fn pick_folder(owner: HWND, initial: &Path) -> Option<PathBuf> {
     let dialog = create_dialog()?;
     let vtbl = dialog.vtbl();
     let title = to_wide(strings::PICK_FOLDER_TITLE);
@@ -180,8 +181,8 @@ fn create_dialog() -> Option<Com<FileDialogVtbl>> {
 }
 
 /// The shell item for an existing folder path.
-fn shell_item(path: &str) -> Option<Com<ShellItemVtbl>> {
-    if path.is_empty() {
+fn shell_item(path: &Path) -> Option<Com<ShellItemVtbl>> {
+    if path.as_os_str().is_empty() {
         return None;
     }
     let path = to_wide(path);
@@ -194,14 +195,14 @@ fn shell_item(path: &str) -> Option<Com<ShellItemVtbl>> {
     unsafe { Com::from_result(result, raw) }
 }
 
-fn file_system_path(item: &Com<ShellItemVtbl>) -> Option<String> {
+fn file_system_path(item: &Com<ShellItemVtbl>) -> Option<PathBuf> {
     let mut name: PWSTR = ptr::null_mut();
     // SAFETY: `name` receives a COM-allocated string on success.
     let result =
         unsafe { (item.vtbl().get_display_name)(item.this(), SIGDN_FILESYSPATH, &raw mut name) };
     let path = (result >= 0).then(|| {
         // SAFETY: on success `name` is a NUL-terminated string owned by us.
-        unsafe { from_wide_ptr(name) }
+        PathBuf::from(unsafe { from_wide_ptr(name) })
     });
     // SAFETY: allocated by the shell with the COM task allocator (null is allowed).
     unsafe { CoTaskMemFree(name.cast()) };
@@ -212,7 +213,6 @@ fn file_system_path(item: &Com<ShellItemVtbl>) -> Option<String> {
 mod tests {
     use super::*;
     use std::mem::{offset_of, size_of};
-    use std::path::Path;
     use windows_sys::Win32::System::Com::{
         COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize,
     };
@@ -244,11 +244,11 @@ mod tests {
             unsafe { CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED.cast_unsigned()) } >= 0;
         {
             let temp = std::env::temp_dir();
-            let item = shell_item(temp.to_str().unwrap()).expect("temp folder exists");
+            let item = shell_item(&temp).expect("temp folder exists");
             let path = file_system_path(&item).unwrap();
-            assert!(Path::new(&path).is_dir(), "{path}");
-            assert!(shell_item("").is_none());
-            assert!(shell_item(r"Z:\definitely\not\here\9f1c").is_none());
+            assert!(path.is_dir(), "{}", path.display());
+            assert!(shell_item(Path::new("")).is_none());
+            assert!(shell_item(Path::new(r"Z:\definitely\not\here\9f1c")).is_none());
         }
         if initialised {
             // SAFETY: balances the successful CoInitializeEx above.

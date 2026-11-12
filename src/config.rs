@@ -4,6 +4,10 @@
 //! Everything here is pure. Reading and writing the actual file lives in
 //! [`crate::store`], which feeds raw values in through [`ProfileSource`].
 
+use std::ffi::{OsStr, OsString};
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+
 use crate::hotkey::{Hotkey, ParseHotkeyError};
 
 /// INI section holding all settings.
@@ -39,7 +43,7 @@ pub const DEFAULT_SCREENSHOT_HOTKEY: &str = "Shift+Alt+4";
 pub const DEFAULT_RECORDING_HOTKEY: &str = "Shift+Alt+5";
 
 /// Characters that may not appear anywhere in a folder path.
-const FORBIDDEN_PATH_CHARS: &[char] = &['\n', '\r', '"', '*', '<', '>', '?', '|'];
+const FORBIDDEN_PATH_CHARS: &[u8] = b"\n\r\"*<>?|";
 
 /// Recording frame rate. Anything other than 30 is treated as 60.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -137,17 +141,25 @@ impl Countdown {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefaultFolders {
     /// Default screenshot folder.
-    pub screenshots: String,
+    pub screenshots: PathBuf,
     /// Default recording folder.
-    pub recordings: String,
+    pub recordings: PathBuf,
 }
 
 impl DefaultFolders {
-    /// Builds the defaults from the user's "Pictures" and "Videos" folders.
-    pub fn new(pictures: &str, videos: &str) -> Self {
+    /// Builds the defaults from the user's "Pictures" and "Videos" folders. The
+    /// subfolder is appended textually, so a failed lookup (empty path) yields the
+    /// rooted, invalid `\Mosaiks-Screenshots` instead of a relative path.
+    pub fn new(pictures: &Path, videos: &Path) -> Self {
+        let below = |base: &Path, name: &str| {
+            let mut path = OsString::from(base);
+            path.push("\\");
+            path.push(name);
+            PathBuf::from(path)
+        };
         Self {
-            screenshots: format!("{pictures}\\Mosaiks-Screenshots"),
-            recordings: format!("{videos}\\Mosaiks-Aufnahmen"),
+            screenshots: below(pictures, "Mosaiks-Screenshots"),
+            recordings: below(videos, "Mosaiks-Aufnahmen"),
         }
     }
 }
@@ -155,8 +167,8 @@ impl DefaultFolders {
 /// Raw access to stored settings, with the semantics of the Win32 profile API:
 /// a missing key yields the given default.
 pub trait ProfileSource {
-    /// Reads a string value.
-    fn string(&self, key: &str, default: &str) -> String;
+    /// Reads a string value exactly as stored (lossless UTF-16).
+    fn string(&self, key: &str, default: &OsStr) -> OsString;
     /// Reads an unsigned integer value.
     fn int(&self, key: &str, default: u32) -> u32;
 }
@@ -192,10 +204,10 @@ pub struct Config {
     pub screenshot_hotkey: String,
     /// Hotkey text for recordings, as entered by the user.
     pub recording_hotkey: String,
-    /// Folder for screenshots.
-    pub screenshot_folder: String,
+    /// Folder for screenshots (kept as a path: any valid Windows name round-trips).
+    pub screenshot_folder: PathBuf,
     /// Folder for recordings.
-    pub recording_folder: String,
+    pub recording_folder: PathBuf,
     /// Record the microphone.
     pub microphone: bool,
     /// Record system audio.
@@ -231,13 +243,17 @@ impl Config {
     /// normalising out-of-range numbers.
     pub fn load(source: &impl ProfileSource, folders: &DefaultFolders) -> Self {
         let defaults = Self::defaults(folders);
-        let string = |key, default: &str| source.string(key, default);
+        // Hotkeys are text; anything that is not valid UTF-16 cannot parse anyway.
+        let text = |key, default: &str| {
+            source.string(key, OsStr::new(default)).to_string_lossy().into_owned()
+        };
+        let path = |key, default: &Path| PathBuf::from(source.string(key, default.as_os_str()));
         let flag = |key, default: bool| source.int(key, u32::from(default)) != 0;
         Self {
-            screenshot_hotkey: string(keys::SCREENSHOT_HOTKEY, &defaults.screenshot_hotkey),
-            recording_hotkey: string(keys::RECORDING_HOTKEY, &defaults.recording_hotkey),
-            screenshot_folder: string(keys::SCREENSHOT_FOLDER, &defaults.screenshot_folder),
-            recording_folder: string(keys::RECORDING_FOLDER, &defaults.recording_folder),
+            screenshot_hotkey: text(keys::SCREENSHOT_HOTKEY, &defaults.screenshot_hotkey),
+            recording_hotkey: text(keys::RECORDING_HOTKEY, &defaults.recording_hotkey),
+            screenshot_folder: path(keys::SCREENSHOT_FOLDER, &defaults.screenshot_folder),
+            recording_folder: path(keys::RECORDING_FOLDER, &defaults.recording_folder),
             microphone: flag(keys::MICROPHONE, defaults.microphone),
             system_audio: flag(keys::SYSTEM_AUDIO, defaults.system_audio),
             show_clicks: flag(keys::SHOW_CLICKS, defaults.show_clicks),
@@ -251,26 +267,27 @@ impl Config {
 
     /// Serialises the settings in the exact layout `WritePrivateProfileStringW`
     /// produces for a fresh file, so the engine and older versions read it unchanged.
-    pub fn to_ini(&self) -> String {
-        let flag = |value: bool| if value { "1" } else { "0" }.to_owned();
+    /// Folders are written as stored, so the result is an `OsString`.
+    pub fn to_ini(&self) -> OsString {
+        let flag = |value: bool| OsString::from(if value { "1" } else { "0" });
         let entries = [
-            (keys::SCREENSHOT_HOTKEY, self.screenshot_hotkey.clone()),
-            (keys::RECORDING_HOTKEY, self.recording_hotkey.clone()),
-            (keys::SCREENSHOT_FOLDER, self.screenshot_folder.clone()),
-            (keys::RECORDING_FOLDER, self.recording_folder.clone()),
+            (keys::SCREENSHOT_HOTKEY, OsString::from(&self.screenshot_hotkey)),
+            (keys::RECORDING_HOTKEY, OsString::from(&self.recording_hotkey)),
+            (keys::SCREENSHOT_FOLDER, self.screenshot_folder.clone().into_os_string()),
+            (keys::RECORDING_FOLDER, self.recording_folder.clone().into_os_string()),
             (keys::MICROPHONE, flag(self.microphone)),
             (keys::SYSTEM_AUDIO, flag(self.system_audio)),
             (keys::SHOW_CLICKS, flag(self.show_clicks)),
             (keys::AUTOSTART, flag(self.autostart)),
-            (keys::FPS, self.frame_rate.value().to_string()),
-            (keys::COUNTDOWN, self.countdown.value().to_string()),
+            (keys::FPS, self.frame_rate.value().to_string().into()),
+            (keys::COUNTDOWN, self.countdown.value().to_string().into()),
         ];
-        let mut ini = format!("\r\n[{SECTION}]\r\n");
+        let mut ini = OsString::from(format!("\r\n[{SECTION}]\r\n"));
         for (key, value) in entries {
-            ini.push_str(key);
-            ini.push('=');
-            ini.push_str(&value);
-            ini.push_str("\r\n");
+            ini.push(key);
+            ini.push("=");
+            ini.push(value);
+            ini.push("\r\n");
         }
         ini
     }
@@ -298,12 +315,13 @@ impl Config {
 
 /// Whether `path` is an absolute drive path (`C:\…`, `C:/…`) or a UNC path (`\\…`)
 /// without characters that Windows forbids in file names.
-pub fn is_valid_folder(path: &str) -> bool {
-    let units: Vec<u16> = path.encode_utf16().collect();
+pub fn is_valid_folder(path: &Path) -> bool {
+    let units: Vec<u16> = path.as_os_str().encode_wide().collect();
     let is = |index: usize, c: u8| units.get(index) == Some(&u16::from(c));
     let drive = is(1, b':') && (is(2, b'\\') || is(2, b'/'));
     let unc = is(0, b'\\') && is(1, b'\\');
-    units.len() >= 3 && (drive || unc) && !path.contains(FORBIDDEN_PATH_CHARS)
+    let forbidden = |unit: &u16| FORBIDDEN_PATH_CHARS.iter().any(|&c| u16::from(c) == *unit);
+    units.len() >= 3 && (drive || unc) && !units.iter().any(forbidden)
 }
 
 #[cfg(test)]
@@ -311,9 +329,10 @@ mod tests {
     use super::*;
     use crate::self_test::FOLDER_CASES;
     use std::collections::HashMap;
+    use std::os::windows::ffi::OsStringExt;
 
     fn folders() -> DefaultFolders {
-        DefaultFolders::new("C:\\Users\\Ada\\Pictures", "C:\\Users\\Ada\\Videos")
+        DefaultFolders::new(Path::new(r"C:\Users\Ada\Pictures"), Path::new(r"C:\Users\Ada\Videos"))
     }
 
     /// An in-memory profile that behaves like `GetPrivateProfile{String,Int}W`.
@@ -324,8 +343,8 @@ mod tests {
     }
 
     impl ProfileSource for MapSource {
-        fn string(&self, key: &str, default: &str) -> String {
-            self.strings.get(key).copied().unwrap_or(default).to_owned()
+        fn string(&self, key: &str, default: &OsStr) -> OsString {
+            self.strings.get(key).map_or_else(|| default.to_owned(), OsString::from)
         }
         fn int(&self, key: &str, default: u32) -> u32 {
             self.ints.get(key).copied().unwrap_or(default)
@@ -335,10 +354,11 @@ mod tests {
     #[test]
     fn default_folders_append_app_subfolders() {
         let folders = folders();
-        assert_eq!(folders.screenshots, "C:\\Users\\Ada\\Pictures\\Mosaiks-Screenshots");
-        assert_eq!(folders.recordings, "C:\\Users\\Ada\\Videos\\Mosaiks-Aufnahmen");
+        assert_eq!(folders.screenshots, Path::new(r"C:\Users\Ada\Pictures\Mosaiks-Screenshots"));
+        assert_eq!(folders.recordings, Path::new(r"C:\Users\Ada\Videos\Mosaiks-Aufnahmen"));
         // A failed known-folder lookup yields an (invalid) rooted path, as before.
-        assert_eq!(DefaultFolders::new("", "").screenshots, "\\Mosaiks-Screenshots");
+        let empty = DefaultFolders::new(Path::new(""), Path::new(""));
+        assert_eq!(empty.screenshots, Path::new(r"\Mosaiks-Screenshots"));
     }
 
     #[test]
@@ -366,7 +386,7 @@ mod tests {
         source.ints.insert(keys::COUNTDOWN, 5);
         let config = Config::load(&source, &folders());
         assert_eq!(config.screenshot_hotkey, "Strg+F1");
-        assert_eq!(config.recording_folder, "D:\\Videos");
+        assert_eq!(config.recording_folder, Path::new(r"D:\Videos"));
         assert!(config.microphone);
         assert!(!config.system_audio);
         assert!(config.autostart, "any non-zero value is true");
@@ -439,20 +459,20 @@ mod tests {
     #[test]
     fn validation_checks_hotkeys_before_folders() {
         let mut config = Config::defaults(&folders());
-        config.screenshot_folder = "relative".to_owned();
+        config.screenshot_folder = PathBuf::from("relative");
         assert_eq!(config.validate(), Err(ConfigError::InvalidFolder));
         config.screenshot_hotkey = "nonsense".to_owned();
         assert!(matches!(config.validate(), Err(ConfigError::InvalidHotkey(_))));
         config.screenshot_hotkey = DEFAULT_SCREENSHOT_HOTKEY.to_owned();
         config.screenshot_folder = folders().screenshots;
-        config.recording_folder = "C:\\a|b".to_owned();
+        config.recording_folder = PathBuf::from(r"C:\a|b");
         assert_eq!(config.validate(), Err(ConfigError::InvalidFolder));
     }
 
     #[test]
     fn folder_self_test_cases_hold() {
         for &(path, expected) in FOLDER_CASES {
-            assert_eq!(is_valid_folder(path), expected, "{path:?}");
+            assert_eq!(is_valid_folder(Path::new(path)), expected, "{path:?}");
         }
     }
 
@@ -468,7 +488,7 @@ mod tests {
             "C:\\Ordner mit Leerzeichen\\ä",
         ];
         for path in valid {
-            assert!(is_valid_folder(path), "{path:?}");
+            assert!(is_valid_folder(Path::new(path)), "{path:?}");
         }
         let invalid = [
             "",
@@ -487,7 +507,14 @@ mod tests {
             "C:\\a|b",
         ];
         for path in invalid {
-            assert!(!is_valid_folder(path), "{path:?}");
+            assert!(!is_valid_folder(Path::new(path)), "{path:?}");
         }
+        // Unpaired surrogates are legal in Windows file names and stay valid.
+        let odd =
+            OsString::from_wide(&[u16::from(b'C'), u16::from(b':'), u16::from(b'\\'), 0xD800]);
+        assert!(is_valid_folder(Path::new(&odd)));
+        let odd_forbidden =
+            OsString::from_wide(&[u16::from(b'C'), u16::from(b':'), 0x5C, 0xD800, 0x3F]);
+        assert!(!is_valid_folder(Path::new(&odd_forbidden)));
     }
 }

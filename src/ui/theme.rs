@@ -9,7 +9,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED};
 
-use super::controls;
+use super::controls::Control;
 use super::layout::{self, BUTTON_RADIUS, Dpi, FOCUS_INSET, FontRole};
 use crate::wide::to_wide;
 
@@ -70,6 +70,12 @@ fn solid_brush(color: COLORREF) -> GdiObject {
     GdiObject(unsafe { CreateSolidBrush(color) })
 }
 
+/// Creates a solid pen.
+fn solid_pen(width: i32, color: COLORREF) -> GdiObject {
+    // SAFETY: plain GDI object creation without pointer arguments.
+    GdiObject(unsafe { CreatePen(PS_SOLID, width, color) })
+}
+
 fn font(dpi: Dpi, size: i32, weight: u32) -> GdiObject {
     let face = to_wide(FONT_FACE);
     // SAFETY: `face` is NUL-terminated and outlives the call.
@@ -118,30 +124,55 @@ impl Brushes {
     }
 }
 
-/// The fonts of one DPI; rebuilt when the window moves to a monitor with another DPI.
+/// The GDI objects that depend on the DPI: fonts and the button brushes and pens.
+/// Rebuilt when the window moves to a monitor with another DPI.
 #[derive(Debug)]
-pub struct Fonts {
+pub struct Scaled {
     body: GdiObject,
     title: GdiObject,
     heading: GdiObject,
+    /// One brush and one pen per [`ButtonStyle::ALL`] entry, in the same order.
+    button_fills: Vec<GdiObject>,
+    button_outlines: Vec<GdiObject>,
 }
 
-impl Fonts {
-    /// Creates all fonts for `dpi`.
+impl Scaled {
+    /// Creates all fonts, brushes and pens for `dpi`.
     pub fn new(dpi: Dpi) -> Self {
+        let outline_width = dpi.scale(1).max(1);
         Self {
             body: font(dpi, 15, FW_NORMAL),
             title: font(dpi, 27, FW_SEMIBOLD),
             heading: font(dpi, 19, FW_SEMIBOLD),
+            button_fills: ButtonStyle::ALL.iter().map(|style| solid_brush(style.fill)).collect(),
+            button_outlines: ButtonStyle::ALL
+                .iter()
+                .map(|style| solid_pen(outline_width, style.outline))
+                .collect(),
         }
     }
 
     /// The font for a text role.
-    pub fn get(&self, role: FontRole) -> HFONT {
+    pub fn font(&self, role: FontRole) -> HFONT {
         match role {
             FontRole::Body => self.body.handle(),
             FontRole::Title => self.title.handle(),
             FontRole::Heading => self.heading.handle(),
+        }
+    }
+
+    /// Everything needed to paint `item`: its style and the cached GDI handles. The
+    /// result is plain data, so no borrow of `self` is held while painting.
+    pub fn button_paint(&self, item: &DRAWITEMSTRUCT) -> ButtonPaint {
+        let accent = layout::is_accent_button(item.CtlID.cast_signed());
+        let pressed = item.itemState & ODS_SELECTED != 0;
+        let index = ButtonStyle::index(accent, pressed);
+        ButtonPaint {
+            style: ButtonStyle::ALL[index],
+            fill: self.button_fills[index].handle(),
+            outline: self.button_outlines[index].handle(),
+            font: self.body.handle(),
+            focused: item.itemState & ODS_FOCUS != 0 && item.itemState & ODS_NOFOCUSRECT == 0,
         }
     }
 }
@@ -158,46 +189,52 @@ pub struct ButtonStyle {
 }
 
 impl ButtonStyle {
-    /// Primary (accent) or secondary button, normal or pressed.
-    pub const fn new(accent: bool, pressed: bool) -> Self {
-        match (accent, pressed) {
-            (true, false) => Self { fill: ACCENT, outline: ACCENT, text: ON_ACCENT },
-            (true, true) => Self { fill: ACCENT_PRESSED, outline: ACCENT_PRESSED, text: ON_ACCENT },
-            (false, false) => Self { fill: FIELD, outline: BORDER, text: INK },
-            (false, true) => Self { fill: FIELD_PRESSED, outline: BORDER, text: INK },
-        }
+    /// Secondary, secondary pressed, primary, primary pressed (see [`Self::index`]).
+    pub const ALL: [Self; 4] = [
+        Self { fill: FIELD, outline: BORDER, text: INK },
+        Self { fill: FIELD_PRESSED, outline: BORDER, text: INK },
+        Self { fill: ACCENT, outline: ACCENT, text: ON_ACCENT },
+        Self { fill: ACCENT_PRESSED, outline: ACCENT_PRESSED, text: ON_ACCENT },
+    ];
+
+    /// Position in [`Self::ALL`] of a primary (accent) or secondary button, normal or
+    /// pressed.
+    pub const fn index(accent: bool, pressed: bool) -> usize {
+        (accent as usize) * 2 + pressed as usize
     }
+}
+
+/// The cached GDI handles and state for painting one button.
+#[derive(Clone, Copy, Debug)]
+pub struct ButtonPaint {
+    style: ButtonStyle,
+    fill: HBRUSH,
+    outline: HGDIOBJ,
+    font: HFONT,
+    focused: bool,
 }
 
 /// Paints an owner-drawn button: rounded rectangle, centred label, darker while
 /// pressed and with a focus rectangle when it has the keyboard focus.
-pub fn draw_button(item: &DRAWITEMSTRUCT, font: HFONT, dpi: Dpi) {
-    let accent = layout::is_accent_button(item.CtlID.cast_signed());
-    let pressed = item.itemState & ODS_SELECTED != 0;
-    let focused = item.itemState & ODS_FOCUS != 0 && item.itemState & ODS_NOFOCUSRECT == 0;
-    let style = ButtonStyle::new(accent, pressed);
+pub fn draw_button(item: &DRAWITEMSTRUCT, paint: ButtonPaint, dpi: Dpi) {
     let dc = item.hDC;
     let rect = item.rcItem;
-
-    let brush = solid_brush(style.fill);
-    // SAFETY: plain GDI object creation without pointer arguments.
-    let pen = GdiObject(unsafe { CreatePen(PS_SOLID, dpi.scale(1).max(1), style.outline) });
     let radius = dpi.scale(BUTTON_RADIUS);
     {
-        let _brush = Selected::new(dc, brush.handle());
-        let _pen = Selected::new(dc, pen.handle());
+        let _brush = Selected::new(dc, paint.fill);
+        let _pen = Selected::new(dc, paint.outline);
         // SAFETY: `dc` is the device context Windows passed for this paint.
         unsafe { RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius) };
     }
 
-    let text = to_wide(controls::text(item.hwndItem));
-    let _font = Selected::new(dc, font);
+    let text = to_wide(Control::of_draw_item(item).text_os());
+    let _font = Selected::new(dc, paint.font);
     let mut text_rect = rect;
     // SAFETY: `dc` is valid for this paint; `text` is NUL-terminated (length -1)
     // and `text_rect` outlives the call.
     unsafe {
         SetBkMode(dc, TRANSPARENT.cast_signed());
-        SetTextColor(dc, style.text);
+        SetTextColor(dc, paint.style.text);
         DrawTextW(
             dc,
             text.as_ptr(),
@@ -207,7 +244,7 @@ pub fn draw_button(item: &DRAWITEMSTRUCT, font: HFONT, dpi: Dpi) {
         );
     }
 
-    if focused {
+    if paint.focused {
         let inset = dpi.scale(FOCUS_INSET);
         let focus = RECT {
             left: rect.left + inset,
@@ -218,7 +255,7 @@ pub fn draw_button(item: &DRAWITEMSTRUCT, font: HFONT, dpi: Dpi) {
         // SAFETY: `dc` is valid for this paint; `focus` outlives the call. The dotted
         // rectangle is drawn with the text colour on the fill colour.
         unsafe {
-            SetBkColor(dc, style.fill);
+            SetBkColor(dc, paint.style.fill);
             DrawFocusRect(dc, &raw const focus);
         }
     }
@@ -250,6 +287,10 @@ impl Drop for Selected {
 mod tests {
     use super::*;
 
+    fn style(accent: bool, pressed: bool) -> ButtonStyle {
+        ButtonStyle::ALL[ButtonStyle::index(accent, pressed)]
+    }
+
     #[test]
     fn colours_match_original_colorref_values() {
         assert_eq!(BACKGROUND, 0x0024_2626);
@@ -262,14 +303,26 @@ mod tests {
     }
 
     #[test]
+    fn button_style_table_matches_index() {
+        for accent in [false, true] {
+            for pressed in [false, true] {
+                let chosen = style(accent, pressed);
+                let filled_with_accent = chosen.fill == ACCENT || chosen.fill == ACCENT_PRESSED;
+                assert_eq!(filled_with_accent, accent);
+                assert_eq!(chosen.fill == FIELD_PRESSED || chosen.fill == ACCENT_PRESSED, pressed);
+            }
+        }
+    }
+
+    #[test]
     fn button_styles() {
-        let primary = ButtonStyle::new(true, false);
+        let primary = style(true, false);
         assert_eq!((primary.fill, primary.text), (ACCENT, ON_ACCENT));
-        let pressed = ButtonStyle::new(true, true);
+        let pressed = style(true, true);
         assert_eq!(pressed.fill, ACCENT_PRESSED);
         assert_eq!(pressed.text, primary.text, "label stays readable");
-        let secondary = ButtonStyle::new(false, false);
+        let secondary = style(false, false);
         assert_eq!((secondary.fill, secondary.outline), (FIELD, BORDER));
-        assert_eq!(ButtonStyle::new(false, true).fill, FIELD_PRESSED);
+        assert_eq!(style(false, true).fill, FIELD_PRESSED);
     }
 }

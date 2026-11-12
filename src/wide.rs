@@ -1,30 +1,32 @@
 //! Conversions between Rust strings and the NUL-terminated UTF-16 strings Win32 expects.
+//!
+//! Decoding produces `OsString`, which keeps every UTF-16 unit — including unpaired
+//! surrogates, which Windows allows in file names — so paths survive a round trip.
+//! Callers that need text (hotkeys, labels) convert with `to_string_lossy`.
 
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
+use std::ffi::{OsStr, OsString};
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 /// Encodes `text` as UTF-16 with a trailing NUL, ready to pass as `PCWSTR`.
 pub fn to_wide(text: impl AsRef<OsStr>) -> Vec<u16> {
     text.as_ref().encode_wide().chain(Some(0)).collect()
 }
 
-/// Decodes UTF-16 up to the first NUL (or the end of `units`).
-///
-/// Unpaired surrogates are replaced with U+FFFD.
-pub fn from_wide(units: &[u16]) -> String {
+/// Decodes UTF-16 up to the first NUL (or the end of `units`), losslessly.
+pub fn from_wide(units: &[u16]) -> OsString {
     let end = units.iter().position(|&unit| unit == 0).unwrap_or(units.len());
-    String::from_utf16_lossy(&units[..end])
+    OsString::from_wide(&units[..end])
 }
 
-/// Decodes a NUL-terminated UTF-16 string returned by an API (e.g. a `PWSTR`).
-/// A null pointer yields an empty string.
+/// Decodes a NUL-terminated UTF-16 string returned by an API (e.g. a `PWSTR`),
+/// losslessly. A null pointer yields an empty string.
 ///
 /// # Safety
 ///
 /// `ptr` must be null or point to a readable, NUL-terminated UTF-16 string.
-pub unsafe fn from_wide_ptr(ptr: *const u16) -> String {
+pub unsafe fn from_wide_ptr(ptr: *const u16) -> OsString {
     if ptr.is_null() {
-        return String::new();
+        return OsString::new();
     }
     let mut len = 0;
     // SAFETY: the caller guarantees a terminator, so every index up to it is readable.
@@ -32,7 +34,7 @@ pub unsafe fn from_wide_ptr(ptr: *const u16) -> String {
         len += 1;
     }
     // SAFETY: the `len` units before the terminator were just read.
-    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(ptr, len) })
+    OsString::from_wide(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 /// Copies `text` into a fixed-size buffer such as `NOTIFYICONDATAW::szTip`,
@@ -63,6 +65,14 @@ mod tests {
     fn round_trip_keeps_non_ascii_text() {
         let text = "Grüße – 📷";
         assert_eq!(from_wide(&to_wide(text)), text);
+    }
+
+    #[test]
+    fn unpaired_surrogates_survive() {
+        let units = [u16::from(b'a'), 0xD800, u16::from(b'b')];
+        let text = OsString::from_wide(&units);
+        assert_eq!(from_wide(&to_wide(&text)), text);
+        assert_eq!(to_wide(&text), [u16::from(b'a'), 0xD800, u16::from(b'b'), 0]);
     }
 
     #[test]

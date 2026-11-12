@@ -114,6 +114,10 @@ pub struct VersionInfo<'a> {
     pub product_name: &'a str,
     /// File name the executable was built as.
     pub original_filename: &'a str,
+    /// Shown as "Company" in Explorer.
+    pub company_name: &'a str,
+    /// Shown as "Copyright" in Explorer.
+    pub legal_copyright: &'a str,
 }
 
 impl VersionInfo<'_> {
@@ -146,6 +150,8 @@ impl VersionInfo<'_> {
             ("FileVersion", version.as_str()),
             ("ProductVersion", version.as_str()),
             ("OriginalFilename", self.original_filename),
+            ("CompanyName", self.company_name),
+            ("LegalCopyright", self.legal_copyright),
         ]
         .map(|(key, value)| version_node(key, NodeValue::Text(value), &[]));
         let table_key = format!("{LANGUAGE:04X}{CODE_PAGE_UNICODE:04X}");
@@ -506,6 +512,8 @@ mod tests {
             file_description: "D",
             product_name: "P",
             original_filename: "O.exe",
+            company_name: "C",
+            legal_copyright: "L",
         };
         let block = info.to_resource();
         let hex = block.iter().fold(String::new(), |mut hex, byte| {
@@ -515,15 +523,15 @@ mod tests {
         // Verified once against `VerQueryValueW` on a linked executable.
         let golden = concat!(
             // VS_VERSION_INFO header: wLength, wValueLength = 52, wType = 0, key
-            "bc0134000000560053005f00560045005200530049004f004e005f0049004e0046004f00",
+            "080234000000560053005f00560045005200530049004f004e005f0049004e0046004f00",
             "00000000",
             // VS_FIXEDFILEINFO: signature, 1.2.3, mask 0x3F, NT_WINDOWS32, VFT_APP
             "bd04effe00000100020001000000030002000100000003003f0000000000000004000400",
             "01000000000000000000000000000000",
             // StringFileInfo header
-            "1c010000010053007400720069006e006700460069006c00650049006e0066006f000000",
+            "68010000010053007400720069006e006700460069006c00650049006e0066006f000000",
             // string table 040704B0 header
-            "f80000000100300034003000370030003400420030000000",
+            "440100000100300034003000370030003400420030000000",
             // FileDescription = "D"
             "2c0002000100460069006c0065004400650073006300720069007000740069006f006e00",
             "0000000044000000",
@@ -538,6 +546,11 @@ mod tests {
             // OriginalFilename = "O.exe"
             "3400060001004f0072006900670069006e0061006c00460069006c0065006e0061006d00",
             "650000004f002e006500780065000000",
+            // CompanyName = "C"
+            "24000200010043006f006d00700061006e0079004e0061006d0065000000000043000000",
+            // LegalCopyright = "L"
+            "2800020001004c006500670061006c0043006f0070007900720069006700680074000000",
+            "4c000000",
             // VarFileInfo header
             "440000000100560061007200460069006c00650049006e0066006f0000000000",
             // Translation = 0x0407, 1200

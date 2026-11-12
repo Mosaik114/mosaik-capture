@@ -1,10 +1,15 @@
 //! Application state and the behaviour behind every window message.
 //!
 //! [`App`] is boxed by [`super::run`] for the whole message loop (so its address is
-//! stable) and reached from the window procedure through `GWLP_USERDATA`. Window procedures are
-//! re-entered (e.g. `SendMessage` inside a handler, modal dialogs and menus), so all
-//! methods take `&self`; mutable state sits in `Cell`/`RefCell`, and `RefCell`
-//! borrows are never held across Win32 calls.
+//! stable) and reached from the window procedure through `GWLP_USERDATA`. Window
+//! procedures are re-entered (e.g. `SendMessage` inside a handler, modal dialogs and
+//! menus), so all methods take `&self`; mutable state sits in `Cell`/`RefCell`, and
+//! `RefCell` borrows are never held across Win32 calls.
+//!
+//! Session end: `WM_QUERYENDSESSION` is left to the default (logoff is never
+//! blocked). On `WM_ENDSESSION` the hotkeys and the tray icon are released; settings
+//! need no saving because every change is written immediately, and the engine
+//! handles the session end of its own process.
 
 use std::cell::{Cell, RefCell};
 use std::env;
@@ -25,24 +30,23 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::BN_CLICKED;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BS_AUTOCHECKBOX, BS_OWNERDRAW, CBS_DROPDOWNLIST, CreateWindowExW, DestroyWindow,
-    ES_AUTOHSCROLL, HMENU, IDCANCEL, IDOK, IsWindowVisible, KillTimer, PostQuitMessage,
-    RegisterWindowMessageW, SHOW_WINDOW_CMD, SM_CXSMICON, SW_HIDE, SW_RESTORE, SWP_NOACTIVATE,
-    SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_HOTKEY, WM_PAINT, WM_TIMER, WS_CHILD,
-    WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    BS_AUTOCHECKBOX, BS_OWNERDRAW, CBS_DROPDOWNLIST, DestroyWindow, ES_AUTOHSCROLL, IDCANCEL, IDOK,
+    IsWindowVisible, KillTimer, PostQuitMessage, RegisterWindowMessageW, SHOW_WINDOW_CMD,
+    SM_CXSMICON, SW_HIDE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer,
+    SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
+    WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ENDSESSION,
+    WM_HOTKEY, WM_PAINT, WM_TIMER, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VSCROLL,
 };
 use windows_sys::w;
 
 use super::UiError;
-use super::controls;
+use super::controls::{Control, Creation};
 use super::folder_picker;
 use super::icons::{OwnedIcon, WindowIcons};
-use super::layout::{CONTROLS, ControlKind, ControlSpec, Dpi, EDIT_LIMIT, FontRole, id};
+use super::layout::{CONTROLS, ControlKind, ControlSpec, Dpi, EDIT_LIMIT, id};
 use super::strings::status;
-use super::theme::{self, Brushes, Fonts};
-use super::tray::{self, MenuCommand, TrayEvent};
+use super::theme::{self, Brushes, Scaled};
+use super::tray::{self, MenuCommand, TrayEvent, TrayState};
 use crate::autostart;
 use crate::cli::Action;
 use crate::config::{Config, ConfigError, Countdown, FrameRate};
@@ -51,7 +55,6 @@ use crate::hotkey::Hotkey;
 use crate::hotkey::ParseHotkeyError;
 use crate::ipc::{self, AudioSettings, ProbeResponse};
 use crate::store::SettingsStore;
-use crate::wide::to_wide;
 
 /// `RegisterHotKey` id of the screenshot hotkey (arrives as `WM_HOTKEY`'s `wParam`).
 const HOTKEY_SCREENSHOT: i32 = 1;
@@ -73,8 +76,8 @@ pub struct App {
     instance: HINSTANCE,
     /// DPI of the monitor the window is on.
     dpi: Cell<Dpi>,
-    /// Fonts for the current DPI.
-    fonts: RefCell<Fonts>,
+    /// Fonts, button brushes and pens for the current DPI.
+    scaled: RefCell<Scaled>,
     brushes: Brushes,
     /// Caption and taskbar icons for the current DPI.
     window_icons: RefCell<Option<WindowIcons>>,
@@ -82,8 +85,10 @@ pub struct App {
     tray_icon: RefCell<OwnedIcon>,
     /// Remaining attempts to add the tray icon.
     tray_retries: Cell<u32>,
+    /// How far the tray icon has been set up.
+    tray_state: Cell<TrayState>,
     /// Every created control with its layout entry, for re-layout on DPI changes.
-    children: RefCell<Vec<(HWND, &'static ControlSpec)>>,
+    children: RefCell<Vec<(Control, &'static ControlSpec)>>,
     store: SettingsStore,
     exe: PathBuf,
     engine: Engine,
@@ -121,7 +126,7 @@ impl App {
             window: Cell::new(ptr::null_mut()),
             instance,
             dpi: Cell::new(dpi),
-            fonts: RefCell::new(Fonts::new(dpi)),
+            scaled: RefCell::new(Scaled::new(dpi)),
             brushes: Brushes::new(),
             window_icons: RefCell::new(None),
             // SAFETY: no arguments.
@@ -131,6 +136,7 @@ impl App {
                 Dpi::new(unsafe { GetDpiForSystem() }),
             )),
             tray_retries: Cell::new(TRAY_RETRIES),
+            tray_state: Cell::new(TrayState::Missing),
             children: RefCell::new(Vec::new()),
             store,
             exe,
@@ -171,8 +177,8 @@ impl App {
         self.dpi.get()
     }
 
-    fn child(&self, id: i32) -> HWND {
-        controls::child(self.window(), id)
+    fn child(&self, id: i32) -> Control {
+        Control::child(self.window(), id)
     }
 
     fn show(&self, command: SHOW_WINDOW_CMD) {
@@ -221,8 +227,9 @@ impl App {
     /// a timer retries every few seconds.
     fn add_tray_icon(&self) {
         let icon = self.tray_icon.borrow().handle();
-        let added = tray::add(self.window(), icon);
-        let retry = !added && self.tray_retries.get() > 0;
+        let state = tray::advance(self.window(), icon, self.tray_state.get());
+        self.tray_state.set(state);
+        let retry = state != TrayState::Ready && self.tray_retries.get() > 0;
         if retry {
             self.tray_retries.set(self.tray_retries.get() - 1);
         }
@@ -267,16 +274,14 @@ impl App {
     /// if given, the new window rectangle (as suggested by `WM_DPICHANGED`).
     pub fn apply_dpi(&self, dpi: Dpi, frame: Option<RECT>) {
         self.dpi.set(dpi);
-        let fonts = Fonts::new(dpi);
+        let scaled = Scaled::new(dpi);
         let children = self.children.borrow().clone();
         for (control, spec) in children {
-            let [x, y, width, height] = dpi.scale_rect(spec.rect);
-            // SAFETY: no pointer arguments; the control is our child.
-            unsafe { SetWindowPos(control, ptr::null_mut(), x, y, width, height, REPOSITION) };
-            controls::set_font(control, fonts.get(spec.font_role()));
+            control.move_to(dpi.scale_rect(spec.rect));
+            control.set_font(scaled.font(spec.font_role()));
         }
         // The old fonts are deleted only now that no control uses them any more.
-        *self.fonts.borrow_mut() = fonts;
+        *self.scaled.borrow_mut() = scaled;
         if let Some(frame) = frame {
             // SAFETY: no pointer arguments.
             unsafe {
@@ -305,12 +310,18 @@ impl App {
         if taskbar_created != 0 && message == taskbar_created {
             // Explorer restarted: the icon has to be added again.
             self.tray_retries.set(TRAY_RETRIES);
+            self.tray_state.set(TrayState::Missing);
             self.add_tray_icon();
             return Some(0);
         }
         let result = match message {
             WM_CLOSE => {
                 self.show(SW_HIDE);
+                0
+            }
+            WM_ENDSESSION if wparam != 0 => {
+                self.unregister_hotkeys();
+                tray::remove(self.window());
                 0
             }
             WM_DESTROY => {
@@ -336,7 +347,7 @@ impl App {
                 0
             }
             WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
-                let is_status = lparam as HWND == self.child(id::STATUS);
+                let is_status = lparam as HWND == self.child(id::STATUS).handle();
                 let color =
                     if is_status && !self.status_ok.get() { theme::ERROR } else { theme::INK };
                 color_control(wparam as HDC, color, theme::BACKGROUND);
@@ -350,8 +361,8 @@ impl App {
                 // SAFETY: for WM_DRAWITEM, lParam is null or points to a DRAWITEMSTRUCT
                 // that is valid for the duration of the message.
                 let item = unsafe { (lparam as *const DRAWITEMSTRUCT).as_ref() }?;
-                let font = self.fonts.borrow().get(FontRole::Body);
-                theme::draw_button(item, font, self.dpi());
+                let paint = self.scaled.borrow().button_paint(item);
+                theme::draw_button(item, paint, self.dpi());
                 1
             }
             WM_COMMAND => {
@@ -432,42 +443,30 @@ impl App {
                     (w!("COMBOBOX"), 0, WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST.cast_unsigned())
                 }
             };
-            let [x, y, width, height] = dpi.scale_rect(spec.rect);
-            let text = to_wide(spec.text);
-            // SAFETY: class and text are NUL-terminated and outlive the call; the
-            // control id is passed in the HMENU slot as child windows require.
-            let control = unsafe {
-                CreateWindowExW(
-                    ex_style,
-                    class,
-                    text.as_ptr(),
-                    WS_CHILD | WS_VISIBLE | style,
-                    x,
-                    y,
-                    width,
-                    height,
-                    self.window(),
-                    spec.id as HMENU,
-                    self.instance,
-                    ptr::null(),
-                )
+            let creation = Creation {
+                parent: self.window(),
+                instance: self.instance,
+                class,
+                text: spec.text,
+                ex_style,
+                style,
+                rect: dpi.scale_rect(spec.rect),
+                id: spec.id,
             };
-            if control.is_null() {
-                return Err(UiError::CreateControls);
-            }
-            let font = self.fonts.borrow().get(spec.font_role());
-            controls::set_font(control, font);
+            let control = Control::create(&creation).ok_or(UiError::CreateControls)?;
+            let font = self.scaled.borrow().font(spec.font_role());
+            control.set_font(font);
             match spec.kind {
-                ControlKind::Edit => controls::limit_text(control, EDIT_LIMIT),
+                ControlKind::Edit => control.limit_text(EDIT_LIMIT),
                 ControlKind::Checkbox => {
                     // Without visual styles the check box honours WM_CTLCOLORSTATIC,
                     // so its label is readable on the dark background.
                     // SAFETY: both literals are NUL-terminated.
-                    unsafe { SetWindowTheme(control, w!(""), w!("")) };
+                    unsafe { SetWindowTheme(control.handle(), w!(""), w!("")) };
                 }
                 ControlKind::Combo(entries) => {
                     for entry in entries {
-                        controls::add_entry(control, entry);
+                        control.add_entry(entry);
                     }
                 }
                 ControlKind::Label(_) | ControlKind::Button => {}
@@ -481,37 +480,37 @@ impl App {
     /// Shows the saved settings in the controls (discarding unsaved edits).
     fn populate(&self) {
         let config = self.config.borrow().clone();
-        controls::set_text(self.child(id::SCREENSHOT_HOTKEY), &config.screenshot_hotkey);
-        controls::set_text(self.child(id::SCREENSHOT_FOLDER), &config.screenshot_folder);
-        controls::set_text(self.child(id::RECORDING_HOTKEY), &config.recording_hotkey);
-        controls::set_text(self.child(id::RECORDING_FOLDER), &config.recording_folder);
+        self.child(id::SCREENSHOT_HOTKEY).set_text(&config.screenshot_hotkey);
+        self.child(id::SCREENSHOT_FOLDER).set_text(&config.screenshot_folder);
+        self.child(id::RECORDING_HOTKEY).set_text(&config.recording_hotkey);
+        self.child(id::RECORDING_FOLDER).set_text(&config.recording_folder);
         self.show_audio_settings(&config);
-        controls::set_checked(self.child(id::AUTOSTART), config.autostart);
-        controls::select(self.child(id::FRAME_RATE), config.frame_rate.index());
-        controls::select(self.child(id::COUNTDOWN), config.countdown.index());
+        self.child(id::AUTOSTART).set_checked(config.autostart);
+        self.child(id::FRAME_RATE).select(config.frame_rate.index());
+        self.child(id::COUNTDOWN).select(config.countdown.index());
     }
 
     fn show_audio_settings(&self, config: &Config) {
-        controls::set_checked(self.child(id::MICROPHONE), config.microphone);
-        controls::set_checked(self.child(id::SYSTEM_AUDIO), config.system_audio);
-        controls::set_checked(self.child(id::SHOW_CLICKS), config.show_clicks);
+        self.child(id::MICROPHONE).set_checked(config.microphone);
+        self.child(id::SYSTEM_AUDIO).set_checked(config.system_audio);
+        self.child(id::SHOW_CLICKS).set_checked(config.show_clicks);
     }
 
     /// The settings as currently entered in the window.
     fn read_controls(&self) -> Config {
-        let text = |id| controls::text(self.child(id));
-        let checked = |id| controls::is_checked(self.child(id));
+        let text = |id| self.child(id).text();
+        let checked = |id| self.child(id).is_checked();
         Config {
             screenshot_hotkey: text(id::SCREENSHOT_HOTKEY),
             recording_hotkey: text(id::RECORDING_HOTKEY),
-            screenshot_folder: text(id::SCREENSHOT_FOLDER),
-            recording_folder: text(id::RECORDING_FOLDER),
+            screenshot_folder: PathBuf::from(self.child(id::SCREENSHOT_FOLDER).text_os()),
+            recording_folder: PathBuf::from(self.child(id::RECORDING_FOLDER).text_os()),
             microphone: checked(id::MICROPHONE),
             system_audio: checked(id::SYSTEM_AUDIO),
             show_clicks: checked(id::SHOW_CLICKS),
             autostart: checked(id::AUTOSTART),
-            frame_rate: FrameRate::from_index(controls::selection(self.child(id::FRAME_RATE))),
-            countdown: Countdown::from_index(controls::selection(self.child(id::COUNTDOWN))),
+            frame_rate: FrameRate::from_index(self.child(id::FRAME_RATE).selection()),
+            countdown: Countdown::from_index(self.child(id::COUNTDOWN).selection()),
         }
     }
 
@@ -527,16 +526,16 @@ impl App {
         // SAFETY: no pointer arguments.
         unsafe {
             SetForegroundWindow(self.window());
-            SetFocus(self.child(focus));
+            SetFocus(self.child(focus).handle());
         }
     }
 
     fn set_status(&self, text: &str, ok: bool) {
         self.status_ok.set(ok);
         let status = self.child(id::STATUS);
-        controls::set_text(status, text);
+        status.set_text(text);
         // SAFETY: a null rectangle means the whole control.
-        unsafe { InvalidateRect(status, ptr::null(), 1) };
+        unsafe { InvalidateRect(status.handle(), ptr::null(), 1) };
     }
 
     /// Registers both hotkeys of `config`. Returns `true` only if both succeeded.
@@ -624,10 +623,10 @@ impl App {
     /// Lets the user pick a folder for the given edit field.
     fn browse(&self, edit: i32) {
         let edit = self.child(edit);
-        let initial = controls::text(edit);
+        let initial = PathBuf::from(edit.text_os());
         if let Some(folder) = self.run_modal(|| folder_picker::pick_folder(self.window(), &initial))
         {
-            controls::set_text(edit, &folder);
+            edit.set_text(&folder);
         }
     }
 
@@ -669,7 +668,9 @@ impl App {
             self.set_status(status::DIALOG_OPEN, false);
             return false;
         }
-        if self.engine.is_busy() {
+        // The state query waits for the engine and dispatches incoming sent messages
+        // meanwhile; as a modal section, a nested quit is refused and captures wait.
+        if self.run_modal(|| self.engine.is_busy()) {
             self.show_settings(true);
             self.set_status(status::BUSY, false);
             return false;

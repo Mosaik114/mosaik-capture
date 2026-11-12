@@ -4,6 +4,8 @@ version = "1.0.0"
 edition = "2024"
 rust-version = "1.87"
 description = "Windows tray host for screenshots and screen recordings: global hotkeys, settings window and capture-engine launcher."
+license = "MIT"
+repository = "https://github.com/Mosaik114/mosaik-capture"
 publish = false
 autotests = false  # tests/ holds the C# engine tests
 

@@ -9,9 +9,10 @@
 //! most [`SHARING_ATTEMPTS`] times, so the window can block for at most about
 //! 2 × 3 × [`SHARING_RETRY_DELAY`] = 0.3 s before the error is reported.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -90,13 +91,13 @@ impl SettingsStore {
 /// absolute, so settings never end up relative to the working directory.
 fn local_app_data(
     variable: Option<OsString>,
-    known: impl FnOnce() -> String,
+    known: impl FnOnce() -> PathBuf,
     temp: impl FnOnce() -> PathBuf,
 ) -> PathBuf {
     if let Some(path) = variable.map(PathBuf::from).filter(|path| path.is_absolute()) {
         return path;
     }
-    let known = PathBuf::from(known());
+    let known = known();
     if known.is_absolute() { known } else { temp() }
 }
 
@@ -132,7 +133,7 @@ pub fn known_default_folders() -> DefaultFolders {
 }
 
 /// Looks up a known folder (any length); an empty string if that fails.
-fn known_folder(id: &GUID) -> String {
+fn known_folder(id: &GUID) -> PathBuf {
     let mut path = ptr::null_mut();
     // SAFETY: `id` is a valid GUID; `path` receives a COM-allocated string.
     let result = unsafe {
@@ -140,9 +141,9 @@ fn known_folder(id: &GUID) -> String {
     };
     let folder = if result >= 0 {
         // SAFETY: on success `path` is a NUL-terminated string.
-        unsafe { from_wide_ptr(path) }
+        PathBuf::from(unsafe { from_wide_ptr(path) })
     } else {
-        String::new()
+        PathBuf::new()
     };
     // SAFETY: the string must be freed with the COM allocator, even on failure.
     unsafe { CoTaskMemFree(path.cast()) };
@@ -165,7 +166,7 @@ impl IniFile {
 }
 
 impl ProfileSource for IniFile {
-    fn string(&self, key: &str, default: &str) -> String {
+    fn string(&self, key: &str, default: &OsStr) -> OsString {
         let key = to_wide(key);
         let default = to_wide(default);
         let mut buffer = vec![0u16; 512];
@@ -212,14 +213,14 @@ impl ProfileSource for IniFile {
 ///
 /// Sharing violations, which occur while another process reads the file, are retried
 /// briefly. On failure the temporary file is removed and `path` is left untouched.
-pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
+pub fn write_atomic(path: &Path, contents: &OsStr) -> io::Result<()> {
     let mut temp = OsString::from(path);
     temp.push(".new");
     let temp = PathBuf::from(temp);
 
     let mut bytes = Vec::with_capacity(2 + 2 * contents.len());
     bytes.extend_from_slice(&UTF16LE_BOM);
-    bytes.extend(contents.encode_utf16().flat_map(u16::to_le_bytes));
+    bytes.extend(contents.encode_wide().flat_map(u16::to_le_bytes));
 
     let result = retry_while_shared(|| write_synced(&temp, &bytes))
         .and_then(|()| retry_while_shared(|| replace(&temp, path)));
@@ -272,6 +273,7 @@ fn is_sharing_violation(error: &io::Error) -> bool {
 mod tests {
     use super::*;
     use crate::config::{Countdown, FrameRate};
+    use std::os::windows::ffi::OsStringExt;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A unique scratch directory under the system temp folder, removed on drop.
@@ -302,7 +304,7 @@ mod tests {
     }
 
     fn sample_folders() -> DefaultFolders {
-        DefaultFolders::new("C:\\Bilder", "C:\\Videos")
+        DefaultFolders::new(Path::new(r"C:\Bilder"), Path::new(r"C:\Videos"))
     }
 
     fn write_utf16(path: &Path, text: &str) {
@@ -313,7 +315,7 @@ mod tests {
 
     #[test]
     fn local_app_data_is_always_absolute() {
-        let known = || r"C:\Users\Ada\AppData\Local".to_owned();
+        let known = || PathBuf::from(r"C:\Users\Ada\AppData\Local");
         let temp = || PathBuf::from(r"C:\Temp");
         let from_env = local_app_data(Some(r"D:\Local".into()), known, temp);
         assert_eq!(from_env, Path::new(r"D:\Local"));
@@ -321,7 +323,7 @@ mod tests {
         assert_eq!(missing, Path::new(r"C:\Users\Ada\AppData\Local"));
         let relative = local_app_data(Some("relative".into()), known, temp);
         assert_eq!(relative, Path::new(r"C:\Users\Ada\AppData\Local"));
-        let nothing = local_app_data(Some("".into()), String::new, temp);
+        let nothing = local_app_data(Some("".into()), PathBuf::new, temp);
         assert_eq!(nothing, Path::new(r"C:\Temp"));
     }
 
@@ -362,7 +364,7 @@ mod tests {
         write_utf16(&path, "[capture]\r\nfps=30\r\n");
         // Hold the target open without sharing: the rename keeps failing.
         let blocker = OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
-        let result = write_atomic(&path, "[capture]\r\nfps=60\r\n");
+        let result = write_atomic(&path, OsStr::new("[capture]\r\nfps=60\r\n"));
         drop(blocker);
         assert!(result.is_err());
         assert!(!dir.file("settings.ini.new").exists(), "temp file is cleaned up");
@@ -410,10 +412,10 @@ mod tests {
     #[test]
     fn known_folders_resolve() {
         let folders = known_default_folders();
-        assert!(folders.screenshots.ends_with(r"\Mosaiks-Screenshots"));
-        assert!(folders.recordings.ends_with(r"\Mosaiks-Aufnahmen"));
-        assert!(Path::new(&folders.screenshots).is_absolute(), "{}", folders.screenshots);
-        assert!(Path::new(&folders.recordings).is_absolute(), "{}", folders.recordings);
+        assert!(folders.screenshots.ends_with("Mosaiks-Screenshots"));
+        assert!(folders.recordings.ends_with("Mosaiks-Aufnahmen"));
+        assert!(folders.screenshots.is_absolute(), "{}", folders.screenshots.display());
+        assert!(folders.recordings.is_absolute(), "{}", folders.recordings.display());
     }
 
     #[test]
@@ -430,8 +432,17 @@ mod tests {
         let config = Config {
             screenshot_hotkey: "Strg + Umschalt + F12".to_owned(),
             recording_hotkey: "Alt+Leertaste".to_owned(),
-            screenshot_folder: "D:\\Bilder\\Grüße".to_owned(),
-            recording_folder: "\\\\nas\\videos".to_owned(),
+            screenshot_folder: PathBuf::from(r"D:\Bilder\Grüße"),
+            // An unpaired surrogate: legal in Windows names, not valid Unicode.
+            recording_folder: PathBuf::from(OsString::from_wide(&[
+                0x5C,
+                0x5C,
+                u16::from(b'n'),
+                u16::from(b'a'),
+                u16::from(b's'),
+                0x5C,
+                0xD83D,
+            ])),
             microphone: true,
             system_audio: false,
             show_clicks: false,
@@ -455,7 +466,7 @@ mod tests {
         assert_eq!(bytes[..2], UTF16LE_BOM);
         let units: Vec<u16> =
             bytes[2..].chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
-        assert_eq!(String::from_utf16(&units).unwrap(), config.to_ini());
+        assert_eq!(OsString::from_wide(&units), config.to_ini());
     }
 
     #[test]
@@ -468,7 +479,7 @@ mod tests {
         config.countdown = Countdown::Off;
         store.save(&config).unwrap();
         assert_eq!(Config::load(&IniFile::new(&path), &sample_folders()), config);
-        assert_eq!(IniFile::new(&path).string("extra", "gone"), "gone");
+        assert_eq!(IniFile::new(&path).string("extra", OsStr::new("gone")), "gone");
     }
 
     #[test]
@@ -495,6 +506,6 @@ mod tests {
         let path = dir.file("settings.ini");
         let long = format!("C:\\{}", "x".repeat(2000));
         write_utf16(&path, &format!("[capture]\r\nscreenshot_folder={long}\r\n"));
-        assert_eq!(IniFile::new(&path).string("screenshot_folder", ""), long);
+        assert_eq!(IniFile::new(&path).string("screenshot_folder", OsStr::new("")), long.as_str());
     }
 }

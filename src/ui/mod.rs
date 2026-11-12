@@ -11,20 +11,26 @@ mod tray;
 
 use std::{env, mem, ptr};
 
-use windows_sys::Win32::Foundation::{FALSE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, TRUE, WPARAM};
+use windows_sys::Win32::Foundation::{
+    FALSE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM,
+};
 use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+use windows_sys::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+};
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{
-    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
-    GetDpiForWindow, SetProcessDpiAwarenessContext,
+    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor,
+    GetDpiForSystem, GetDpiForWindow, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW, IDC_ARROW, IsDialogMessageW,
-    LoadCursorW, MSG, RegisterClassW, SPI_GETWORKAREA, SetWindowLongPtrW, SystemParametersInfoW,
-    TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_NCCREATE, WM_NCDESTROY,
-    WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW, WS_MINIMIZEBOX, WS_SYSMENU,
+    DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW, IDC_ARROW,
+    IsDialogMessageW, IsWindow, LoadCursorW, MSG, RegisterClassW, SPI_GETWORKAREA,
+    SetWindowLongPtrW, SystemParametersInfoW, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW,
+    WS_MINIMIZEBOX, WS_SYSMENU,
 };
 
 use windows_sys::core::PCWSTR;
@@ -73,27 +79,25 @@ pub fn run(invocation: &Invocation) -> Result<(), UiError> {
 
     // SAFETY: a null name returns the handle of the executable itself.
     let instance = unsafe { GetModuleHandleW(ptr::null()) };
-    // SAFETY: no arguments. Only the initial guess; see `create_window`.
-    let dpi = Dpi::new(unsafe { GetDpiForSystem() });
+    // The window opens on the monitor the user is working on.
+    let monitor = Monitor::under_cursor();
     let exe = env::current_exe().unwrap_or_default();
     // Boxed: the window procedure keeps the address, so it must never move.
-    let app = Box::new(App::new(instance, dpi, store, config, exe, preview));
+    let app = Box::new(App::new(instance, monitor.dpi, store, config, exe, preview));
 
     // Declared after `app`, so the class is unregistered before the App (and with it
     // the class background brush) is dropped.
     let class = register_class(&app, ipc::WINDOW_CLASS)?;
-    let window = create_window(&app, &class)?;
+    let window = create_window(&app, &class, &monitor)?;
 
     let result = app.start(invocation.action).and_then(|()| run_message_loop(window));
-    if result.is_err() {
-        // SAFETY: destroys our own window (if it still exists) while `app` is alive.
+    // Normally the window is gone already. If not (an error), destroy it while `app`
+    // is alive; WM_NCDESTROY then detaches `app` from the window.
+    // SAFETY: no pointer arguments; `window` is our window or already invalid.
+    if unsafe { IsWindow(window) } != 0 {
+        // SAFETY: see above.
         unsafe { DestroyWindow(window) };
     }
-
-    // The window is normally gone by now. If it is not, detach `app` so the window
-    // procedure cannot see it after it is dropped.
-    // SAFETY: clearing user data on a (possibly destroyed) window is harmless.
-    unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, 0) };
     result
 }
 
@@ -180,18 +184,63 @@ fn frame_size(dpi: Dpi) -> (i32, i32) {
 }
 
 /// The window rectangle that centres a window of `dpi`'s size in the work area.
-fn centered_frame(dpi: Dpi) -> RECT {
+/// The monitor the window should open on: work area and DPI.
+#[derive(Clone, Copy, Debug)]
+struct Monitor {
+    /// `[left, top, right, bottom]` of the work area (without the taskbar).
+    work_area: [i32; 4],
+    dpi: Dpi,
+}
+
+impl Monitor {
+    /// The monitor under the mouse cursor (or the nearest one).
+    fn under_cursor() -> Self {
+        let mut cursor = POINT { x: 0, y: 0 };
+        // SAFETY: `cursor` outlives the call; on failure it stays (0, 0), i.e. the
+        // primary monitor.
+        unsafe { GetCursorPos(&raw mut cursor) };
+        // SAFETY: no pointer arguments.
+        let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
+        // SAFETY: MONITORINFO is plain data; `cbSize` is set as the API requires.
+        let mut info: MONITORINFO = unsafe { mem::zeroed() };
+        info.cbSize = u32::try_from(mem::size_of::<MONITORINFO>()).unwrap_or(u32::MAX);
+        // SAFETY: `info` outlives the call.
+        let has_info = unsafe { GetMonitorInfoW(monitor, &raw mut info) } != 0;
+        let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+        // SAFETY: both outputs outlive the call.
+        let has_dpi =
+            unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) }
+                >= 0;
+        Self {
+            work_area: rect_edges(if has_info { info.rcWork } else { primary_work_area() }),
+            // SAFETY: no arguments.
+            dpi: Dpi::new(if has_dpi { dpi_x } else { unsafe { GetDpiForSystem() } }),
+        }
+    }
+
+    /// The window rectangle that centres a window of `dpi`'s size in the work area.
+    fn centered_frame(&self, dpi: Dpi) -> RECT {
+        let (width, height) = frame_size(dpi);
+        let (x, y) = layout::centered(self.work_area, width, height);
+        RECT { left: x, top: y, right: x + width, bottom: y + height }
+    }
+}
+
+const fn rect_edges(rect: RECT) -> [i32; 4] {
+    [rect.left, rect.top, rect.right, rect.bottom]
+}
+
+/// The primary monitor's work area, the fallback if monitor information is missing.
+fn primary_work_area() -> RECT {
     let mut area = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     // SAFETY: SPI_GETWORKAREA writes one RECT into `area`, which outlives the call.
     unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, (&raw mut area).cast(), 0) };
-    let (width, height) = frame_size(dpi);
-    let (x, y) = layout::centered([area.left, area.top, area.right, area.bottom], width, height);
-    RECT { left: x, top: y, right: x + width, bottom: y + height }
+    area
 }
 
 /// Creates the (hidden) settings window, sized for the DPI of the monitor it lands on.
-fn create_window(app: &App, class: &WindowClass) -> Result<HWND, UiError> {
-    let frame = centered_frame(app.dpi());
+fn create_window(app: &App, class: &WindowClass, monitor: &Monitor) -> Result<HWND, UiError> {
+    let frame = monitor.centered_frame(app.dpi());
     let title = to_wide(strings::WINDOW_TITLE);
     // SAFETY: class name and title are NUL-terminated and outlive the call. `app`
     // outlives the window (see `run`), so handing its address to WM_NCCREATE is sound.
@@ -232,7 +281,7 @@ fn create_window(app: &App, class: &WindowClass) -> Result<HWND, UiError> {
     if actual == app.dpi() {
         app.refresh_icons();
     } else {
-        app.apply_dpi(actual, Some(centered_frame(actual)));
+        app.apply_dpi(actual, Some(monitor.centered_frame(actual)));
     }
     Ok(window)
 }
@@ -300,8 +349,10 @@ mod tests {
     use crate::cli::Action;
     use crate::config::{Config, DefaultFolders, ProfileSource};
     use crate::store::IniFile;
+    use controls::Control;
     use layout::id;
-    use std::path::PathBuf;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BN_DOUBLECLICKED, GetClientRect, ICON_SMALL, IDCANCEL, IDOK, IsWindow, IsWindowVisible,
         SendMessageW, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_GETICON,
@@ -329,8 +380,11 @@ mod tests {
     }
 
     fn status(window: HWND) -> String {
-        controls::text(controls::child(window, id::STATUS))
+        Control::child(window, id::STATUS).text()
     }
+
+    /// Enables the end-to-end test of the real window.
+    const UI_TESTS_VAR: &str = "MOSAIK_UI_TESTS";
 
     /// Destroys the window (unregistering the hotkeys) and removes the temp folder,
     /// even if an assertion fails.
@@ -353,14 +407,19 @@ mod tests {
     ///
     /// It only touches this process (a private window class, a temp settings file in
     /// preview mode, no engine, no registry), but it creates a window and registers
-    /// two unusual global hotkeys, so it is opt-in: `cargo test -- --ignored`.
+    /// two unusual global hotkeys, so it is opt-in: it runs only when the environment
+    /// variable `MOSAIK_UI_TESTS` is `1`. CI sets it for `cargo test`; locally run
+    /// `MOSAIK_UI_TESTS=1 cargo test settings_window` (on a spare desktop if you like).
     #[test]
-    #[ignore = "creates a window and global hotkeys; run with `cargo test -- --ignored`"]
     fn settings_window_end_to_end() {
+        if env::var_os(UI_TESTS_VAR).is_none_or(|value| value != "1") {
+            eprintln!("skipped: set {UI_TESTS_VAR}=1 to drive the real settings window");
+            return;
+        }
         let dir = env::temp_dir().join(format!("mosaik-capture-ui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ini = dir.join("settings.ini");
-        let folders = DefaultFolders::new(r"C:\Bilder", r"C:\Videos");
+        let folders = DefaultFolders::new(Path::new(r"C:\Bilder"), Path::new(r"C:\Videos"));
         let mut config = Config::defaults(&folders);
         config.screenshot_hotkey = "Strg+Alt+Shift+F23".to_owned();
         config.recording_hotkey = "Strg+Alt+Shift+F24".to_owned();
@@ -377,7 +436,7 @@ mod tests {
             Some(&ini),
         ));
         let class = register_class(&app, "MosaikCapture.Host.Test").unwrap();
-        let window = create_window(&app, &class).unwrap();
+        let window = create_window(&app, &class, &Monitor::under_cursor()).unwrap();
         let _cleanup = Cleanup { window, dir: dir.clone() };
         // Whatever monitor the window landed on, lay it out for 96 DPI first.
         app.apply_dpi(Dpi::new(96), None);
@@ -397,44 +456,44 @@ mod tests {
         let source = IniFile::new(&ini);
         assert_eq!(Config::load(&source, &folders), config, "settings written at start");
 
-        let hotkey_edit = controls::child(window, id::RECORDING_HOTKEY);
-        controls::set_text(hotkey_edit, "Alt+");
+        let hotkey_edit = Control::child(window, id::RECORDING_HOTKEY);
+        hotkey_edit.set_text("Alt+");
         command(window, id::SAVE);
         assert_eq!(status(window), strings::status::INVALID_HOTKEY);
 
-        controls::set_text(hotkey_edit, "Shift+R");
+        hotkey_edit.set_text("Shift+R");
         command(window, id::SAVE);
         assert_eq!(status(window), strings::status::SHIFT_ONLY_HOTKEY);
 
-        controls::set_text(hotkey_edit, "Strg+Alt+Shift+F23");
+        hotkey_edit.set_text("Strg+Alt+Shift+F23");
         command(window, id::SAVE);
         assert_eq!(status(window), strings::status::DUPLICATE_HOTKEY);
 
-        controls::set_text(hotkey_edit, "Strg+Alt+Shift+F22");
-        controls::select(controls::child(window, id::COUNTDOWN), 2);
+        hotkey_edit.set_text("Strg+Alt+Shift+F22");
+        Control::child(window, id::COUNTDOWN).select(2);
         command(window, IDOK); // Enter
         assert_eq!(status(window), strings::status::SAVED);
-        assert_eq!(source.string("recording_hotkey", ""), "Strg+Alt+Shift+F22");
+        assert_eq!(source.string("recording_hotkey", OsStr::new("")), "Strg+Alt+Shift+F22");
 
         // Owner-drawn buttons also report double clicks; those must not save again.
-        controls::set_text(hotkey_edit, "Alt+");
-        let save_button = controls::child(window, id::SAVE);
+        hotkey_edit.set_text("Alt+");
+        let save_button = Control::child(window, id::SAVE);
         let double_click =
             (usize::try_from(BN_DOUBLECLICKED).unwrap() << 16) | usize::try_from(id::SAVE).unwrap();
         // SAFETY: WM_COMMAND carries the button handle, no pointers to memory.
-        unsafe { SendMessageW(window, WM_COMMAND, double_click, save_button as LPARAM) };
+        unsafe { SendMessageW(window, WM_COMMAND, double_click, save_button.handle() as LPARAM) };
         assert_eq!(status(window), strings::status::SAVED, "double click is not a save");
-        controls::set_text(hotkey_edit, "Strg+Alt+Shift+F22");
+        hotkey_edit.set_text("Strg+Alt+Shift+F22");
         assert_eq!(source.int("countdown", 0), 5);
         assert_eq!(send(window, ipc::PROBE, 0), ipc::ProbeResponse::HEALTHY);
 
         assert_eq!(send(window, ipc::AUDIO_SETTINGS, 1), 1);
         assert_eq!(source.int("microphone", 0), 1);
         assert_eq!(source.int("system_audio", 1), 0);
-        assert!(controls::is_checked(controls::child(window, id::MICROPHONE)));
+        assert!(Control::child(window, id::MICROPHONE).is_checked());
 
-        let status_control = controls::child(window, id::STATUS);
-        let width_at_96 = client_width(status_control);
+        let status_control = Control::child(window, id::STATUS);
+        let width_at_96 = client_width(status_control.handle());
         let suggested = RECT { left: 10, top: 10, right: 1600, bottom: 1500 };
         // SAFETY: WM_DPICHANGED reads the RECT behind lParam, which outlives the call.
         unsafe {
@@ -442,7 +501,7 @@ mod tests {
         };
         assert_eq!(app.dpi(), Dpi::new(192));
         assert_eq!(
-            client_width(status_control),
+            client_width(status_control.handle()),
             Dpi::new(192).scale(width_at_96),
             "controls follow the DPI"
         );
@@ -450,14 +509,14 @@ mod tests {
         send(window, ipc::SHOW_SETTINGS, 0);
         assert!(is_visible(window));
         // A second request must not overwrite unsaved edits in the visible window.
-        controls::set_text(hotkey_edit, "Strg+Alt+K");
+        hotkey_edit.set_text("Strg+Alt+K");
         send(window, ipc::SHOW_RECORDING_SETTINGS, 0);
-        assert_eq!(controls::text(hotkey_edit), "Strg+Alt+K", "unsaved edit kept");
+        assert_eq!(hotkey_edit.text(), "Strg+Alt+K", "unsaved edit kept");
         command(window, IDCANCEL); // Escape
         assert!(!is_visible(window), "escape hides");
         send(window, ipc::SHOW_RECORDING_SETTINGS, 0);
         assert_eq!(
-            controls::text(hotkey_edit),
+            hotkey_edit.text(),
             "Strg+Alt+Shift+F22",
             "a hidden window is refilled from the saved settings"
         );

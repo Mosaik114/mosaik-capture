@@ -33,7 +33,9 @@ pub fn run() -> bool {
         let parsed = text.parse::<Hotkey>().ok();
         parsed.map(|key| (key.modifiers.bits(), key.key)) == expected
     });
-    let folders_ok = FOLDER_CASES.iter().all(|&(path, expected)| is_valid_folder(path) == expected);
+    let folders_ok = FOLDER_CASES
+        .iter()
+        .all(|&(path, expected)| is_valid_folder(std::path::Path::new(path)) == expected);
     hotkeys_ok && folders_ok
 }
 

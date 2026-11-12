@@ -52,6 +52,8 @@ fn main() -> Result<(), String> {
         file_description: "Mosaik Capture",
         product_name: "Mosaik Capture",
         original_filename: "MosaikCapture.exe",
+        company_name: "Mazgin Abdulwahed Ahmad",
+        legal_copyright: "Copyright (c) 2026 Mazgin Abdulwahed Ahmad",
     };
     resources.add(RT_VERSION, VERSION_ID, version.to_resource())?;
 
