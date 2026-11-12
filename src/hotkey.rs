@@ -2,8 +2,8 @@
 //! (German for Ctrl + Space).
 //!
 //! The format is a `+`-separated list of tokens. Spaces are ignored everywhere and
-//! tokens are matched case-insensitively. A hotkey needs at least one modifier and
-//! exactly one key:
+//! tokens are matched case-insensitively. A hotkey needs exactly one key and Ctrl or
+//! Alt (Shift alone is not enough: Shift+A would swallow every capital A):
 //!
 //! * modifiers: `Shift`/`Umschalt`, `Alt`, `Ctrl`/`Control`/`Strg` (German keyboard
 //!   labels are accepted next to the English ones)
@@ -106,6 +106,8 @@ pub enum ParseHotkeyError {
     MissingKey,
     /// A key was given without any modifier.
     MissingModifier,
+    /// Shift is the only modifier; Ctrl or Alt is required.
+    ShiftOnly,
 }
 
 impl fmt::Display for ParseHotkeyError {
@@ -118,6 +120,7 @@ impl fmt::Display for ParseHotkeyError {
             Self::UnknownKey => "unknown key",
             Self::MissingKey => "no key given",
             Self::MissingModifier => "no modifier given",
+            Self::ShiftOnly => "Shift alone is not enough; add Ctrl or Alt",
         })
     }
 }
@@ -154,6 +157,9 @@ impl FromStr for Hotkey {
         let key = key.ok_or(ParseHotkeyError::MissingKey)?;
         if modifiers.is_empty() {
             return Err(ParseHotkeyError::MissingModifier);
+        }
+        if modifiers == Modifiers::SHIFT {
+            return Err(ParseHotkeyError::ShiftOnly);
         }
         Ok(Self { modifiers, key })
     }
@@ -202,14 +208,17 @@ mod tests {
     fn letters_and_digits_are_case_insensitive() {
         assert_eq!("alt+a".parse(), Ok(key(MOD_ALT, u16::from(b'A'))));
         assert_eq!("ALT+Z".parse(), Ok(key(MOD_ALT, u16::from(b'Z'))));
-        assert_eq!("sHiFt+0".parse(), Ok(key(MOD_SHIFT, u16::from(b'0'))));
+        assert_eq!("sHiFt+aLt+0".parse(), Ok(key(MOD_SHIFT | MOD_ALT, u16::from(b'0'))));
         assert_eq!("Strg+9".parse(), Ok(key(MOD_CONTROL, u16::from(b'9'))));
     }
 
     #[test]
     fn all_modifier_spellings() {
-        for text in ["Shift+X", "Umschalt+X", "SHIFT+x", "umschalt+x"] {
-            assert_eq!(text.parse::<Hotkey>().map(|k| k.modifiers), Ok(Modifiers::SHIFT));
+        for text in ["Shift+Alt+X", "Umschalt+Alt+X", "SHIFT+alt+x", "umschalt+ALT+x"] {
+            assert_eq!(
+                text.parse::<Hotkey>().map(|k| k.modifiers),
+                Ok(Modifiers::SHIFT | Modifiers::ALT)
+            );
         }
         for text in ["Ctrl+X", "Control+X", "Strg+X", "STRG+x"] {
             assert_eq!(text.parse::<Hotkey>().map(|k| k.modifiers), Ok(Modifiers::CONTROL));
@@ -272,6 +281,9 @@ mod tests {
             ("Alt+Shift", E::MissingKey),
             ("Alt", E::MissingKey),
             ("A", E::MissingModifier),
+            ("Shift+A", E::ShiftOnly),
+            ("Umschalt+F5", E::ShiftOnly),
+            ("Shift+Space", E::ShiftOnly),
             ("Space", E::MissingModifier),
             ("Alt+Ä", E::UnknownKey),
             ("Alt+Enter", E::UnknownKey),

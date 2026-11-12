@@ -72,13 +72,16 @@ fn find_window() -> Option<HWND> {
 }
 
 /// Whether the engine is recording or selecting a region right now.
+///
+/// An engine that does not answer in time (hung, or blocked by a modal dialog) also
+/// counts as busy: quitting must never pull the rug from under a running recording.
 pub fn is_busy() -> bool {
     let Some(window) = find_window() else {
         return false;
     };
     let mut state = 0usize;
     // SAFETY: `state` outlives the call; a stale handle just makes the call fail.
-    unsafe {
+    let answered = unsafe {
         SendMessageTimeoutW(
             window,
             MSG_QUERY_STATE,
@@ -87,9 +90,17 @@ pub fn is_busy() -> bool {
             SMTO_ABORTIFHUNG,
             QUERY_TIMEOUT_MS,
             &raw mut state,
-        );
+        )
+    } != 0;
+    busy_from_reply(answered.then_some(state))
+}
+
+/// Interprets the engine's reply to [`MSG_QUERY_STATE`]; `None` means no answer.
+const fn busy_from_reply(reply: Option<usize>) -> bool {
+    match reply {
+        Some(state) => state & STATE_BUSY != 0,
+        None => true,
     }
-    state & STATE_BUSY != 0
 }
 
 /// Asks a running engine to shut down. Does nothing if none is running.
@@ -156,6 +167,15 @@ mod tests {
         assert_eq!(CaptureMode::Recording.flag(), "--recording");
         assert_eq!(CaptureMode::Screenshot.message(), MSG_SCREENSHOT);
         assert_eq!(CaptureMode::Recording.message(), MSG_RECORDING);
+    }
+
+    #[test]
+    fn busy_state_from_reply() {
+        assert!(!busy_from_reply(Some(0)));
+        assert!(!busy_from_reply(Some(2)), "live preview alone is not busy");
+        assert!(busy_from_reply(Some(1)));
+        assert!(busy_from_reply(Some(3)));
+        assert!(busy_from_reply(None), "no answer counts as busy");
     }
 
     #[test]

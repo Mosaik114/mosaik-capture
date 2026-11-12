@@ -94,17 +94,19 @@ struct Com<V: Vtbl> {
 }
 
 impl<V: Vtbl> Com<V> {
-    /// Takes ownership of `raw` if the call that produced it succeeded.
+    /// Takes ownership of `raw` if the call that produced it succeeded. After a failed
+    /// call, `raw` is not touched (COM leaves it null or undefined, and it must not be
+    /// released).
     ///
     /// # Safety
     ///
     /// If `result` signals success, `raw` must be null or an owned reference to an
-    /// interface whose vtable is `V`.
+    /// interface whose vtable is `V`. Nothing is required after a failure.
     unsafe fn from_result(result: HRESULT, raw: This) -> Option<Self> {
-        let this = NonNull::new(raw)?;
-        let com = Self { this, vtbl: PhantomData };
-        // A failing call should not return an object; if it does, release it anyway.
-        (result >= 0).then_some(com)
+        if result < 0 {
+            return None;
+        }
+        NonNull::new(raw).map(|this| Self { this, vtbl: PhantomData })
     }
 
     fn this(&self) -> This {

@@ -175,7 +175,7 @@ pub fn draw_button(item: &DRAWITEMSTRUCT, font: HFONT, dpi: Dpi) {
 
     let brush = solid_brush(style.fill);
     // SAFETY: plain GDI object creation without pointer arguments.
-    let pen = GdiObject(unsafe { CreatePen(PS_SOLID, 1, style.outline) });
+    let pen = GdiObject(unsafe { CreatePen(PS_SOLID, dpi.scale(1).max(1), style.outline) });
     let radius = dpi.scale(BUTTON_RADIUS);
     {
         let _brush = Selected::new(dc, brush.handle());

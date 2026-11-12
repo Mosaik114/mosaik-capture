@@ -42,7 +42,7 @@ fn main() -> Result<(), String> {
     let mut resources = Resources::default();
     let icon = read(ICON_PATH)?;
     resources.add_icon(APP_ICON_ID, &icon).map_err(|error| format!("{ICON_PATH}: {error}"))?;
-    resources.add(RT_MANIFEST, MANIFEST_ID, read(MANIFEST_PATH)?);
+    resources.add(RT_MANIFEST, MANIFEST_ID, read(MANIFEST_PATH)?)?;
     let version = VersionInfo {
         version: [
             version_part("CARGO_PKG_VERSION_MAJOR")?,
@@ -53,7 +53,7 @@ fn main() -> Result<(), String> {
         product_name: "Mosaik Capture",
         original_filename: "MosaikCapture.exe",
     };
-    resources.add(RT_VERSION, VERSION_ID, version.to_resource());
+    resources.add(RT_VERSION, VERSION_ID, version.to_resource())?;
 
     let object = rsrc::coff_object(machine, &resources);
     // Same COFF content either way; just the conventional extension per toolchain.
@@ -61,7 +61,9 @@ fn main() -> Result<(), String> {
         if env_var("CARGO_CFG_TARGET_ENV")? == "msvc" { "resources.obj" } else { "resources.o" };
     let out = PathBuf::from(env_var("OUT_DIR")?).join(file_name);
     fs::write(&out, object).map_err(|error| format!("{}: {error}", out.display()))?;
-    println!("cargo:rustc-link-arg-bins={}", out.display());
+    // All linked targets, not just the binary: the unit tests then run with the same
+    // manifest (Common Controls v6, PerMonitorV2) and icon as the shipped exe.
+    println!("cargo:rustc-link-arg={}", out.display());
     Ok(())
 }
 

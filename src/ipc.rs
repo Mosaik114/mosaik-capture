@@ -26,6 +26,26 @@ pub const AUDIO_SETTINGS: u32 = WM_APP + 20;
 /// Notification-area icon callback.
 pub const TRAY_CALLBACK: u32 = WM_APP + 30;
 
+/// Whether `message` is a request from outside (another instance, the engine or the
+/// tray) that may only be handled once start-up has finished.
+///
+/// While the app starts, some calls (e.g. `Shell_NotifyIconW`) dispatch incoming sent
+/// messages. Such requests are answered with 0 and otherwise ignored, so a `--probe`
+/// during start-up reports "not ready" instead of seeing half-initialised state.
+pub const fn needs_startup(message: u32) -> bool {
+    matches!(
+        message,
+        SHOW_SETTINGS
+            | SHOW_RECORDING_SETTINGS
+            | TAKE_SCREENSHOT
+            | TOGGLE_RECORDING
+            | QUIT
+            | PROBE
+            | AUDIO_SETTINGS
+            | TRAY_CALLBACK
+    )
+}
+
 /// Reply to [`PROBE`]: which parts of the app are working.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProbeResponse {
@@ -84,6 +104,25 @@ impl AudioSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requests_wait_for_startup() {
+        for message in [
+            SHOW_SETTINGS,
+            SHOW_RECORDING_SETTINGS,
+            TAKE_SCREENSHOT,
+            TOGGLE_RECORDING,
+            QUIT,
+            PROBE,
+            AUDIO_SETTINGS,
+            TRAY_CALLBACK,
+        ] {
+            assert!(needs_startup(message), "{message:#x}");
+        }
+        for message in [WM_APP, WM_APP + 5, WM_APP + 11, 0x0010 /* WM_CLOSE */] {
+            assert!(!needs_startup(message), "{message:#x}");
+        }
+    }
 
     #[test]
     fn message_numbers_are_stable() {

@@ -25,6 +25,9 @@ pub mod status {
     pub const SAVED: &str = "Gespeichert. Beide Tastenkürzel sind aktiv.";
     /// A hotkey could not be parsed.
     pub const INVALID_HOTKEY: &str = "Bitte ein gültiges Kürzel eingeben, etwa Shift+Alt+4.";
+    /// A hotkey uses Shift as its only modifier ("A shortcut needs Ctrl or Alt, for
+    /// example Shift+Alt+4.").
+    pub const SHIFT_ONLY_HOTKEY: &str = "Ein Kürzel braucht Strg oder Alt, etwa Shift+Alt+4.";
     /// Both actions use the same hotkey.
     pub const DUPLICATE_HOTKEY: &str = "Screenshot und Aufnahme brauchen unterschiedliche Kürzel.";
     /// A folder path is incomplete or invalid.

@@ -1,7 +1,7 @@
 //! Application state and the behaviour behind every window message.
 //!
-//! [`App`] lives on the stack of [`super::run`] for the whole message loop and is
-//! reached from the window procedure through `GWLP_USERDATA`. Window procedures are
+//! [`App`] is boxed by [`super::run`] for the whole message loop (so its address is
+//! stable) and reached from the window procedure through `GWLP_USERDATA`. Window procedures are
 //! re-entered (e.g. `SendMessage` inside a handler, modal dialogs and menus), so all
 //! methods take `&self`; mutable state sits in `Cell`/`RefCell`, and `RefCell`
 //! borrows are never held across Win32 calls.
@@ -24,26 +24,29 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BS_AUTOCHECKBOX, BS_OWNERDRAW, CBS_DROPDOWNLIST, CreateWindowExW, DestroyWindow,
-    ES_AUTOHSCROLL, HMENU, IDCANCEL, IDOK, PostQuitMessage, RegisterWindowMessageW,
-    SHOW_WINDOW_CMD, SW_HIDE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow,
-    SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
-    WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_HOTKEY,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP,
-    WS_VISIBLE, WS_VSCROLL,
+    ES_AUTOHSCROLL, HMENU, IDCANCEL, IDOK, IsWindowVisible, KillTimer, PostQuitMessage,
+    RegisterWindowMessageW, SHOW_WINDOW_CMD, SM_CXSMICON, SW_HIDE, SW_RESTORE, SWP_NOACTIVATE,
+    SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC,
+    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_PAINT,
+    WM_RBUTTONUP, WM_TIMER, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use windows_sys::w;
 
+use super::UiError;
 use super::controls;
 use super::folder_picker;
+use super::icons::{OwnedIcon, WindowIcons};
 use super::layout::{CONTROLS, ControlKind, ControlSpec, Dpi, EDIT_LIMIT, FontRole, id};
 use super::strings::status;
 use super::theme::{self, Brushes, Fonts};
-use super::tray::{self, MenuCommand, SmallIcon};
+use super::tray::{self, MenuCommand};
 use crate::autostart;
 use crate::cli::Action;
 use crate::config::{Config, ConfigError, Countdown, FrameRate};
 use crate::engine::{self, CaptureMode, Launcher};
 use crate::hotkey::Hotkey;
+use crate::hotkey::ParseHotkeyError;
 use crate::ipc::{self, AudioSettings, ProbeResponse};
 use crate::store::SettingsStore;
 use crate::wide::to_wide;
@@ -54,6 +57,12 @@ const HOTKEY_SCREENSHOT: i32 = 1;
 const HOTKEY_RECORDING: i32 = 2;
 /// Window-position flags for moving and resizing without side effects.
 const REPOSITION: u32 = SWP_NOZORDER | SWP_NOACTIVATE;
+/// Timer that retries adding the tray icon while the taskbar is not ready.
+const TRAY_RETRY_TIMER: usize = 1;
+/// Interval of [`TRAY_RETRY_TIMER`].
+const TRAY_RETRY_MS: u32 = 2000;
+/// How often adding the tray icon is retried (about a minute in total).
+const TRAY_RETRIES: u32 = 30;
 
 /// Everything the running app needs.
 #[derive(Debug)]
@@ -65,7 +74,12 @@ pub struct App {
     /// Fonts for the current DPI.
     fonts: RefCell<Fonts>,
     brushes: Brushes,
-    tray_icon: SmallIcon,
+    /// Caption and taskbar icons for the current DPI.
+    window_icons: RefCell<Option<WindowIcons>>,
+    /// Notification-area icon for the current DPI.
+    tray_icon: RefCell<OwnedIcon>,
+    /// Remaining attempts to add the tray icon.
+    tray_retries: Cell<u32>,
     /// Every created control with its layout entry, for re-layout on DPI changes.
     children: RefCell<Vec<(HWND, &'static ControlSpec)>>,
     store: SettingsStore,
@@ -81,6 +95,8 @@ pub struct App {
     status_ok: Cell<bool>,
     /// Message id of Explorer's `TaskbarCreated` broadcast.
     taskbar_created: Cell<u32>,
+    /// Start-up has finished; requests from outside are handled only from then on.
+    started: Cell<bool>,
 }
 
 impl App {
@@ -101,7 +117,9 @@ impl App {
             dpi: Cell::new(dpi),
             fonts: RefCell::new(Fonts::new(dpi)),
             brushes: Brushes::new(),
-            tray_icon: SmallIcon::load(instance),
+            window_icons: RefCell::new(None),
+            tray_icon: RefCell::new(OwnedIcon::load(instance, SM_CXSMICON, dpi)),
+            tray_retries: Cell::new(TRAY_RETRIES),
             children: RefCell::new(Vec::new()),
             store,
             exe,
@@ -111,6 +129,7 @@ impl App {
             hotkeys: Cell::new(ProbeResponse::default()),
             status_ok: Cell::new(true),
             taskbar_created: Cell::new(0),
+            started: Cell::new(false),
         }
     }
 
@@ -148,23 +167,30 @@ impl App {
         unsafe { ShowWindow(self.window(), command) };
     }
 
-    /// Builds the window contents, adds the tray icon, registers the hotkeys,
-    /// writes the (normalised) settings back and performs the start-up `action`.
-    pub fn start(&self, action: Action) {
-        self.create_controls();
-        // SAFETY: the literal is NUL-terminated.
-        self.taskbar_created.set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
-        tray::add(self.window(), &self.tray_icon);
+    /// Builds the window contents, registers the hotkeys, writes the (normalised)
+    /// settings back, adds the tray icon and performs the start-up `action`.
+    ///
+    /// Requests from other processes that arrive meanwhile are answered with 0 (see
+    /// [`ipc::needs_startup`]); they are accepted once this returns.
+    pub fn start(&self, action: Action) -> Result<(), UiError> {
+        self.create_controls()?;
 
         let config = self.config.borrow().clone();
         let registered = self.register_hotkeys(&config);
         let saved = self.store.save(&config).is_ok()
             && (self.preview || autostart::set_enabled(config.autostart, &self.exe).is_ok());
-        if !registered {
+        if let Err(error) = config.hotkeys() {
+            self.set_status(config_error_message(error), false);
+        } else if !registered {
             self.set_status(status::HOTKEY_TAKEN, false);
         } else if !saved {
             self.set_status(status::STARTUP_SAVE_FAILED, false);
         }
+
+        // SAFETY: the literal is NUL-terminated.
+        self.taskbar_created.set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
+        self.add_tray_icon();
+        self.started.set(true);
 
         let settings_requested =
             matches!(action, Action::ShowSettings | Action::ShowRecordingSettings);
@@ -175,6 +201,38 @@ impl App {
         } else if action == Action::ToggleRecording {
             self.capture(CaptureMode::Recording);
         }
+        Ok(())
+    }
+
+    /// Adds the tray icon; while the taskbar is not ready (e.g. early during logon),
+    /// a timer retries every few seconds.
+    fn add_tray_icon(&self) {
+        let icon = self.tray_icon.borrow().handle();
+        let added = tray::add(self.window(), icon);
+        let retry = !added && self.tray_retries.get() > 0;
+        if retry {
+            self.tray_retries.set(self.tray_retries.get() - 1);
+        }
+        // SAFETY: no pointer arguments; the timer belongs to our window.
+        unsafe {
+            if retry {
+                SetTimer(self.window(), TRAY_RETRY_TIMER, TRAY_RETRY_MS, None);
+            } else {
+                KillTimer(self.window(), TRAY_RETRY_TIMER);
+            }
+        }
+    }
+
+    /// Loads the window and tray icons for the current DPI and hands them over.
+    pub fn refresh_icons(&self) {
+        let icons = WindowIcons::load(self.instance, self.dpi());
+        icons.apply(self.window());
+        // The previous icons are dropped only after the window has the new ones.
+        drop(self.window_icons.replace(Some(icons)));
+
+        let tray_icon = OwnedIcon::load(self.instance, SM_CXSMICON, self.dpi());
+        tray::update(self.window(), tray_icon.handle());
+        drop(self.tray_icon.replace(tray_icon));
     }
 
     /// Lays the window out for `dpi`: new fonts, scaled and repositioned controls and,
@@ -205,16 +263,21 @@ impl App {
                 );
             }
         }
+        self.refresh_icons();
         // SAFETY: a null rectangle means the whole window.
         unsafe { InvalidateRect(self.window(), ptr::null(), 1) };
     }
 
     /// Handles a window message; `None` lets `DefWindowProcW` handle it.
     pub fn handle_message(&self, message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+        if (ipc::needs_startup(message) || message == WM_HOTKEY) && !self.started.get() {
+            return Some(0);
+        }
         let taskbar_created = self.taskbar_created.get();
         if taskbar_created != 0 && message == taskbar_created {
             // Explorer restarted: the icon has to be added again.
-            tray::add(self.window(), &self.tray_icon);
+            self.tray_retries.set(TRAY_RETRIES);
+            self.add_tray_icon();
             return Some(0);
         }
         let result = match message {
@@ -224,13 +287,17 @@ impl App {
             }
             WM_DESTROY => {
                 self.unregister_hotkeys();
-                tray::remove(self.window(), &self.tray_icon);
+                tray::remove(self.window());
                 // SAFETY: no arguments besides the exit code.
                 unsafe { PostQuitMessage(0) };
                 0
             }
             WM_PAINT => {
                 self.paint_background();
+                0
+            }
+            WM_TIMER if wparam == TRAY_RETRY_TIMER => {
+                self.add_tray_icon();
                 0
             }
             WM_DPICHANGED => {
@@ -304,7 +371,7 @@ impl App {
         Some(result)
     }
 
-    fn create_controls(&self) {
+    fn create_controls(&self) -> Result<(), UiError> {
         let dpi = self.dpi();
         for spec in CONTROLS {
             let (class, ex_style, style): (_, WINDOW_EX_STYLE, WINDOW_STYLE) = match spec.kind {
@@ -340,6 +407,9 @@ impl App {
                     ptr::null(),
                 )
             };
+            if control.is_null() {
+                return Err(UiError::CreateControls);
+            }
             let font = self.fonts.borrow().get(spec.font_role());
             controls::set_font(control, font);
             match spec.kind {
@@ -360,6 +430,7 @@ impl App {
             self.children.borrow_mut().push((control, spec));
         }
         self.populate();
+        Ok(())
     }
 
     /// Shows the saved settings in the controls (discarding unsaved edits).
@@ -399,8 +470,13 @@ impl App {
         }
     }
 
+    /// Shows the window. Only a hidden window is refilled from the saved settings, so
+    /// unsaved edits survive (e.g. a second "settings" request or an open picker).
     fn show_settings(&self, focus_recording: bool) {
-        self.populate();
+        // SAFETY: no pointer arguments.
+        if unsafe { IsWindowVisible(self.window()) } == 0 {
+            self.populate();
+        }
         self.show(SW_RESTORE);
         let focus = if focus_recording { id::RECORDING_HOTKEY } else { id::SCREENSHOT_HOTKEY };
         // SAFETY: no pointer arguments.
@@ -457,12 +533,7 @@ impl App {
         let saved = self.config.borrow().clone();
         let draft = self.read_controls();
         if let Err(error) = draft.validate() {
-            let message = match error {
-                ConfigError::InvalidHotkey(_) => status::INVALID_HOTKEY,
-                ConfigError::DuplicateHotkey => status::DUPLICATE_HOTKEY,
-                ConfigError::InvalidFolder => status::INVALID_FOLDER,
-            };
-            self.set_status(message, false);
+            self.set_status(config_error_message(error), false);
             return;
         }
 
@@ -594,6 +665,16 @@ impl App {
     }
 }
 
+/// The status-line text explaining why settings cannot be applied.
+fn config_error_message(error: ConfigError) -> &'static str {
+    match error {
+        ConfigError::InvalidHotkey(ParseHotkeyError::ShiftOnly) => status::SHIFT_ONLY_HOTKEY,
+        ConfigError::InvalidHotkey(_) => status::INVALID_HOTKEY,
+        ConfigError::DuplicateHotkey => status::DUPLICATE_HOTKEY,
+        ConfigError::InvalidFolder => status::INVALID_FOLDER,
+    }
+}
+
 /// Sets the text and background colour for a `WM_CTLCOLOR*` reply.
 fn color_control(dc: HDC, text: u32, background: u32) {
     // SAFETY: `dc` is the device context passed with WM_CTLCOLOR*.
@@ -632,6 +713,16 @@ fn explorer_argument(folder: &Path) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_errors_have_status_messages() {
+        let shift_only = ConfigError::InvalidHotkey(ParseHotkeyError::ShiftOnly);
+        assert_eq!(config_error_message(shift_only), status::SHIFT_ONLY_HOTKEY);
+        let unknown = ConfigError::InvalidHotkey(ParseHotkeyError::UnknownKey);
+        assert_eq!(config_error_message(unknown), status::INVALID_HOTKEY);
+        assert_eq!(config_error_message(ConfigError::DuplicateHotkey), status::DUPLICATE_HOTKEY);
+        assert_eq!(config_error_message(ConfigError::InvalidFolder), status::INVALID_FOLDER);
+    }
 
     #[test]
     fn low_word_extracts_the_low_16_bits() {

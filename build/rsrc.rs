@@ -6,6 +6,7 @@
 //! is covered by `cargo test`.
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 /// Resource type of a single icon image.
 pub const RT_ICON: u16 = 3;
@@ -30,13 +31,29 @@ const ICONDIRENTRY_SIZE: usize = 16;
 pub struct Resources(BTreeMap<u16, BTreeMap<u16, Vec<u8>>>);
 
 impl Resources {
-    /// Adds (or replaces) one resource.
-    pub fn add(&mut self, kind: u16, id: u16, data: Vec<u8>) {
-        self.0.entry(kind).or_default().insert(id, data);
+    /// Adds one resource; a second resource with the same type and id is an error.
+    pub fn add(&mut self, kind: u16, id: u16, data: Vec<u8>) -> Result<(), String> {
+        match self.0.entry(kind).or_default().entry(id) {
+            Entry::Occupied(_) => Err(format!("duplicate resource: type {kind}, id {id}")),
+            Entry::Vacant(slot) => {
+                slot.insert(data);
+                Ok(())
+            }
+        }
+    }
+
+    /// The first free [`RT_ICON`] id after all existing ones, so several icon groups
+    /// never share image ids.
+    fn next_icon_id(&self) -> u16 {
+        self.0
+            .get(&RT_ICON)
+            .and_then(|images| images.last_key_value())
+            .map_or(1, |(&last, _)| last.saturating_add(1))
     }
 
     /// Splits an `.ico` file into one [`RT_ICON`] per image plus the
-    /// [`RT_GROUP_ICON`] directory `group_id` that references them.
+    /// [`RT_GROUP_ICON`] directory `group_id` that references them. Image ids continue
+    /// after those of previously added icons. Nothing is added on error.
     pub fn add_icon(&mut self, group_id: u16, ico: &[u8]) -> Result<(), String> {
         let header = ico.get(..ICONDIR_SIZE).ok_or("icon file is shorter than its header")?;
         if read_u16(header, 0) != 0 || read_u16(header, 2) != 1 {
@@ -45,6 +62,13 @@ impl Resources {
         let count = read_u16(header, 4);
         if count == 0 {
             return Err("icon file contains no images".into());
+        }
+        if self.0.get(&RT_GROUP_ICON).is_some_and(|groups| groups.contains_key(&group_id)) {
+            return Err(format!("duplicate icon group {group_id}"));
+        }
+        let first_id = self.next_icon_id();
+        if u32::from(first_id) + u32::from(count) > u32::from(u16::MAX) {
+            return Err("too many icon images".into());
         }
 
         let mut group = Vec::new();
@@ -63,7 +87,7 @@ impl Resources {
                 .checked_add(size)
                 .and_then(|end| ico.get(offset..end))
                 .ok_or_else(|| format!("icon image {index} lies outside the file"))?;
-            let image_id = index + 1;
+            let image_id = first_id + index;
             images.push((image_id, image.to_vec()));
 
             // GRPICONDIRENTRY: the ICONDIRENTRY with the file offset replaced by the id.
@@ -73,10 +97,9 @@ impl Resources {
             push_u16(&mut group, image_id);
         }
         for (id, image) in images {
-            self.add(RT_ICON, id, image);
+            self.add(RT_ICON, id, image)?;
         }
-        self.add(RT_GROUP_ICON, group_id, group);
-        Ok(())
+        self.add(RT_GROUP_ICON, group_id, group)
     }
 }
 
@@ -423,6 +446,30 @@ mod tests {
     }
 
     #[test]
+    fn icon_groups_get_distinct_image_ids() {
+        let mut resources = Resources::default();
+        resources.add_icon(1, &ico(&[(16, b"a"), (32, b"b")])).unwrap();
+        resources.add_icon(2, &ico(&[(16, b"c")])).unwrap();
+        let ids: Vec<u16> = resources.0[&RT_ICON].keys().copied().collect();
+        assert_eq!(ids, [1, 2, 3]);
+        assert_eq!(resources.0[&RT_ICON][&3], b"c");
+        let second_group = &resources.0[&RT_GROUP_ICON][&2];
+        assert_eq!(read_u16(second_group, 6 + 12), 3, "group 2 references image 3");
+    }
+
+    #[test]
+    fn duplicates_are_rejected() {
+        let mut resources = Resources::default();
+        resources.add(RT_MANIFEST, 1, b"a".to_vec()).unwrap();
+        let error = resources.add(RT_MANIFEST, 1, b"b".to_vec()).unwrap_err();
+        assert!(error.contains("duplicate"), "{error}");
+        assert_eq!(resources.0[&RT_MANIFEST][&1], b"a", "the first one is kept");
+        resources.add_icon(1, &ico(&[(16, b"a")])).unwrap();
+        assert!(resources.add_icon(1, &ico(&[(16, b"b")])).is_err());
+        assert_eq!(resources.0[&RT_ICON].len(), 1, "nothing added on error");
+    }
+
+    #[test]
     fn malformed_icons_are_rejected() {
         let mut resources = Resources::default();
         assert!(resources.add_icon(1, &[0, 0, 1]).is_err(), "short header");
@@ -504,7 +551,7 @@ mod tests {
     #[test]
     fn coff_object_layout_for_one_resource() {
         let mut resources = Resources::default();
-        resources.add(RT_MANIFEST, 1, b"xyz".to_vec());
+        resources.add(RT_MANIFEST, 1, b"xyz".to_vec()).unwrap();
         let object = coff_object(Machine::X64, &resources);
 
         // Section: root dir (24) + name dir (24) + language dir (24) + data entry (16)
@@ -548,9 +595,9 @@ mod tests {
     #[test]
     fn coff_entries_are_sorted_and_relocated() {
         let mut resources = Resources::default();
-        resources.add(RT_VERSION, 1, vec![1; 9]);
-        resources.add(RT_ICON, 2, vec![2; 1]);
-        resources.add(RT_ICON, 1, vec![3; 8]);
+        resources.add(RT_VERSION, 1, vec![1; 9]).unwrap();
+        resources.add(RT_ICON, 2, vec![2; 1]).unwrap();
+        resources.add(RT_ICON, 1, vec![3; 8]).unwrap();
         let object = coff_object(Machine::Arm64, &resources);
         let section_size = to_usize(read_u32(&object, 36));
         let raw = FILE_HEADER + SECTION_HEADER;

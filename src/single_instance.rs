@@ -6,7 +6,9 @@ use std::ptr;
 use std::thread;
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND,
+};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId, SMTO_ABORTIFHUNG,
@@ -19,13 +21,6 @@ use crate::wide::to_wide;
 
 /// Session-local mutex that marks the primary instance.
 const MUTEX_NAME: &str = r"Local\MosaikCapture.Host";
-/// How often to look for the primary's window while it may still be starting up.
-const FIND_ATTEMPTS: u32 = 200;
-/// Pause between two lookups.
-const FIND_INTERVAL: Duration = Duration::from_millis(10);
-/// How long the primary instance may take to handle a forwarded action.
-const FORWARD_TIMEOUT_MS: u32 = 2000;
-
 /// The instance mutex; held for the lifetime of the process.
 #[derive(Debug)]
 pub struct InstanceLock {
@@ -67,18 +62,52 @@ pub enum Forwarded {
     Delivered(isize),
 }
 
+/// Where and how patiently to forward an action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    /// Window class of the receiving window.
+    pub class: String,
+    /// How often to look for the window while the primary may still be starting.
+    pub attempts: u32,
+    /// Pause between two lookups.
+    pub interval: Duration,
+    /// How long the receiver may take to handle the message.
+    pub timeout: Duration,
+}
+
+impl Target {
+    /// The primary instance: up to 2 s for its window to appear, 2 s to answer.
+    pub fn primary() -> Self {
+        Self {
+            class: ipc::WINDOW_CLASS.to_owned(),
+            attempts: 200,
+            interval: Duration::from_millis(10),
+            timeout: Duration::from_secs(2),
+        }
+    }
+
+    /// Looks for the window, retrying while it may still be created.
+    fn find_window(&self) -> Option<HWND> {
+        let class = to_wide(&self.class);
+        (0..self.attempts).find_map(|attempt| {
+            if attempt > 0 {
+                thread::sleep(self.interval);
+            }
+            // SAFETY: `class` is NUL-terminated; a null title matches any window.
+            let window = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
+            (!window.is_null()).then_some(window)
+        })
+    }
+}
+
 /// Waits for the primary instance's window and sends it `action`.
 pub fn forward(action: Action) -> Forwarded {
-    let class = to_wide(ipc::WINDOW_CLASS);
-    let window = (0..FIND_ATTEMPTS).find_map(|attempt| {
-        if attempt > 0 {
-            thread::sleep(FIND_INTERVAL);
-        }
-        // SAFETY: `class` is NUL-terminated; a null title matches any window.
-        let window = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
-        (!window.is_null()).then_some(window)
-    });
-    let Some(window) = window else {
+    forward_to(&Target::primary(), action)
+}
+
+/// Waits for `target`'s window and sends it `action`.
+pub fn forward_to(target: &Target, action: Action) -> Forwarded {
+    let Some(window) = target.find_window() else {
         return Forwarded::NoWindow;
     };
 
@@ -94,18 +123,170 @@ pub fn forward(action: Action) -> Forwarded {
     let Some(message) = action.message() else {
         return Forwarded::Delivered(0);
     };
+    let timeout = u32::try_from(target.timeout.as_millis()).unwrap_or(u32::MAX);
     let mut response = 0usize;
     // SAFETY: `response` outlives the call; see above for the handle.
     let delivered = unsafe {
-        SendMessageTimeoutW(
-            window,
-            message,
-            0,
-            0,
-            SMTO_ABORTIFHUNG,
-            FORWARD_TIMEOUT_MS,
-            &raw mut response,
-        )
+        SendMessageTimeoutW(window, message, 0, 0, SMTO_ABORTIFHUNG, timeout, &raw mut response)
     } != 0;
     if delivered { Forwarded::Delivered(response.cast_signed()) } else { Forwarded::Failed }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Instant;
+    use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
+        PostThreadMessageW, RegisterClassW, WM_QUIT, WNDCLASSW,
+    };
+
+    /// Answers PROBE like a healthy primary; everything else goes to the default.
+    unsafe extern "system" fn fake_primary(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if message == ipc::PROBE {
+            return ipc::ProbeResponse::HEALTHY;
+        }
+        // SAFETY: default handling with the arguments we were given.
+        unsafe { DefWindowProcW(window, message, wparam, lparam) }
+    }
+
+    /// A hidden top-level window of a test-only class, owned by its own thread. With
+    /// `pump`, the thread answers messages until told to quit; without, it never does.
+    struct FakePrimary {
+        class: String,
+        thread_id: u32,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl FakePrimary {
+        fn start(name: &str, pump: bool) -> Self {
+            let class = format!("MosaikCapture.Test.{name}.{}", std::process::id());
+            let (sender, receiver) = mpsc::channel();
+            let wide_class = to_wide(&class);
+            let worker = thread::spawn(move || {
+                // SAFETY: a null name returns the handle of the executable itself.
+                let instance = unsafe { GetModuleHandleW(ptr::null()) };
+                let window_class = WNDCLASSW {
+                    style: 0,
+                    lpfnWndProc: Some(fake_primary),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: instance,
+                    hIcon: ptr::null_mut(),
+                    hCursor: ptr::null_mut(),
+                    hbrBackground: ptr::null_mut(),
+                    lpszMenuName: ptr::null(),
+                    lpszClassName: wide_class.as_ptr(),
+                };
+                // SAFETY: the class struct and name outlive the calls; the window is
+                // created without WS_VISIBLE and never shown.
+                let window = unsafe {
+                    RegisterClassW(&raw const window_class);
+                    CreateWindowExW(
+                        0,
+                        wide_class.as_ptr(),
+                        ptr::null(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        instance,
+                        ptr::null(),
+                    )
+                };
+                assert!(!window.is_null());
+                // SAFETY: no arguments.
+                sender.send(unsafe { GetCurrentThreadId() }).unwrap();
+                if pump {
+                    // SAFETY: MSG is plain data; `message` outlives the calls.
+                    unsafe {
+                        let mut message: MSG = std::mem::zeroed();
+                        while GetMessageW(&raw mut message, ptr::null_mut(), 0, 0) > 0 {
+                            DispatchMessageW(&raw const message);
+                        }
+                    }
+                } else {
+                    thread::sleep(Duration::from_millis(500));
+                }
+                // SAFETY: destroys the window on the thread that created it.
+                unsafe { DestroyWindow(window) };
+            });
+            let thread_id = receiver.recv().unwrap();
+            Self { class, thread_id, worker: Some(worker) }
+        }
+
+        fn target(&self) -> Target {
+            Target {
+                class: self.class.clone(),
+                attempts: 1,
+                interval: Duration::ZERO,
+                timeout: Duration::from_millis(100),
+            }
+        }
+    }
+
+    impl Drop for FakePrimary {
+        fn drop(&mut self) {
+            // SAFETY: posting to a thread has no memory-safety preconditions.
+            unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0) };
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    #[test]
+    fn primary_target_waits_two_seconds_at_most() {
+        let target = Target::primary();
+        assert_eq!(target.class, "MosaikCapture.Host");
+        assert_eq!(target.interval * target.attempts, Duration::from_secs(2));
+        assert_eq!(target.timeout, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn missing_window_is_retried_then_reported() {
+        let target = Target {
+            class: format!("MosaikCapture.Test.Absent.{}", std::process::id()),
+            attempts: 5,
+            interval: Duration::from_millis(20),
+            timeout: Duration::from_millis(100),
+        };
+        let started = Instant::now();
+        assert_eq!(forward_to(&target, Action::Probe), Forwarded::NoWindow);
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(80), "4 pauses between 5 lookups: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+    }
+
+    #[test]
+    fn answers_are_delivered() {
+        let primary = FakePrimary::start("Pumping", true);
+        let target = primary.target();
+        let healthy = Forwarded::Delivered(ipc::ProbeResponse::HEALTHY);
+        assert_eq!(forward_to(&target, Action::Probe), healthy);
+        // Unknown messages reach DefWindowProc, which answers 0.
+        assert_eq!(forward_to(&target, Action::Quit), Forwarded::Delivered(0));
+        // `--background` needs no message at all.
+        assert_eq!(forward_to(&target, Action::Background), Forwarded::Delivered(0));
+    }
+
+    #[test]
+    fn unresponsive_primary_is_a_failure() {
+        let primary = FakePrimary::start("Blocked", false);
+        let started = Instant::now();
+        assert_eq!(forward_to(&primary.target(), Action::Probe), Forwarded::Failed);
+        assert!(started.elapsed() < Duration::from_secs(2), "the timeout applies");
+    }
 }

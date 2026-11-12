@@ -45,10 +45,12 @@ enum Exit {
     PrimaryWithoutWindow = 6,
     /// The window class could not be registered.
     WindowClassFailed = 7,
-    /// The window could not be created.
+    /// The window or one of its controls could not be created.
     WindowCreationFailed = 8,
     /// The running instance did not answer the forwarded action (hung or exiting).
     ForwardFailed = 9,
+    /// The message loop failed (`GetMessageW` returned -1).
+    MessageLoopFailed = 10,
 }
 
 impl From<Exit> for ExitCode {
@@ -87,8 +89,11 @@ fn run(invocation: &Invocation) -> Exit {
         Action::Probe => Exit::ProbeFailed,
         _ => match ui::run(invocation) {
             Ok(()) => Exit::Success,
-            Err(ui::StartupError::RegisterClass) => Exit::WindowClassFailed,
-            Err(ui::StartupError::CreateWindow) => Exit::WindowCreationFailed,
+            Err(ui::UiError::RegisterClass) => Exit::WindowClassFailed,
+            Err(ui::UiError::CreateWindow | ui::UiError::CreateControls) => {
+                Exit::WindowCreationFailed
+            }
+            Err(ui::UiError::MessageLoop) => Exit::MessageLoopFailed,
         },
     }
 }
@@ -122,6 +127,7 @@ mod tests {
             (Exit::WindowClassFailed, 7),
             (Exit::WindowCreationFailed, 8),
             (Exit::ForwardFailed, 9),
+            (Exit::MessageLoopFailed, 10),
         ];
         for (exit, code) in codes {
             assert_eq!(exit as u8, code);

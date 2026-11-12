@@ -9,8 +9,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::{env, ptr};
+use std::time::Duration;
+use std::{env, ptr, thread};
 
+use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION};
 use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
@@ -19,7 +21,8 @@ use windows_sys::Win32::System::WindowsProgramming::{
     GetPrivateProfileIntW, GetPrivateProfileStringW,
 };
 use windows_sys::Win32::UI::Shell::{
-    FOLDERID_Pictures, FOLDERID_Videos, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    FOLDERID_LocalAppData, FOLDERID_Pictures, FOLDERID_Videos, KF_FLAG_DEFAULT,
+    SHGetKnownFolderPath,
 };
 use windows_sys::core::GUID;
 
@@ -35,6 +38,11 @@ const APP_FOLDER: &str = "MosaikCapture";
 const LEGACY_APP_FOLDER: &str = "Mosaiks-Aufnahme";
 /// File name of the settings.
 const FILE_NAME: &str = "settings.ini";
+/// How often a write is attempted while another process (e.g. the engine reading the
+/// settings) briefly holds the file open.
+const SHARING_ATTEMPTS: u32 = 5;
+/// Pause between two attempts.
+const SHARING_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// Byte-order mark that makes the profile API treat the file as UTF-16LE.
 const UTF16LE_BOM: [u8; 2] = [0xFF, 0xFE];
 
@@ -48,8 +56,12 @@ impl SettingsStore {
     /// Uses `%LOCALAPPDATA%\MosaikCapture\settings.ini`, creating the folder and
     /// migrating the settings of earlier versions if needed.
     pub fn user_default() -> Self {
-        let local_app_data = env::var_os("LOCALAPPDATA").unwrap_or_default();
-        Self::at(prepare_user_folder(Path::new(&local_app_data)))
+        let local_app_data = local_app_data(
+            env::var_os("LOCALAPPDATA"),
+            || known_folder(&FOLDERID_LocalAppData),
+            env::temp_dir,
+        );
+        Self::at(prepare_user_folder(&local_app_data))
     }
 
     /// Uses an explicit file, e.g. for `--preview`.
@@ -66,6 +78,21 @@ impl SettingsStore {
     pub fn save(&self, config: &Config) -> io::Result<()> {
         write_atomic(&self.path, &config.to_ini())
     }
+}
+
+/// The local application-data folder: `%LOCALAPPDATA%` if it is an absolute path,
+/// else the known folder, else (never expected) the temp folder. The result is always
+/// absolute, so settings never end up relative to the working directory.
+fn local_app_data(
+    variable: Option<OsString>,
+    known: impl FnOnce() -> String,
+    temp: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    if let Some(path) = variable.map(PathBuf::from).filter(|path| path.is_absolute()) {
+        return path;
+    }
+    let known = PathBuf::from(known());
+    if known.is_absolute() { known } else { temp() }
 }
 
 /// Creates `<local_app_data>\MosaikCapture` and, once, copies the settings of
@@ -177,6 +204,9 @@ impl ProfileSource for IniFile {
 
 /// Writes `contents` as UTF-16LE with BOM to `<path>.new`, flushes it to disk, then
 /// atomically replaces `path` with it (write-through, so the rename is durable, too).
+///
+/// Sharing violations, which occur while another process reads the file, are retried
+/// briefly. On failure the temporary file is removed and `path` is left untouched.
 pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     let mut temp = OsString::from(path);
     temp.push(".new");
@@ -186,22 +216,51 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     bytes.extend_from_slice(&UTF16LE_BOM);
     bytes.extend(contents.encode_utf16().flat_map(u16::to_le_bytes));
 
-    let mut file =
-        OpenOptions::new().write(true).create(true).truncate(true).share_mode(0).open(&temp)?;
-    file.write_all(&bytes)?;
-    // Flush the contents before the rename, so a crash cannot leave an empty file.
-    file.sync_all()?;
-    drop(file);
+    let result = retry_while_shared(|| write_synced(&temp, &bytes))
+        .and_then(|()| retry_while_shared(|| replace(&temp, path)));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
 
-    let (from, to) = (to_wide(&temp), to_wide(path));
+/// Creates `path` exclusively with `bytes` and flushes it to disk, so a crash after the
+/// rename cannot leave an empty settings file.
+fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file =
+        OpenOptions::new().write(true).create(true).truncate(true).share_mode(0).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Atomically moves `from` over `to`.
+fn replace(from: &Path, to: &Path) -> io::Result<()> {
+    let (from, to) = (to_wide(from), to_wide(to));
     // SAFETY: both paths are NUL-terminated and outlive the call.
     let moved = unsafe {
         MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
     };
-    if moved == 0 {
-        return Err(io::Error::last_os_error());
+    if moved == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+/// Runs `operation` again (a few times, after a short pause) while it fails because
+/// another process has the file open.
+fn retry_while_shared<T>(mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut attempt = 1;
+    loop {
+        match operation() {
+            Err(error) if attempt < SHARING_ATTEMPTS && is_sharing_violation(&error) => {
+                attempt += 1;
+                thread::sleep(SHARING_RETRY_DELAY);
+            }
+            result => return result,
+        }
     }
-    Ok(())
+}
+
+fn is_sharing_violation(error: &io::Error) -> bool {
+    let code = error.raw_os_error().and_then(|code| u32::try_from(code).ok());
+    matches!(code, Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION))
 }
 
 #[cfg(test)]
@@ -245,6 +304,64 @@ mod tests {
         let mut bytes = UTF16LE_BOM.to_vec();
         bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
         fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn local_app_data_is_always_absolute() {
+        let known = || r"C:\Users\Ada\AppData\Local".to_owned();
+        let temp = || PathBuf::from(r"C:\Temp");
+        let from_env = local_app_data(Some(r"D:\Local".into()), known, temp);
+        assert_eq!(from_env, Path::new(r"D:\Local"));
+        let missing = local_app_data(None, known, temp);
+        assert_eq!(missing, Path::new(r"C:\Users\Ada\AppData\Local"));
+        let relative = local_app_data(Some("relative".into()), known, temp);
+        assert_eq!(relative, Path::new(r"C:\Users\Ada\AppData\Local"));
+        let nothing = local_app_data(Some("".into()), String::new, temp);
+        assert_eq!(nothing, Path::new(r"C:\Temp"));
+    }
+
+    #[test]
+    fn sharing_violations_are_retried_briefly() {
+        let mut calls = 0;
+        let result = retry_while_shared(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(io::Error::from_raw_os_error(ERROR_SHARING_VIOLATION.cast_signed()))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), 3);
+
+        let mut calls = 0;
+        let result: io::Result<()> = retry_while_shared(|| {
+            calls += 1;
+            Err(io::Error::from_raw_os_error(ERROR_LOCK_VIOLATION.cast_signed()))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, SHARING_ATTEMPTS, "gives up eventually");
+
+        let mut calls = 0;
+        let result: io::Result<()> = retry_while_shared(|| {
+            calls += 1;
+            Err(io::ErrorKind::NotFound.into())
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1, "other errors are not retried");
+    }
+
+    #[test]
+    fn failed_write_leaves_no_temp_file() {
+        let dir = TempDir::new();
+        let path = dir.file("settings.ini");
+        write_utf16(&path, "[capture]\r\nfps=30\r\n");
+        // Hold the target open without sharing: the rename keeps failing.
+        let blocker = OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        let result = write_atomic(&path, "[capture]\r\nfps=60\r\n");
+        drop(blocker);
+        assert!(result.is_err());
+        assert!(!dir.file("settings.ini.new").exists(), "temp file is cleaned up");
+        assert_eq!(IniFile::new(&path).int("fps", 0), 30, "old settings untouched");
     }
 
     #[test]
