@@ -16,7 +16,9 @@ use crate::wide::to_wide;
 /// The per-user autostart key.
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 /// Name of this app's value under [`RUN_KEY`].
-const VALUE_NAME: &str = "Mosaiks Aufnahme";
+const VALUE_NAME: &str = "Mosaik Capture";
+/// Value name used by earlier versions; removed whenever autostart is written.
+const LEGACY_VALUE_NAME: &str = "Mosaiks Aufnahme";
 
 /// The command Windows runs at logon: the quoted executable plus `--background`.
 pub fn command_line(exe: &Path) -> OsString {
@@ -27,13 +29,12 @@ pub fn command_line(exe: &Path) -> OsString {
 }
 
 /// Adds or removes the autostart entry for `exe`. Removing a missing entry succeeds.
+/// The entry of earlier versions is removed in both cases, so the app never starts
+/// twice at logon.
 pub fn set_enabled(enabled: bool, exe: &Path) -> io::Result<()> {
     let key = RunKey::open()?;
-    if enabled {
-        key.set(VALUE_NAME, &command_line(exe))
-    } else {
-        key.delete(VALUE_NAME)
-    }
+    key.delete(LEGACY_VALUE_NAME)?;
+    if enabled { key.set(VALUE_NAME, &command_line(exe)) } else { key.delete(VALUE_NAME) }
 }
 
 /// An open handle to [`RUN_KEY`], closed on drop.
@@ -64,10 +65,7 @@ impl RunKey {
 
     fn set(&self, name: &str, value: &OsStr) -> io::Result<()> {
         let name = to_wide(name);
-        let data: Vec<u8> = to_wide(value)
-            .iter()
-            .flat_map(|unit| unit.to_le_bytes())
-            .collect();
+        let data: Vec<u8> = to_wide(value).iter().flat_map(|unit| unit.to_le_bytes()).collect();
         let size = u32::try_from(data.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
         // SAFETY: `self.0` is an open key; `name` is NUL-terminated; `data` holds a
         // NUL-terminated REG_SZ string of exactly `size` bytes.
@@ -110,10 +108,10 @@ mod tests {
 
     #[test]
     fn command_line_quotes_executable() {
-        let exe = Path::new(r"C:\Program Files\Mosaiks\Mosaiks-Aufnahme.exe");
+        let exe = Path::new(r"C:\Program Files\Mosaik Capture\MosaikCapture.exe");
         assert_eq!(
             command_line(exe),
-            r#""C:\Program Files\Mosaiks\Mosaiks-Aufnahme.exe" --background"#
+            r#""C:\Program Files\Mosaik Capture\MosaikCapture.exe" --background"#
         );
     }
 
@@ -122,5 +120,12 @@ mod tests {
         assert!(check(ERROR_SUCCESS).is_ok());
         let error = check(ERROR_FILE_NOT_FOUND).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn value_names() {
+        assert_eq!(VALUE_NAME, "Mosaik Capture");
+        assert_eq!(LEGACY_VALUE_NAME, "Mosaiks Aufnahme");
+        assert_eq!(RUN_KEY, r"Software\Microsoft\Windows\CurrentVersion\Run");
     }
 }

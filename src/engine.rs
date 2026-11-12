@@ -1,13 +1,12 @@
-//! Talking to the capture engine (`Mosaiks-Capture-Engine.exe`), which does the
+//! Talking to the capture engine (`MosaikCapture.Engine.exe`), which does the
 //! actual screenshots and recordings.
 //!
 //! A running engine owns a hidden window titled [`WINDOW_TITLE`] and accepts
 //! `WM_APP`-based commands. If no engine is running, it is started with the
 //! capture mode on its command line.
 
-use std::io;
 use std::os::windows::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr;
 
@@ -17,12 +16,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     FindWindowW, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_APP,
 };
 
+use crate::store::PREVIEW_CONFIG_VAR;
 use crate::wide::to_wide;
 
 /// Title of the engine's message window.
-const WINDOW_TITLE: &str = "Mosaiks Capture Engine";
+const WINDOW_TITLE: &str = "MosaikCapture.Engine";
 /// File name of the engine, expected next to this executable.
-pub const EXE_NAME: &str = "Mosaiks-Capture-Engine.exe";
+pub const EXE_NAME: &str = "MosaikCapture.Engine.exe";
 
 /// Engine command: take a screenshot.
 const MSG_SCREENSHOT: u32 = WM_APP + 1;
@@ -100,24 +100,42 @@ pub fn request_quit() {
     }
 }
 
-/// Starts a capture: forwards it to the running engine or launches a new engine
-/// from `exe_dir`. Returns whether the request was delivered.
-pub fn start_capture(mode: CaptureMode, exe_dir: &Path) -> bool {
-    match find_window() {
-        // SAFETY: posting to a window handle has no memory-safety preconditions.
-        Some(window) => unsafe { PostMessageW(window, mode.message(), 0, 0) != 0 },
-        None => spawn(mode, exe_dir).is_ok(),
-    }
+/// Knows how to start a new engine process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launcher {
+    exe_dir: PathBuf,
+    preview_settings: Option<PathBuf>,
 }
 
-/// Launches `<exe_dir>\Mosaiks-Capture-Engine.exe <flag>` without a console window.
-fn spawn(mode: CaptureMode, exe_dir: &Path) -> io::Result<()> {
-    Command::new(exe_dir.join(EXE_NAME))
-        .arg(mode.flag())
-        .current_dir(exe_dir)
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map(drop)
+impl Launcher {
+    /// Starts engines from `exe_dir`. In preview mode, `preview_settings` is handed to
+    /// the engine through [`PREVIEW_CONFIG_VAR`] so both use the same settings file.
+    pub fn new(exe_dir: &Path, preview_settings: Option<&Path>) -> Self {
+        Self {
+            exe_dir: exe_dir.to_path_buf(),
+            preview_settings: preview_settings.map(Path::to_path_buf),
+        }
+    }
+
+    /// Starts a capture: forwards it to the running engine or launches a new one.
+    /// Returns whether the request was delivered.
+    pub fn start_capture(&self, mode: CaptureMode) -> bool {
+        match find_window() {
+            // SAFETY: posting to a window handle has no memory-safety preconditions.
+            Some(window) => unsafe { PostMessageW(window, mode.message(), 0, 0) != 0 },
+            None => self.command(mode).spawn().is_ok(),
+        }
+    }
+
+    /// `<exe_dir>\MosaikCapture.Engine.exe <flag>`, without a console window.
+    fn command(&self, mode: CaptureMode) -> Command {
+        let mut command = Command::new(self.exe_dir.join(EXE_NAME));
+        command.arg(mode.flag()).current_dir(&self.exe_dir).creation_flags(CREATE_NO_WINDOW);
+        if let Some(settings) = &self.preview_settings {
+            command.env(PREVIEW_CONFIG_VAR, settings);
+        }
+        command
+    }
 }
 
 #[cfg(test)]
@@ -141,8 +159,28 @@ mod tests {
     }
 
     #[test]
+    fn engine_command_line() {
+        let launcher = Launcher::new(Path::new(r"C:\Apps\Mosaik"), None);
+        let command = launcher.command(CaptureMode::Recording);
+        assert_eq!(command.get_program(), Path::new(r"C:\Apps\Mosaik\MosaikCapture.Engine.exe"));
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["--recording"]);
+        assert_eq!(command.get_current_dir(), Some(Path::new(r"C:\Apps\Mosaik")));
+        assert_eq!(command.get_envs().count(), 0, "real settings: no override");
+    }
+
+    #[test]
+    fn preview_settings_are_passed_to_the_engine() {
+        let ini = Path::new(r"C:\Temp\qa.ini");
+        let launcher = Launcher::new(Path::new(r"C:\Apps"), Some(ini));
+        let command = launcher.command(CaptureMode::Screenshot);
+        let envs: Vec<_> = command.get_envs().collect();
+        assert_eq!(envs, [(PREVIEW_CONFIG_VAR.as_ref(), Some(ini.as_os_str()))]);
+    }
+
+    #[test]
     fn spawn_reports_missing_engine() {
         let missing = std::env::temp_dir().join("mosaik-capture-no-engine-here");
-        assert!(spawn(CaptureMode::Screenshot, &missing).is_err());
+        let launcher = Launcher::new(&missing, None);
+        assert!(launcher.command(CaptureMode::Screenshot).spawn().is_err());
     }
 }

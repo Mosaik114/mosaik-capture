@@ -54,11 +54,7 @@ pub enum FrameRate {
 impl FrameRate {
     /// Interprets a stored value.
     pub const fn from_value(value: u32) -> Self {
-        if value == 30 {
-            Self::Fps30
-        } else {
-            Self::Fps60
-        }
+        if value == 30 { Self::Fps30 } else { Self::Fps60 }
     }
 
     /// The value written to the settings file.
@@ -69,7 +65,7 @@ impl FrameRate {
         }
     }
 
-    /// Position in the frame-rate combo box (`30 Bilder/s`, `60 Bilder/s`).
+    /// Position in the frame-rate combo box ("30/60 Bilder/s", i.e. frames per second).
     pub const fn index(self) -> usize {
         match self {
             Self::Fps30 => 0,
@@ -117,7 +113,8 @@ impl Countdown {
         }
     }
 
-    /// Position in the countdown combo box (`Ohne Vorlauf`, `3 Sekunden`, `5 Sekunden`).
+    /// Position in the countdown combo box ("Ohne Vorlauf" = no countdown, then 3 and
+    /// 5 "Sekunden" = seconds).
     pub const fn index(self) -> usize {
         match self {
             Self::Off => 0,
@@ -286,10 +283,7 @@ impl Config {
         if screenshot == recording {
             return Err(ConfigError::DuplicateHotkey);
         }
-        Ok(Hotkeys {
-            screenshot,
-            recording,
-        })
+        Ok(Hotkeys { screenshot, recording })
     }
 
     /// Full validation before saving: hotkeys first, then folders.
@@ -341,19 +335,10 @@ mod tests {
     #[test]
     fn default_folders_append_app_subfolders() {
         let folders = folders();
-        assert_eq!(
-            folders.screenshots,
-            "C:\\Users\\Ada\\Pictures\\Mosaiks-Screenshots"
-        );
-        assert_eq!(
-            folders.recordings,
-            "C:\\Users\\Ada\\Videos\\Mosaiks-Aufnahmen"
-        );
+        assert_eq!(folders.screenshots, "C:\\Users\\Ada\\Pictures\\Mosaiks-Screenshots");
+        assert_eq!(folders.recordings, "C:\\Users\\Ada\\Videos\\Mosaiks-Aufnahmen");
         // A failed known-folder lookup yields an (invalid) rooted path, as before.
-        assert_eq!(
-            DefaultFolders::new("", "").screenshots,
-            "\\Mosaiks-Screenshots"
-        );
+        assert_eq!(DefaultFolders::new("", "").screenshots, "\\Mosaiks-Screenshots");
     }
 
     #[test]
@@ -448,10 +433,7 @@ mod tests {
         assert_eq!(config.hotkeys(), Err(ConfigError::DuplicateHotkey));
 
         config.recording_hotkey = "Alt+".to_owned();
-        assert!(matches!(
-            config.hotkeys(),
-            Err(ConfigError::InvalidHotkey(_))
-        ));
+        assert!(matches!(config.hotkeys(), Err(ConfigError::InvalidHotkey(_))));
     }
 
     #[test]
@@ -460,10 +442,7 @@ mod tests {
         config.screenshot_folder = "relative".to_owned();
         assert_eq!(config.validate(), Err(ConfigError::InvalidFolder));
         config.screenshot_hotkey = "nonsense".to_owned();
-        assert!(matches!(
-            config.validate(),
-            Err(ConfigError::InvalidHotkey(_))
-        ));
+        assert!(matches!(config.validate(), Err(ConfigError::InvalidHotkey(_))));
         config.screenshot_hotkey = DEFAULT_SCREENSHOT_HOTKEY.to_owned();
         config.screenshot_folder = folders().screenshots;
         config.recording_folder = "C:\\a|b".to_owned();

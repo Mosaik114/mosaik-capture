@@ -3,14 +3,17 @@
 use std::{mem, ptr};
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, POINT};
+use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFY_ICON_MESSAGE, NOTIFYICONDATAW,
     Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, HMENU, LoadIconW, MF_STRING,
-    PostMessageW, SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_NULL,
+    AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, HICON, HMENU, IMAGE_ICON,
+    LR_DEFAULTCOLOR, LoadIconW, LoadImageW, MF_STRING, PostMessageW, SM_CXSMICON, SM_CYSMICON,
+    SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_NULL,
 };
+use windows_sys::core::PCWSTR;
 
 use super::layout::id;
 use super::strings;
@@ -22,13 +25,54 @@ const ICON_ID: u32 = 1;
 /// Resource id of the application icon (see `build.rs`).
 const APP_ICON_RESOURCE: u16 = 1;
 
-/// Loads the application icon from the executable's resources.
-pub fn app_icon(instance: HINSTANCE) -> HICON {
-    // SAFETY: MAKEINTRESOURCE-style ids are valid name arguments for LoadIconW.
-    unsafe { LoadIconW(instance, usize::from(APP_ICON_RESOURCE) as *const u16) }
+/// `MAKEINTRESOURCEW(APP_ICON_RESOURCE)`.
+fn app_icon_name() -> PCWSTR {
+    usize::from(APP_ICON_RESOURCE) as PCWSTR
 }
 
-fn notify(window: HWND, instance: HINSTANCE, message: NOTIFY_ICON_MESSAGE) {
+/// The application icon at the default (large) size, for the window class.
+pub fn app_icon(instance: HINSTANCE) -> HICON {
+    // SAFETY: MAKEINTRESOURCE-style ids are valid name arguments for LoadIconW.
+    unsafe { LoadIconW(instance, app_icon_name()) }
+}
+
+/// The application icon at exactly the small-icon size of the system DPI, so the
+/// notification area does not have to scale (and blur) a larger image.
+#[derive(Debug)]
+pub struct SmallIcon(HICON);
+
+impl SmallIcon {
+    /// Loads the best-matching image from the icon group. A null handle (no icon
+    /// resource, e.g. in unit tests) just yields an icon-less tray entry.
+    pub fn load(instance: HINSTANCE) -> Self {
+        // SAFETY: no pointer arguments.
+        let (width, height) = unsafe {
+            let dpi = GetDpiForSystem();
+            (GetSystemMetricsForDpi(SM_CXSMICON, dpi), GetSystemMetricsForDpi(SM_CYSMICON, dpi))
+        };
+        // SAFETY: loads a resource of our own module by id; without LR_SHARED the
+        // icon is owned by us and destroyed on drop.
+        let icon = unsafe {
+            LoadImageW(instance, app_icon_name(), IMAGE_ICON, width, height, LR_DEFAULTCOLOR)
+        };
+        Self(icon)
+    }
+
+    fn handle(&self) -> HICON {
+        self.0
+    }
+}
+
+impl Drop for SmallIcon {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the icon was created by LoadImageW without LR_SHARED.
+            unsafe { DestroyIcon(self.0) };
+        }
+    }
+}
+
+fn notify(window: HWND, icon: &SmallIcon, message: NOTIFY_ICON_MESSAGE) {
     // SAFETY: NOTIFYICONDATAW is a plain C struct for which all-zero is a valid value.
     let mut data: NOTIFYICONDATAW = unsafe { mem::zeroed() };
     data.cbSize = u32::try_from(mem::size_of::<NOTIFYICONDATAW>()).unwrap_or(u32::MAX);
@@ -36,20 +80,20 @@ fn notify(window: HWND, instance: HINSTANCE, message: NOTIFY_ICON_MESSAGE) {
     data.uID = ICON_ID;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = ipc::TRAY_CALLBACK;
-    data.hIcon = app_icon(instance);
+    data.hIcon = icon.handle();
     copy_to_buffer(&mut data.szTip, strings::TRAY_TOOLTIP);
     // SAFETY: `data` is fully initialised and outlives the call.
     unsafe { Shell_NotifyIconW(message, &raw const data) };
 }
 
 /// Adds the icon (also used to restore it after Explorer restarts).
-pub fn add(window: HWND, instance: HINSTANCE) {
-    notify(window, instance, NIM_ADD);
+pub fn add(window: HWND, icon: &SmallIcon) {
+    notify(window, icon, NIM_ADD);
 }
 
 /// Removes the icon.
-pub fn remove(window: HWND, instance: HINSTANCE) {
-    notify(window, instance, NIM_DELETE);
+pub fn remove(window: HWND, icon: &SmallIcon) {
+    notify(window, icon, NIM_DELETE);
 }
 
 /// A choice from the tray menu.
@@ -67,25 +111,14 @@ pub enum MenuCommand {
 
 impl MenuCommand {
     const ALL: [(Self, i32, &'static str); 4] = [
-        (
-            Self::Screenshot,
-            id::TAKE_SCREENSHOT,
-            strings::MENU_SCREENSHOT,
-        ),
-        (
-            Self::Recording,
-            id::TOGGLE_RECORDING,
-            strings::MENU_RECORDING,
-        ),
+        (Self::Screenshot, id::TAKE_SCREENSHOT, strings::MENU_SCREENSHOT),
+        (Self::Recording, id::TOGGLE_RECORDING, strings::MENU_RECORDING),
         (Self::Settings, id::MENU_SETTINGS, strings::MENU_SETTINGS),
         (Self::Quit, id::MENU_QUIT, strings::MENU_QUIT),
     ];
 
     fn from_id(command: i32) -> Option<Self> {
-        Self::ALL
-            .iter()
-            .find(|(_, id, _)| *id == command)
-            .map(|(cmd, _, _)| *cmd)
+        Self::ALL.iter().find(|(_, id, _)| *id == command).map(|(cmd, _, _)| *cmd)
     }
 }
 

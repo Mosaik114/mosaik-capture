@@ -3,11 +3,12 @@ name = "mosaik-capture"
 version = "1.0.0"
 edition = "2024"
 rust-version = "1.87"
-description = "Tray app for Mosaiks screenshots and screen recordings: global hotkeys, settings window and engine launcher."
+description = "Windows tray host for screenshots and screen recordings: global hotkeys, settings window and capture-engine launcher."
 publish = false
+autotests = false  # tests/ holds the C# engine tests
 
 [[bin]]
-name = "Mosaiks-Aufnahme"
+name = "MosaikCapture"
 path = "src/main.rs"
 
 [dependencies]
@@ -27,7 +28,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
-    "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

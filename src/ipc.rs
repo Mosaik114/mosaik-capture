@@ -7,7 +7,7 @@
 use windows_sys::Win32::UI::WindowsAndMessaging::WM_APP;
 
 /// Window class of the app window, looked up with `FindWindowW`.
-pub const WINDOW_CLASS: &str = "MosaiksAufnahmeRust";
+pub const WINDOW_CLASS: &str = "MosaikCapture.Host";
 
 /// Show the settings window, focusing the screenshot hotkey.
 pub const SHOW_SETTINGS: u32 = WM_APP + 1;
@@ -105,20 +105,11 @@ mod tests {
     #[test]
     fn probe_response_bits() {
         assert_eq!(ProbeResponse::default().to_lresult(), 1);
-        let screenshot_only = ProbeResponse {
-            screenshot_hotkey: true,
-            recording_hotkey: false,
-        };
+        let screenshot_only = ProbeResponse { screenshot_hotkey: true, recording_hotkey: false };
         assert_eq!(screenshot_only.to_lresult(), 3);
-        let recording_only = ProbeResponse {
-            screenshot_hotkey: false,
-            recording_hotkey: true,
-        };
+        let recording_only = ProbeResponse { screenshot_hotkey: false, recording_hotkey: true };
         assert_eq!(recording_only.to_lresult(), 5);
-        let both = ProbeResponse {
-            screenshot_hotkey: true,
-            recording_hotkey: true,
-        };
+        let both = ProbeResponse { screenshot_hotkey: true, recording_hotkey: true };
         assert_eq!(both.to_lresult(), ProbeResponse::HEALTHY);
         assert_eq!(ProbeResponse::HEALTHY, 7);
     }
@@ -131,16 +122,8 @@ mod tests {
         assert!(all.microphone && all.system_audio && all.show_clicks);
         assert_eq!(
             AudioSettings::from_wparam(2),
-            AudioSettings {
-                microphone: false,
-                system_audio: true,
-                show_clicks: false
-            }
+            AudioSettings { microphone: false, system_audio: true, show_clicks: false }
         );
-        assert_eq!(
-            AudioSettings::from_wparam(8),
-            none,
-            "unknown bits are ignored"
-        );
+        assert_eq!(AudioSettings::from_wparam(8), none, "unknown bits are ignored");
     }
 }

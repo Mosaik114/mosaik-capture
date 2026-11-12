@@ -7,10 +7,14 @@
 //! borrows are never held across Win32 calls.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::env;
+use std::ffi::OsString;
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, FillRect, HDC, InvalidateRect, PAINTSTRUCT, SetBkColor, SetTextColor,
 };
@@ -18,27 +22,27 @@ use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, SetWindowTheme};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOD_NOREPEAT, RegisterHotKey, SetFocus, UnregisterHotKey,
 };
-use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BS_AUTOCHECKBOX, BS_OWNERDRAW, CBS_DROPDOWNLIST, CreateWindowExW, DestroyWindow,
-    ES_AUTOHSCROLL, HMENU, PostQuitMessage, RegisterWindowMessageW, SHOW_WINDOW_CMD, SW_HIDE,
-    SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY,
-    WM_DRAWITEM, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WS_CHILD,
-    WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    ES_AUTOHSCROLL, HMENU, IDCANCEL, IDOK, PostQuitMessage, RegisterWindowMessageW,
+    SHOW_WINDOW_CMD, SW_HIDE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow,
+    SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
+    WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_HOTKEY,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 use windows_sys::w;
 
 use super::controls;
 use super::folder_picker;
-use super::layout::{CONTROLS, ControlKind, Dpi, EDIT_LIMIT, FontRole, id};
+use super::layout::{CONTROLS, ControlKind, ControlSpec, Dpi, EDIT_LIMIT, FontRole, id};
 use super::strings::status;
-use super::theme::{self, Theme};
-use super::tray::{self, MenuCommand};
+use super::theme::{self, Brushes, Fonts};
+use super::tray::{self, MenuCommand, SmallIcon};
 use crate::autostart;
 use crate::cli::Action;
 use crate::config::{Config, ConfigError, Countdown, FrameRate};
-use crate::engine::{self, CaptureMode};
+use crate::engine::{self, CaptureMode, Launcher};
 use crate::hotkey::Hotkey;
 use crate::ipc::{self, AudioSettings, ProbeResponse};
 use crate::store::SettingsStore;
@@ -48,17 +52,25 @@ use crate::wide::to_wide;
 const HOTKEY_SCREENSHOT: i32 = 1;
 /// `RegisterHotKey` id of the recording hotkey.
 const HOTKEY_RECORDING: i32 = 2;
+/// Window-position flags for moving and resizing without side effects.
+const REPOSITION: u32 = SWP_NOZORDER | SWP_NOACTIVATE;
 
 /// Everything the running app needs.
 #[derive(Debug)]
 pub struct App {
     window: Cell<HWND>,
     instance: HINSTANCE,
-    dpi: Dpi,
-    theme: Theme,
+    /// DPI of the monitor the window is on.
+    dpi: Cell<Dpi>,
+    /// Fonts for the current DPI.
+    fonts: RefCell<Fonts>,
+    brushes: Brushes,
+    tray_icon: SmallIcon,
+    /// Every created control with its layout entry, for re-layout on DPI changes.
+    children: RefCell<Vec<(HWND, &'static ControlSpec)>>,
     store: SettingsStore,
     exe: PathBuf,
-    exe_dir: PathBuf,
+    launcher: Launcher,
     /// Preview mode: separate settings file, autostart untouched.
     preview: bool,
     /// The saved settings (the window may show unsaved edits).
@@ -73,24 +85,28 @@ pub struct App {
 
 impl App {
     /// Creates the state; the window is attached later by [`App::attach`].
+    /// `preview` is the settings file of preview mode, if any.
     pub fn new(
         instance: HINSTANCE,
         dpi: Dpi,
         store: SettingsStore,
         config: Config,
         exe: PathBuf,
-        preview: bool,
+        preview: Option<&Path>,
     ) -> Self {
         let exe_dir = exe.parent().map(PathBuf::from).unwrap_or_default();
         Self {
             window: Cell::new(ptr::null_mut()),
             instance,
-            dpi,
-            theme: Theme::new(dpi),
+            dpi: Cell::new(dpi),
+            fonts: RefCell::new(Fonts::new(dpi)),
+            brushes: Brushes::new(),
+            tray_icon: SmallIcon::load(instance),
+            children: RefCell::new(Vec::new()),
             store,
             exe,
-            exe_dir,
-            preview,
+            launcher: Launcher::new(&exe_dir, preview),
+            preview: preview.is_some(),
             config: RefCell::new(config),
             hotkeys: Cell::new(ProbeResponse::default()),
             status_ok: Cell::new(true),
@@ -113,9 +129,14 @@ impl App {
         self.instance
     }
 
-    /// Theme objects (fonts, brushes).
-    pub fn theme(&self) -> &Theme {
-        &self.theme
+    /// Brushes (also used as the window-class background).
+    pub fn brushes(&self) -> &Brushes {
+        &self.brushes
+    }
+
+    /// The DPI the window is currently laid out for.
+    pub fn dpi(&self) -> Dpi {
+        self.dpi.get()
     }
 
     fn child(&self, id: i32) -> HWND {
@@ -132,9 +153,8 @@ impl App {
     pub fn start(&self, action: Action) {
         self.create_controls();
         // SAFETY: the literal is NUL-terminated.
-        self.taskbar_created
-            .set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
-        tray::add(self.window(), self.instance);
+        self.taskbar_created.set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
+        tray::add(self.window(), &self.tray_icon);
 
         let config = self.config.borrow().clone();
         let registered = self.register_hotkeys(&config);
@@ -157,12 +177,44 @@ impl App {
         }
     }
 
+    /// Lays the window out for `dpi`: new fonts, scaled and repositioned controls and,
+    /// if given, the new window rectangle (as suggested by `WM_DPICHANGED`).
+    pub fn apply_dpi(&self, dpi: Dpi, frame: Option<RECT>) {
+        self.dpi.set(dpi);
+        let fonts = Fonts::new(dpi);
+        let children = self.children.borrow().clone();
+        for (control, spec) in children {
+            let [x, y, width, height] = dpi.scale_rect(spec.rect);
+            // SAFETY: no pointer arguments; the control is our child.
+            unsafe { SetWindowPos(control, ptr::null_mut(), x, y, width, height, REPOSITION) };
+            controls::set_font(control, fonts.get(spec.font_role()));
+        }
+        // The old fonts are deleted only now that no control uses them any more.
+        *self.fonts.borrow_mut() = fonts;
+        if let Some(frame) = frame {
+            // SAFETY: no pointer arguments.
+            unsafe {
+                SetWindowPos(
+                    self.window(),
+                    ptr::null_mut(),
+                    frame.left,
+                    frame.top,
+                    frame.right - frame.left,
+                    frame.bottom - frame.top,
+                    REPOSITION,
+                );
+            }
+        }
+        // SAFETY: a null rectangle means the whole window.
+        unsafe { InvalidateRect(self.window(), ptr::null(), 1) };
+    }
+
     /// Handles a window message; `None` lets `DefWindowProcW` handle it.
     pub fn handle_message(&self, message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         let taskbar_created = self.taskbar_created.get();
         if taskbar_created != 0 && message == taskbar_created {
             // Explorer restarted: the icon has to be added again.
-            tray::add(self.window(), self.instance);
+            tray::add(self.window(), &self.tray_icon);
             return Some(0);
         }
         let result = match message {
@@ -172,7 +224,7 @@ impl App {
             }
             WM_DESTROY => {
                 self.unregister_hotkeys();
-                tray::remove(self.window(), self.instance);
+                tray::remove(self.window(), &self.tray_icon);
                 // SAFETY: no arguments besides the exit code.
                 unsafe { PostQuitMessage(0) };
                 0
@@ -181,29 +233,33 @@ impl App {
                 self.paint_background();
                 0
             }
+            WM_DPICHANGED => {
+                // SAFETY: for WM_DPICHANGED, lParam points to the suggested window RECT.
+                let frame = unsafe { *(lparam as *const RECT) };
+                self.apply_dpi(Dpi::new(low_word(wparam)), Some(frame));
+                0
+            }
             WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
                 let is_status = lparam as HWND == self.child(id::STATUS);
-                let color = if is_status && !self.status_ok.get() {
-                    theme::ERROR
-                } else {
-                    theme::INK
-                };
+                let color =
+                    if is_status && !self.status_ok.get() { theme::ERROR } else { theme::INK };
                 color_control(wparam as HDC, color, theme::BACKGROUND);
-                self.theme.background_brush() as LRESULT
+                self.brushes.background() as LRESULT
             }
             WM_CTLCOLOREDIT => {
                 color_control(wparam as HDC, theme::INK, theme::FIELD);
-                self.theme.field_brush() as LRESULT
+                self.brushes.field() as LRESULT
             }
             WM_DRAWITEM => {
                 // SAFETY: for WM_DRAWITEM, lParam points to a DRAWITEMSTRUCT that is
                 // valid for the duration of the message.
                 let item = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
-                self.theme.draw_button(item);
+                let font = self.fonts.borrow().get(FontRole::Body);
+                theme::draw_button(item, font, self.dpi());
                 1
             }
             WM_COMMAND => {
-                self.command(low_word(wparam));
+                self.command(low_word(wparam).cast_signed());
                 0
             }
             WM_HOTKEY => {
@@ -249,27 +305,22 @@ impl App {
     }
 
     fn create_controls(&self) {
+        let dpi = self.dpi();
         for spec in CONTROLS {
             let (class, ex_style, style): (_, WINDOW_EX_STYLE, WINDOW_STYLE) = match spec.kind {
                 ControlKind::Label(_) => (w!("STATIC"), 0, 0),
-                ControlKind::Edit => (
-                    w!("EDIT"),
-                    WS_EX_CLIENTEDGE,
-                    WS_TABSTOP | ES_AUTOHSCROLL.cast_unsigned(),
-                ),
+                ControlKind::Edit => {
+                    (w!("EDIT"), WS_EX_CLIENTEDGE, WS_TABSTOP | ES_AUTOHSCROLL.cast_unsigned())
+                }
                 ControlKind::Button => (w!("BUTTON"), 0, WS_TABSTOP | BS_OWNERDRAW.cast_unsigned()),
-                ControlKind::Checkbox => (
-                    w!("BUTTON"),
-                    0,
-                    WS_TABSTOP | BS_AUTOCHECKBOX.cast_unsigned(),
-                ),
-                ControlKind::Combo(_) => (
-                    w!("COMBOBOX"),
-                    0,
-                    WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST.cast_unsigned(),
-                ),
+                ControlKind::Checkbox => {
+                    (w!("BUTTON"), 0, WS_TABSTOP | BS_AUTOCHECKBOX.cast_unsigned())
+                }
+                ControlKind::Combo(_) => {
+                    (w!("COMBOBOX"), 0, WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST.cast_unsigned())
+                }
             };
-            let [x, y, width, height] = spec.rect.map(|value| self.dpi.scale(value));
+            let [x, y, width, height] = dpi.scale_rect(spec.rect);
             let text = to_wide(spec.text);
             // SAFETY: class and text are NUL-terminated and outlive the call; the
             // control id is passed in the HMENU slot as child windows require.
@@ -289,11 +340,8 @@ impl App {
                     ptr::null(),
                 )
             };
-            let role = match spec.kind {
-                ControlKind::Label(role) => role,
-                _ => FontRole::Body,
-            };
-            controls::set_font(control, self.theme.font(role));
+            let font = self.fonts.borrow().get(spec.font_role());
+            controls::set_font(control, font);
             match spec.kind {
                 ControlKind::Edit => controls::limit_text(control, EDIT_LIMIT),
                 ControlKind::Checkbox => {
@@ -309,6 +357,7 @@ impl App {
                 }
                 ControlKind::Label(_) | ControlKind::Button => {}
             }
+            self.children.borrow_mut().push((control, spec));
         }
         self.populate();
     }
@@ -353,11 +402,7 @@ impl App {
     fn show_settings(&self, focus_recording: bool) {
         self.populate();
         self.show(SW_RESTORE);
-        let focus = if focus_recording {
-            id::RECORDING_HOTKEY
-        } else {
-            id::SCREENSHOT_HOTKEY
-        };
+        let focus = if focus_recording { id::RECORDING_HOTKEY } else { id::SCREENSHOT_HOTKEY };
         // SAFETY: no pointer arguments.
         unsafe {
             SetForegroundWindow(self.window());
@@ -406,8 +451,8 @@ impl App {
         self.register_hotkeys(saved);
     }
 
-    /// "Speichern": validate, re-register hotkeys, update autostart, write the file.
-    /// Every failure rolls back to the previous settings.
+    /// "Speichern" ("Save"): validate, re-register hotkeys, update autostart, write
+    /// the file. Every failure rolls back to the previous settings.
     fn save(&self) {
         let saved = self.config.borrow().clone();
         let draft = self.read_controls();
@@ -446,7 +491,10 @@ impl App {
 
     fn command(&self, control: i32) {
         match control {
-            id::SAVE => self.save(),
+            // Enter in the dialog: same as "Speichern" ("Save").
+            IDOK | id::SAVE => self.save(),
+            // Escape (sent by IsDialogMessage unless a drop-down list is open).
+            IDCANCEL => self.show(SW_HIDE),
             id::BROWSE_SCREENSHOT_FOLDER => self.browse(id::SCREENSHOT_FOLDER),
             id::BROWSE_RECORDING_FOLDER => self.browse(id::RECORDING_FOLDER),
             id::OPEN_SCREENSHOT_FOLDER => self.open_folder(CaptureMode::Screenshot),
@@ -465,32 +513,27 @@ impl App {
         }
     }
 
-    /// Opens the saved output folder in Explorer.
+    /// Opens the saved output folder in Explorer, if it exists.
     fn open_folder(&self, mode: CaptureMode) {
         let folder = {
             let config = self.config.borrow();
-            match mode {
-                CaptureMode::Screenshot => to_wide(&config.screenshot_folder),
-                CaptureMode::Recording => to_wide(&config.recording_folder),
-            }
+            PathBuf::from(match mode {
+                CaptureMode::Screenshot => &config.screenshot_folder,
+                CaptureMode::Recording => &config.recording_folder,
+            })
         };
-        // SAFETY: verb and path are NUL-terminated; null parameters are allowed.
-        unsafe {
-            ShellExecuteW(
-                self.window(),
-                w!("open"),
-                folder.as_ptr(),
-                ptr::null(),
-                ptr::null(),
-                SW_SHOWNORMAL,
-            );
+        if !folder.is_dir() {
+            self.set_status(status::FOLDER_MISSING, false);
+            return;
         }
+        // Explorer reports its own errors; nothing useful to add here.
+        let _ = explorer_command(&folder).spawn();
     }
 
     /// Hides the window and hands the capture to the engine.
     fn capture(&self, mode: CaptureMode) {
         self.show(SW_HIDE);
-        if !engine::start_capture(mode, &self.exe_dir) {
+        if !self.launcher.start_capture(mode) {
             self.show_settings(mode == CaptureMode::Recording);
             self.set_status(status::ENGINE_FAILED, false);
         }
@@ -508,19 +551,20 @@ impl App {
         unsafe { DestroyWindow(self.window()) };
     }
 
-    /// Stores audio options changed in the engine's recording toolbar.
+    /// Stores audio options changed in the engine's recording toolbar. The new values
+    /// are only adopted if they could be saved; the check boxes show what is in effect.
     fn apply_audio_settings(&self, audio: AudioSettings) {
-        let config = {
-            let mut config = self.config.borrow_mut();
-            config.microphone = audio.microphone;
-            config.system_audio = audio.system_audio;
-            config.show_clicks = audio.show_clicks;
-            config.clone()
-        };
-        if self.store.save(&config).is_err() {
+        let mut updated = self.config.borrow().clone();
+        updated.microphone = audio.microphone;
+        updated.system_audio = audio.system_audio;
+        updated.show_clicks = audio.show_clicks;
+        if self.store.save(&updated).is_ok() {
+            *self.config.borrow_mut() = updated;
+        } else {
             self.set_status(status::AUDIO_SAVE_FAILED, false);
         }
-        self.show_audio_settings(&config);
+        let current = self.config.borrow().clone();
+        self.show_audio_settings(&current);
     }
 
     fn tray_event(&self, event: LPARAM) {
@@ -544,7 +588,7 @@ impl App {
         // BeginPaint/EndPaint pair.
         unsafe {
             let dc = BeginPaint(self.window(), &raw mut paint);
-            FillRect(dc, &raw const paint.rcPaint, self.theme.background_brush());
+            FillRect(dc, &raw const paint.rcPaint, self.brushes.background());
             EndPaint(self.window(), &raw const paint);
         }
     }
@@ -559,7 +603,51 @@ fn color_control(dc: HDC, text: u32, background: u32) {
     }
 }
 
-/// `LOWORD(wParam)`: the control id of a `WM_COMMAND`.
-fn low_word(value: WPARAM) -> i32 {
-    i32::try_from(value & 0xFFFF).unwrap_or_default()
+/// `LOWORD(wParam)`, e.g. the control id of a `WM_COMMAND` or the DPI of a
+/// `WM_DPICHANGED`.
+fn low_word(value: WPARAM) -> u32 {
+    u32::try_from(value & 0xFFFF).unwrap_or_default()
+}
+
+/// `explorer.exe "<folder>"` from the Windows directory.
+fn explorer_command(folder: &Path) -> Command {
+    let explorer = env::var_os("SystemRoot").map_or_else(
+        || PathBuf::from("explorer.exe"),
+        |root| Path::new(&root).join("explorer.exe"),
+    );
+    let mut command = Command::new(explorer);
+    command.raw_arg(explorer_argument(folder));
+    command
+}
+
+/// Explorer parses its command line itself (a backslash before a quote is not an
+/// escape), so the folder is quoted verbatim instead of with `std`'s MSVC rules.
+fn explorer_argument(folder: &Path) -> OsString {
+    let mut argument = OsString::from("\"");
+    argument.push(folder);
+    argument.push("\"");
+    argument
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn low_word_extracts_the_low_16_bits() {
+        assert_eq!(low_word(0x0001_0090), 0x90);
+        assert_eq!(low_word(0x00C0_00C0), 192);
+        assert_eq!(low_word(usize::MAX), 0xFFFF);
+    }
+
+    #[test]
+    fn explorer_gets_the_folder_quoted_verbatim() {
+        assert_eq!(
+            explorer_argument(Path::new(r"C:\Users\Ada\Bilder")),
+            r#""C:\Users\Ada\Bilder""#
+        );
+        assert_eq!(explorer_argument(Path::new(r"D:\")), r#""D:\""#);
+        let command = explorer_command(Path::new(r"C:\Videos"));
+        assert!(Path::new(command.get_program()).ends_with("explorer.exe"));
+    }
 }

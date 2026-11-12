@@ -2,39 +2,41 @@
 //! API and replacing it atomically.
 //!
 //! The file is UTF-16LE with a BOM. It is shared with the capture engine, which locates
-//! it the same way (or through `MOSAIK_CAPTURE_TEST_CONFIG` in preview mode).
+//! it the same way (or through [`PREVIEW_CONFIG_VAR`] in preview mode).
 
-use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::{env, ptr};
 
 use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
+use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::WindowsProgramming::{
     GetPrivateProfileIntW, GetPrivateProfileStringW,
 };
 use windows_sys::Win32::UI::Shell::{
-    CSIDL_MYPICTURES, CSIDL_MYVIDEO, SHGFP_TYPE_CURRENT, SHGetFolderPathW,
+    FOLDERID_Pictures, FOLDERID_Videos, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
+use windows_sys::core::GUID;
 
 use crate::config::{Config, DefaultFolders, ProfileSource, SECTION};
-use crate::wide::{from_wide, to_wide};
+use crate::wide::{from_wide, from_wide_ptr, to_wide};
 
 /// Environment variable through which the engine (started by us) finds a preview
 /// settings file.
 pub const PREVIEW_CONFIG_VAR: &str = "MOSAIK_CAPTURE_TEST_CONFIG";
 /// Folder below `%LOCALAPPDATA%` that holds the settings.
-const APP_FOLDER: &str = "Mosaiks-Aufnahme";
+const APP_FOLDER: &str = "MosaikCapture";
+/// Folder used by earlier versions; its settings are copied over once.
+const LEGACY_APP_FOLDER: &str = "Mosaiks-Aufnahme";
 /// File name of the settings.
 const FILE_NAME: &str = "settings.ini";
 /// Byte-order mark that makes the profile API treat the file as UTF-16LE.
 const UTF16LE_BOM: [u8; 2] = [0xFF, 0xFE];
-/// `MAX_PATH`, the buffer size `SHGetFolderPathW` requires.
-const MAX_PATH: usize = 260;
 
 /// The settings file and the operations on it.
 #[derive(Clone, Debug)]
@@ -43,23 +45,16 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    /// Uses `%LOCALAPPDATA%\Mosaiks-Aufnahme\settings.ini`, creating the folder if needed.
+    /// Uses `%LOCALAPPDATA%\MosaikCapture\settings.ini`, creating the folder and
+    /// migrating the settings of earlier versions if needed.
     pub fn user_default() -> Self {
-        let folder = default_folder(&env::var_os("LOCALAPPDATA").unwrap_or_default());
-        // Like the original, ignore errors: if the folder cannot be created, saving
-        // fails later and is reported in the window.
-        let _ = fs::create_dir(&folder);
-        Self::at(folder.join(FILE_NAME))
+        let local_app_data = env::var_os("LOCALAPPDATA").unwrap_or_default();
+        Self::at(prepare_user_folder(Path::new(&local_app_data)))
     }
 
     /// Uses an explicit file, e.g. for `--preview`.
     pub fn at(path: PathBuf) -> Self {
         Self { path }
-    }
-
-    /// The settings file.
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Reads the settings; missing keys (or a missing file) yield defaults.
@@ -73,41 +68,53 @@ impl SettingsStore {
     }
 }
 
-/// `%LOCALAPPDATA%\Mosaiks-Aufnahme` for the given `LOCALAPPDATA` value.
-fn default_folder(local_app_data: &std::ffi::OsStr) -> PathBuf {
-    Path::new(local_app_data).join(APP_FOLDER)
+/// Creates `<local_app_data>\MosaikCapture` and, once, copies the settings of
+/// earlier versions into it. Returns the settings file.
+///
+/// Errors are ignored on purpose: without the folder, saving fails later and the
+/// window reports it; a failed migration just means starting with defaults.
+fn prepare_user_folder(local_app_data: &Path) -> PathBuf {
+    let folder = local_app_data.join(APP_FOLDER);
+    let file = folder.join(FILE_NAME);
+    let _ = fs::create_dir(&folder);
+    let legacy = local_app_data.join(LEGACY_APP_FOLDER).join(FILE_NAME);
+    if let Some(source) = migration_source(&file, &legacy, Path::is_file) {
+        // The old file stays where it is, so downgrading keeps working.
+        let _ = fs::copy(source, &file);
+    }
+    file
+}
+
+/// The legacy file to copy: only if the new file is missing and the legacy one exists.
+fn migration_source<'a>(
+    file: &Path,
+    legacy: &'a Path,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<&'a Path> {
+    (!exists(file) && exists(legacy)).then_some(legacy)
 }
 
 /// Default output folders below the user's "Pictures" and "Videos" folders.
 pub fn known_default_folders() -> DefaultFolders {
-    DefaultFolders::new(
-        &known_folder(CSIDL_MYPICTURES),
-        &known_folder(CSIDL_MYVIDEO),
-    )
+    DefaultFolders::new(&known_folder(&FOLDERID_Pictures), &known_folder(&FOLDERID_Videos))
 }
 
-/// Looks up a shell folder; an empty string if that fails.
-fn known_folder(csidl: u32) -> String {
-    let mut buffer = [0u16; MAX_PATH];
-    let Ok(csidl) = i32::try_from(csidl) else {
-        return String::new();
-    };
-    // SAFETY: `buffer` holds MAX_PATH characters as the API requires; null window and
-    // token handles are documented as valid.
+/// Looks up a known folder (any length); an empty string if that fails.
+fn known_folder(id: &GUID) -> String {
+    let mut path = ptr::null_mut();
+    // SAFETY: `id` is a valid GUID; `path` receives a COM-allocated string.
     let result = unsafe {
-        SHGetFolderPathW(
-            std::ptr::null_mut(),
-            csidl,
-            std::ptr::null_mut(),
-            // The flag is a small enum value; the API takes it as u32.
-            SHGFP_TYPE_CURRENT.cast_unsigned(),
-            buffer.as_mut_ptr(),
-        )
+        SHGetKnownFolderPath(id, KF_FLAG_DEFAULT.cast_unsigned(), ptr::null_mut(), &raw mut path)
     };
-    if result < 0 {
-        return String::new();
-    }
-    from_wide(&buffer)
+    let folder = if result >= 0 {
+        // SAFETY: on success `path` is a NUL-terminated string.
+        unsafe { from_wide_ptr(path) }
+    } else {
+        String::new()
+    };
+    // SAFETY: the string must be freed with the COM allocator, even on failure.
+    unsafe { CoTaskMemFree(path.cast()) };
+    folder
 }
 
 /// Read access to one INI file via `GetPrivateProfile*W`, which handles encodings,
@@ -121,10 +128,7 @@ pub struct IniFile {
 impl IniFile {
     /// Opens (lazily) the file at `path`.
     pub fn new(path: &Path) -> Self {
-        Self {
-            path: to_wide(path),
-            section: to_wide(SECTION),
-        }
+        Self { path: to_wide(path), section: to_wide(SECTION) }
     }
 }
 
@@ -171,8 +175,8 @@ impl ProfileSource for IniFile {
     }
 }
 
-/// Writes `contents` as UTF-16LE with BOM to `<path>.new`, then atomically replaces
-/// `path` with it (write-through, so the rename hits the disk before returning).
+/// Writes `contents` as UTF-16LE with BOM to `<path>.new`, flushes it to disk, then
+/// atomically replaces `path` with it (write-through, so the rename is durable, too).
 pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     let mut temp = OsString::from(path);
     temp.push(".new");
@@ -182,22 +186,17 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     bytes.extend_from_slice(&UTF16LE_BOM);
     bytes.extend(contents.encode_utf16().flat_map(u16::to_le_bytes));
 
-    OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .share_mode(0)
-        .open(&temp)?
-        .write_all(&bytes)?;
+    let mut file =
+        OpenOptions::new().write(true).create(true).truncate(true).share_mode(0).open(&temp)?;
+    file.write_all(&bytes)?;
+    // Flush the contents before the rename, so a crash cannot leave an empty file.
+    file.sync_all()?;
+    drop(file);
 
     let (from, to) = (to_wide(&temp), to_wide(path));
     // SAFETY: both paths are NUL-terminated and outlive the call.
     let moved = unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
+        MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
     };
     if moved == 0 {
         return Err(io::Error::last_os_error());
@@ -249,12 +248,50 @@ mod tests {
     }
 
     #[test]
-    fn default_folder_is_below_local_app_data() {
-        let folder = default_folder("C:\\Users\\Ada\\AppData\\Local".as_ref());
-        assert_eq!(
-            folder,
-            Path::new("C:\\Users\\Ada\\AppData\\Local\\Mosaiks-Aufnahme")
-        );
+    fn migration_decision() {
+        let (file, legacy) = (Path::new("new.ini"), Path::new("old.ini"));
+        let only = |present: &'static [&'static str]| {
+            move |path: &Path| present.iter().any(|p| path == Path::new(p))
+        };
+        assert_eq!(migration_source(file, legacy, only(&["old.ini"])), Some(legacy));
+        assert_eq!(migration_source(file, legacy, only(&["new.ini", "old.ini"])), None);
+        assert_eq!(migration_source(file, legacy, only(&["new.ini"])), None);
+        assert_eq!(migration_source(file, legacy, only(&[])), None);
+    }
+
+    #[test]
+    fn user_folder_is_created_and_legacy_settings_are_copied_once() {
+        let dir = TempDir::new();
+        let legacy = dir.0.join("Mosaiks-Aufnahme").join("settings.ini");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        write_utf16(&legacy, "[capture]\r\nfps=30\r\n");
+
+        let file = prepare_user_folder(&dir.0);
+        assert_eq!(file, dir.0.join("MosaikCapture").join("settings.ini"));
+        assert_eq!(fs::read(&file).unwrap(), fs::read(&legacy).unwrap());
+        assert!(legacy.exists(), "the old file is kept");
+
+        // A second start must not overwrite newer settings with the legacy file.
+        write_utf16(&file, "[capture]\r\nfps=60\r\n");
+        prepare_user_folder(&dir.0);
+        assert_eq!(IniFile::new(&file).int("fps", 0), 60);
+    }
+
+    #[test]
+    fn user_folder_without_legacy_settings() {
+        let dir = TempDir::new();
+        let file = prepare_user_folder(&dir.0);
+        assert!(file.parent().unwrap().is_dir());
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn known_folders_resolve() {
+        let folders = known_default_folders();
+        assert!(folders.screenshots.ends_with(r"\Mosaiks-Screenshots"));
+        assert!(folders.recordings.ends_with(r"\Mosaiks-Aufnahmen"));
+        assert!(Path::new(&folders.screenshots).is_absolute(), "{}", folders.screenshots);
+        assert!(Path::new(&folders.recordings).is_absolute(), "{}", folders.recordings);
     }
 
     #[test]
@@ -283,10 +320,7 @@ mod tests {
         SettingsStore::at(path.clone()).save(&config).unwrap();
         let loaded = Config::load(&IniFile::new(&path), &sample_folders());
         assert_eq!(loaded, config);
-        assert!(
-            !dir.file("settings.ini.new").exists(),
-            "temp file is moved away"
-        );
+        assert!(!dir.file("settings.ini.new").exists(), "temp file is moved away");
     }
 
     #[test]
@@ -297,10 +331,8 @@ mod tests {
         write_atomic(&path, &config.to_ini()).unwrap();
         let bytes = fs::read(&path).unwrap();
         assert_eq!(bytes[..2], UTF16LE_BOM);
-        let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
+        let units: Vec<u16> =
+            bytes[2..].chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
         assert_eq!(String::from_utf16(&units).unwrap(), config.to_ini());
     }
 
@@ -313,10 +345,7 @@ mod tests {
         let mut config = Config::defaults(&sample_folders());
         config.countdown = Countdown::Off;
         store.save(&config).unwrap();
-        assert_eq!(
-            Config::load(&IniFile::new(&path), &sample_folders()),
-            config
-        );
+        assert_eq!(Config::load(&IniFile::new(&path), &sample_folders()), config);
         assert_eq!(IniFile::new(&path).string("extra", "gone"), "gone");
     }
 

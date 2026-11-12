@@ -86,10 +86,7 @@ impl Action {
 
 /// Parses the arguments that follow the program name.
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Command {
-    let mut invocation = Invocation {
-        action: Action::default(),
-        preview: None,
-    };
+    let mut invocation = Invocation { action: Action::default(), preview: None };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if arg == "--self-test" {
@@ -125,10 +122,7 @@ mod tests {
     fn no_arguments_show_settings() {
         assert_eq!(
             run(&[]),
-            Command::Run(Invocation {
-                action: Action::ShowSettings,
-                preview: None
-            })
+            Command::Run(Invocation { action: Action::ShowSettings, preview: None })
         );
     }
 
@@ -144,14 +138,8 @@ mod tests {
 
     #[test]
     fn last_action_wins_and_unknown_args_are_ignored() {
-        assert_eq!(
-            action(&["--screenshot", "--recording"]),
-            Action::ToggleRecording
-        );
-        assert_eq!(
-            action(&["--probe", "--whatever", "--background"]),
-            Action::Background
-        );
+        assert_eq!(action(&["--screenshot", "--recording"]), Action::ToggleRecording);
+        assert_eq!(action(&["--probe", "--whatever", "--background"]), Action::Background);
         assert_eq!(action(&["--Background", "RECORDING"]), Action::ShowSettings);
     }
 
@@ -159,10 +147,7 @@ mod tests {
     fn self_test_wins_anywhere() {
         assert_eq!(run(&["--self-test"]), Command::SelfTest);
         assert_eq!(run(&["--quit", "--self-test"]), Command::SelfTest);
-        assert_eq!(
-            run(&["--preview", "a.ini", "--self-test"]),
-            Command::SelfTest
-        );
+        assert_eq!(run(&["--preview", "a.ini", "--self-test"]), Command::SelfTest);
     }
 
     #[test]
@@ -187,10 +172,7 @@ mod tests {
     fn preview_without_path_is_ignored() {
         assert_eq!(
             run(&["--preview"]),
-            Command::Run(Invocation {
-                action: Action::ShowSettings,
-                preview: None
-            })
+            Command::Run(Invocation { action: Action::ShowSettings, preview: None })
         );
     }
 
@@ -198,15 +180,9 @@ mod tests {
     fn forwarded_messages() {
         assert_eq!(Action::Background.message(), None);
         assert_eq!(Action::ShowSettings.message(), Some(ipc::SHOW_SETTINGS));
-        assert_eq!(
-            Action::ShowRecordingSettings.message(),
-            Some(ipc::SHOW_RECORDING_SETTINGS)
-        );
+        assert_eq!(Action::ShowRecordingSettings.message(), Some(ipc::SHOW_RECORDING_SETTINGS));
         assert_eq!(Action::TakeScreenshot.message(), Some(ipc::TAKE_SCREENSHOT));
-        assert_eq!(
-            Action::ToggleRecording.message(),
-            Some(ipc::TOGGLE_RECORDING)
-        );
+        assert_eq!(Action::ToggleRecording.message(), Some(ipc::TOGGLE_RECORDING));
         assert_eq!(Action::Quit.message(), Some(ipc::QUIT));
         assert_eq!(Action::Probe.message(), Some(ipc::PROBE));
     }

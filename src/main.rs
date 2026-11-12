@@ -1,4 +1,4 @@
-//! Mosaiks Aufnahme: a small tray app that owns the global screenshot and recording
+//! Mosaik Capture host: a small tray app that owns the global screenshot and recording
 //! hotkeys, shows the settings window and starts the capture engine.
 //!
 //! Only one instance runs per session. Starting the executable again forwards the
@@ -18,24 +18,37 @@ mod store;
 mod ui;
 mod wide;
 
+/// The resource serialiser of `build.rs`, compiled here so `cargo test` covers it.
+#[cfg(test)]
+#[path = "../build/rsrc.rs"]
+mod rsrc;
+
 use std::process::ExitCode;
 
 use cli::{Action, Command, Invocation};
 use single_instance::{Forwarded, InstanceLock};
 
-/// Process exit codes. Scripts (the QA tooling, the launcher) rely on these values.
+/// Process exit codes. Scripts (the build and QA tooling, the launcher) rely on these
+/// values; 1 and 2 are left to the Rust runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 enum Exit {
+    /// Done; for a forwarded action: the running instance accepted it.
     Success = 0,
+    /// `--self-test` found a failing check.
     SelfTestFailed = 3,
+    /// The single-instance mutex could not be created.
     MutexUnavailable = 4,
-    /// `--probe` found no healthy instance.
+    /// `--probe` found no healthy instance (none running, or a hotkey not registered).
     ProbeFailed = 5,
     /// Another instance holds the mutex but its window never appeared.
     PrimaryWithoutWindow = 6,
+    /// The window class could not be registered.
     WindowClassFailed = 7,
+    /// The window could not be created.
     WindowCreationFailed = 8,
+    /// The running instance did not answer the forwarded action (hung or exiting).
+    ForwardFailed = 9,
 }
 
 impl From<Exit> for ExitCode {
@@ -65,15 +78,7 @@ fn run(invocation: &Invocation) -> Exit {
     let action = invocation.action;
 
     if lock.already_running {
-        return match single_instance::forward(action) {
-            Forwarded::NoWindow => Exit::PrimaryWithoutWindow,
-            Forwarded::Delivered(response)
-                if action == Action::Probe && response != ipc::ProbeResponse::HEALTHY =>
-            {
-                Exit::ProbeFailed
-            }
-            Forwarded::Delivered(_) => Exit::Success,
-        };
+        return forwarded_exit(action, single_instance::forward(action));
     }
 
     match action {
@@ -85,6 +90,20 @@ fn run(invocation: &Invocation) -> Exit {
             Err(ui::StartupError::RegisterClass) => Exit::WindowClassFailed,
             Err(ui::StartupError::CreateWindow) => Exit::WindowCreationFailed,
         },
+    }
+}
+
+/// Maps the outcome of forwarding `action` to the running instance to an exit code.
+fn forwarded_exit(action: Action, outcome: Forwarded) -> Exit {
+    match outcome {
+        Forwarded::NoWindow => Exit::PrimaryWithoutWindow,
+        Forwarded::Failed => Exit::ForwardFailed,
+        Forwarded::Delivered(response)
+            if action == Action::Probe && response != ipc::ProbeResponse::HEALTHY =>
+        {
+            Exit::ProbeFailed
+        }
+        Forwarded::Delivered(_) => Exit::Success,
     }
 }
 
@@ -102,9 +121,26 @@ mod tests {
             (Exit::PrimaryWithoutWindow, 6),
             (Exit::WindowClassFailed, 7),
             (Exit::WindowCreationFailed, 8),
+            (Exit::ForwardFailed, 9),
         ];
         for (exit, code) in codes {
             assert_eq!(exit as u8, code);
         }
+    }
+
+    #[test]
+    fn forwarding_outcomes() {
+        use ipc::ProbeResponse;
+        let healthy = Forwarded::Delivered(ProbeResponse::HEALTHY);
+        assert_eq!(forwarded_exit(Action::Probe, healthy), Exit::Success);
+        assert_eq!(forwarded_exit(Action::Probe, Forwarded::Delivered(3)), Exit::ProbeFailed);
+        assert_eq!(forwarded_exit(Action::Probe, Forwarded::Failed), Exit::ForwardFailed);
+        assert_eq!(forwarded_exit(Action::Quit, Forwarded::Delivered(1)), Exit::Success);
+        assert_eq!(forwarded_exit(Action::Quit, Forwarded::Failed), Exit::ForwardFailed);
+        assert_eq!(forwarded_exit(Action::Background, Forwarded::Delivered(0)), Exit::Success);
+        assert_eq!(
+            forwarded_exit(Action::TakeScreenshot, Forwarded::NoWindow),
+            Exit::PrimaryWithoutWindow
+        );
     }
 }

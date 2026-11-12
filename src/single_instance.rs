@@ -18,7 +18,7 @@ use crate::ipc;
 use crate::wide::to_wide;
 
 /// Session-local mutex that marks the primary instance.
-const MUTEX_NAME: &str = r"Local\MosaiksCaptureRust";
+const MUTEX_NAME: &str = r"Local\MosaikCapture.Host";
 /// How often to look for the primary's window while it may still be starting up.
 const FIND_ATTEMPTS: u32 = 200;
 /// Pause between two lookups.
@@ -45,10 +45,7 @@ impl InstanceLock {
         if handle.is_null() {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self {
-            handle,
-            already_running,
-        })
+        Ok(Self { handle, already_running })
     }
 }
 
@@ -64,6 +61,8 @@ impl Drop for InstanceLock {
 pub enum Forwarded {
     /// The primary's window never appeared.
     NoWindow,
+    /// The primary did not handle the message (hung, timed out or gone meanwhile).
+    Failed,
     /// The action was delivered (or needed no message); carries the reply.
     Delivered(isize),
 }
@@ -92,20 +91,21 @@ pub fn forward(action: Action) -> Forwarded {
         AllowSetForegroundWindow(pid);
     }
 
+    let Some(message) = action.message() else {
+        return Forwarded::Delivered(0);
+    };
     let mut response = 0usize;
-    if let Some(message) = action.message() {
-        // SAFETY: `response` outlives the call; see above for the handle.
-        unsafe {
-            SendMessageTimeoutW(
-                window,
-                message,
-                0,
-                0,
-                SMTO_ABORTIFHUNG,
-                FORWARD_TIMEOUT_MS,
-                &raw mut response,
-            );
-        }
-    }
-    Forwarded::Delivered(response.cast_signed())
+    // SAFETY: `response` outlives the call; see above for the handle.
+    let delivered = unsafe {
+        SendMessageTimeoutW(
+            window,
+            message,
+            0,
+            0,
+            SMTO_ABORTIFHUNG,
+            FORWARD_TIMEOUT_MS,
+            &raw mut response,
+        )
+    } != 0;
+    if delivered { Forwarded::Delivered(response.cast_signed()) } else { Forwarded::Failed }
 }

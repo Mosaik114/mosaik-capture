@@ -12,11 +12,27 @@ pub fn to_wide(text: impl AsRef<OsStr>) -> Vec<u16> {
 ///
 /// Unpaired surrogates are replaced with U+FFFD.
 pub fn from_wide(units: &[u16]) -> String {
-    let end = units
-        .iter()
-        .position(|&unit| unit == 0)
-        .unwrap_or(units.len());
+    let end = units.iter().position(|&unit| unit == 0).unwrap_or(units.len());
     String::from_utf16_lossy(&units[..end])
+}
+
+/// Decodes a NUL-terminated UTF-16 string returned by an API (e.g. a `PWSTR`).
+/// A null pointer yields an empty string.
+///
+/// # Safety
+///
+/// `ptr` must be null or point to a readable, NUL-terminated UTF-16 string.
+pub unsafe fn from_wide_ptr(ptr: *const u16) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let mut len = 0;
+    // SAFETY: the caller guarantees a terminator, so every index up to it is readable.
+    while unsafe { *ptr.add(len) } != 0 {
+        len += 1;
+    }
+    // SAFETY: the `len` units before the terminator were just read.
+    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 /// Copies `text` into a fixed-size buffer such as `NOTIFYICONDATAW::szTip`,
@@ -54,6 +70,15 @@ mod tests {
         let units = [u16::from(b'a'), 0, u16::from(b'b')];
         assert_eq!(from_wide(&units), "a");
         assert_eq!(from_wide(&[u16::from(b'x')]), "x");
+    }
+
+    #[test]
+    fn from_wide_ptr_reads_up_to_terminator() {
+        let text = to_wide("Grüße");
+        // SAFETY: `text` is NUL-terminated.
+        assert_eq!(unsafe { from_wide_ptr(text.as_ptr()) }, "Grüße");
+        // SAFETY: null is explicitly allowed.
+        assert_eq!(unsafe { from_wide_ptr(std::ptr::null()) }, "");
     }
 
     #[test]

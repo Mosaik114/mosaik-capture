@@ -1,10 +1,12 @@
-//! Parsing of user-entered hotkeys such as `Shift+Alt+4` or `Strg + Leertaste`.
+//! Parsing of user-entered hotkeys such as `Shift+Alt+4` or `Strg + Leertaste`
+//! (German for Ctrl + Space).
 //!
 //! The format is a `+`-separated list of tokens. Spaces are ignored everywhere and
 //! tokens are matched case-insensitively. A hotkey needs at least one modifier and
 //! exactly one key:
 //!
-//! * modifiers: `Shift`/`Umschalt`, `Alt`, `Ctrl`/`Control`/`Strg`
+//! * modifiers: `Shift`/`Umschalt`, `Alt`, `Ctrl`/`Control`/`Strg` (German keyboard
+//!   labels are accepted next to the English ones)
 //! * keys: a single letter `A`–`Z` or digit `0`–`9`, `Space`/`Leertaste`, `F1`–`F24`
 
 use std::fmt;
@@ -185,19 +187,13 @@ mod tests {
     use crate::self_test::HOTKEY_CASES;
 
     fn key(modifiers: u32, key: u16) -> Hotkey {
-        Hotkey {
-            modifiers: Modifiers(modifiers),
-            key,
-        }
+        Hotkey { modifiers: Modifiers(modifiers), key }
     }
 
     #[test]
     fn self_test_cases_hold() {
         for &(text, expected) in HOTKEY_CASES {
-            let parsed = text
-                .parse::<Hotkey>()
-                .ok()
-                .map(|k| (k.modifiers.bits(), k.key));
+            let parsed = text.parse::<Hotkey>().ok().map(|k| (k.modifiers.bits(), k.key));
             assert_eq!(parsed, expected, "{text:?}");
         }
     }
@@ -213,22 +209,13 @@ mod tests {
     #[test]
     fn all_modifier_spellings() {
         for text in ["Shift+X", "Umschalt+X", "SHIFT+x", "umschalt+x"] {
-            assert_eq!(
-                text.parse::<Hotkey>().map(|k| k.modifiers),
-                Ok(Modifiers::SHIFT)
-            );
+            assert_eq!(text.parse::<Hotkey>().map(|k| k.modifiers), Ok(Modifiers::SHIFT));
         }
         for text in ["Ctrl+X", "Control+X", "Strg+X", "STRG+x"] {
-            assert_eq!(
-                text.parse::<Hotkey>().map(|k| k.modifiers),
-                Ok(Modifiers::CONTROL)
-            );
+            assert_eq!(text.parse::<Hotkey>().map(|k| k.modifiers), Ok(Modifiers::CONTROL));
         }
         let all = "Strg+Alt+Umschalt+K".parse::<Hotkey>().unwrap();
-        assert_eq!(
-            all.modifiers,
-            Modifiers::ALT | Modifiers::CONTROL | Modifiers::SHIFT
-        );
+        assert_eq!(all.modifiers, Modifiers::ALT | Modifiers::CONTROL | Modifiers::SHIFT);
     }
 
     #[test]
@@ -253,37 +240,20 @@ mod tests {
         assert_eq!("Alt+f12".parse(), Ok(key(MOD_ALT, VK_F1 + 11)));
         assert_eq!("Alt+F07".parse(), Ok(key(MOD_ALT, VK_F1 + 6)));
         assert_eq!("Alt+F".parse(), Ok(key(MOD_ALT, u16::from(b'F'))));
-        for text in [
-            "Alt+F0",
-            "Alt+F25",
-            "Alt+F1x",
-            "Alt+Fx",
-            "Alt+F-1",
-            "Alt+F99999999999",
-        ] {
-            assert_eq!(
-                text.parse::<Hotkey>(),
-                Err(ParseHotkeyError::UnknownKey),
-                "{text:?}"
-            );
+        for text in ["Alt+F0", "Alt+F25", "Alt+F1x", "Alt+Fx", "Alt+F-1", "Alt+F99999999999"] {
+            assert_eq!(text.parse::<Hotkey>(), Err(ParseHotkeyError::UnknownKey), "{text:?}");
         }
     }
 
     #[test]
     fn spaces_are_ignored_everywhere() {
-        assert_eq!(
-            " Sh ift + A lt + 4 ".parse(),
-            Ok(key(MOD_SHIFT | MOD_ALT, u16::from(b'4')))
-        );
+        assert_eq!(" Sh ift + A lt + 4 ".parse(), Ok(key(MOD_SHIFT | MOD_ALT, u16::from(b'4'))));
         assert_eq!("Ctrl + Leer taste".parse(), Ok(key(MOD_CONTROL, VK_SPACE)));
     }
 
     #[test]
     fn tabs_are_not_whitespace() {
-        assert_eq!(
-            "Alt+\t4".parse::<Hotkey>(),
-            Err(ParseHotkeyError::UnknownKey)
-        );
+        assert_eq!("Alt+\t4".parse::<Hotkey>(), Err(ParseHotkeyError::UnknownKey));
     }
 
     #[test]
@@ -318,10 +288,7 @@ mod tests {
         let longest = format!("Alt+F{}", "0".repeat(MAX_TOKEN_LEN - 2) + "1");
         assert_eq!(longest.parse(), Ok(key(MOD_ALT, VK_F1)));
         let too_long = format!("Alt+F{}", "0".repeat(MAX_TOKEN_LEN - 1) + "1");
-        assert_eq!(
-            too_long.parse::<Hotkey>(),
-            Err(ParseHotkeyError::TokenTooLong)
-        );
+        assert_eq!(too_long.parse::<Hotkey>(), Err(ParseHotkeyError::TokenTooLong));
     }
 
     #[test]

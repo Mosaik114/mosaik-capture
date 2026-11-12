@@ -1,24 +1,25 @@
 //! User-visible German texts (except control labels, which live in the layout table).
+//! Each doc comment says what the text means in English.
 
-/// Title of the settings window.
+/// Title of the settings window ("Mosaiks Aufnahme – Settings").
 pub const WINDOW_TITLE: &str = "Mosaiks Aufnahme – Einstellungen";
-/// Tooltip of the notification-area icon.
+/// Tooltip of the notification-area icon ("… – screenshot and screen recording").
 pub const TRAY_TOOLTIP: &str = "Mosaiks Aufnahme – Screenshot und Bildschirmaufnahme";
-/// Title of the folder picker.
+/// Title of the folder picker ("Choose a folder").
 pub const PICK_FOLDER_TITLE: &str = "Speicherordner auswählen";
 
-/// Tray menu: take a screenshot.
+/// Tray menu: "Take screenshot".
 pub const MENU_SCREENSHOT: &str = "Screenshot erstellen";
-/// Tray menu: start or stop a recording.
+/// Tray menu: "Start / stop recording".
 pub const MENU_RECORDING: &str = "Aufnahme starten / beenden";
-/// Tray menu: open the settings.
+/// Tray menu: "Settings".
 pub const MENU_SETTINGS: &str = "Einstellungen";
-/// Tray menu: quit.
+/// Tray menu: "Quit".
 pub const MENU_QUIT: &str = "Beenden";
 
 /// Status messages shown below the buttons.
 pub mod status {
-    /// Initial status.
+    /// Initial status ("Ready.").
     pub const READY: &str = "Bereit.";
     /// Settings saved successfully.
     pub const SAVED: &str = "Gespeichert. Beide Tastenkürzel sind aktiv.";
@@ -42,6 +43,8 @@ pub mod status {
     pub const AUDIO_SAVE_FAILED: &str = "Audioeinstellungen konnten nicht gespeichert werden.";
     /// The engine could not be reached or started.
     pub const ENGINE_FAILED: &str = "Das Aufnahmeprogramm konnte nicht gestartet werden.";
+    /// "Open folder" was clicked, but the folder has not been created yet.
+    pub const FOLDER_MISSING: &str = "Der Ordner existiert noch nicht.";
     /// Quitting is blocked by a running capture.
     pub const BUSY: &str = "Bitte die laufende Aufnahme oder Bereichsauswahl zuerst beenden.";
 }

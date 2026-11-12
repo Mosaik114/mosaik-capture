@@ -24,11 +24,8 @@ pub const HOTKEY_CASES: &[(&str, Option<(u32, u16)>)] = &[
 ];
 
 /// Folder paths with the expected validation result.
-pub const FOLDER_CASES: &[(&str, bool)] = &[
-    ("C:\\Bilder\\Grüße", true),
-    ("relativ\\Bilder", false),
-    ("C:\\Bilder\nneu", false),
-];
+pub const FOLDER_CASES: &[(&str, bool)] =
+    &[("C:\\Bilder\\Grüße", true), ("relativ\\Bilder", false), ("C:\\Bilder\nneu", false)];
 
 /// Runs all checks and reports whether every one passed.
 pub fn run() -> bool {
@@ -36,9 +33,7 @@ pub fn run() -> bool {
         let parsed = text.parse::<Hotkey>().ok();
         parsed.map(|key| (key.modifiers.bits(), key.key)) == expected
     });
-    let folders_ok = FOLDER_CASES
-        .iter()
-        .all(|&(path, expected)| is_valid_folder(path) == expected);
+    let folders_ok = FOLDER_CASES.iter().all(|&(path, expected)| is_valid_folder(path) == expected);
     hotkeys_ok && folders_ok
 }
 
