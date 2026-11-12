@@ -22,7 +22,9 @@ Mosaik Capture is two cooperating Windows processes:
   single-instance mutex; the host simply spawns it again on the next capture. Inside the
   engine, both controllers guard their entry points: an unexpected error closes the open
   windows and returns to a consistent state (a running recording is still saved) instead of
-  leaving a half-open UI.
+  leaving a half-open UI. Anything that still reaches the global handler is classified: recoverable
+  I/O, COM, Win32 and timeout errors are logged and the engine continues; anything else is
+  treated as a bug, logged, and the engine restarts itself.
 - **Runtime requirements.** .NET Framework 4.8 ships with Windows, so neither process needs
   an installed runtime.
 
@@ -106,7 +108,7 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
 | Folder | Contents |
 |---|---|
 | `Core/` | `Program` (entry point, crash handling), `CaptureBridge` (CLI + IPC), `CaptureSettings`, `ErrorLog`, `NativeMethods` (every P/Invoke and Win32 constant), `UiText` (every German UI string), `ClipboardWriter` (the single clipboard path), `Motion` (shared timing), `Metrics` (shared sizes and shadows), `Palette`, `ToolWindows` |
-| `Screenshot/` | `Screenshots` (facade) → `ScreenshotController` → `IScreenshotUi` / `IScreenshotStore`; `ShapeRecognizer` and `TextLineFinder` (pure, tested), `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`) with plain, tested models `UndoHistory`, `InkStyle`, `CropGeometry`, `PinnedScreenshot`, `TextRecognition` |
+| `Screenshot/` | `Screenshots` (facade) → `ScreenshotController` → `IScreenshotUi` / `IScreenshotStore`; `ShapeRecognizer` and `TextLineFinder` (pure, tested), `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`) with plain, tested models `UndoHistory`, `InkStyle`, `CropGeometry`, `EditorInteraction`, `PinnedScreenshot`, `TextRecognition` |
 | `Recording/` | `ScreenRecorder` (facade) → `RecordingController` (state machine) → `IRecordingUi` / `IRecordingBackend` / `IRecordingSession`; `RecordingSession` (behind `IFfmpegRunner` / `IAudioRecorder`, unit-tested with fakes), `Ffmpeg` (every call bounded by `FfmpegTimeouts`, cancellable), `FfmpegArgs`, `TailBuffer`, `AudioRecorder`/`AudioTrack` (WASAPI), `Dxgi`, toolbar, frame, countdown, card, `TrimWindow`, `VideoExport` |
 | `Diagnostics/` | `--self-test` and `--live-test` |
 

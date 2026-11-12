@@ -18,6 +18,10 @@ instead of opening a public issue. You can expect a first answer within a week.
   share cannot be picked up.
 - **IPC stays local to the session.** The two processes talk through window messages
   and session-local mutexes (`Local\…`); no named pipes or files are used as a channel.
+  Only processes of the same user in the same session can send these messages, nothing
+  privileged can be triggered (at worst a capture overlay opens or an idle engine quits),
+  capture commands are rate-limited to 10 per second, and the host only messages an engine
+  whose process image is its own `MosaikCapture.Engine.exe`.
 - **Settings are written atomically** (temporary file + `MoveFileEx`), so a crash cannot
   leave a half-written configuration.
 - **Supply chain.** Rust and NuGet dependencies are locked (`Cargo.lock`,
