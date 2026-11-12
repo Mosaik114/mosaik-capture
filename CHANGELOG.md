@@ -10,7 +10,7 @@ First public release as a standalone project.
 
 ### Added
 - Cargo project for the Rust tray app with `windows-sys`, split into modules for CLI,
-  single instance, hotkeys, settings, autostart, IPC and UI; 82 unit tests and an
+  single instance, hotkeys, settings, autostart, IPC and UI; 94 unit tests and an
   end-to-end test that drives the real settings window (runs in CI).
 - Per-monitor DPI support, `IFileOpenDialog` folder picker with long paths, keyboard focus
   and pressed states on buttons, a sharp DPI-aware tray icon.
@@ -48,10 +48,11 @@ First public release as a standalone project.
 - Escape with an open drop-down list closes only the list; forwarding to an unresponsive
   running instance reports exit code 9 instead of success.
 
-## [0.1.0] - 2026-11-08
+## 0.1.0 - 2026-11-08
 
-- First standalone version: screenshot and screen-recording tray app with its own hotkeys
-  (Shift+Alt+4 / Shift+Alt+5), settings window and autostart.
+- First standalone version (before this repository existed): screenshot and
+  screen-recording tray app with its own hotkeys (Shift+Alt+4 / Shift+Alt+5), settings
+  window and autostart. Its sources were imported unchanged as the first commit of this
+  repository on 2026-11-12.
 
 [1.0.0]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.0.0
-[0.1.0]: https://github.com/Mosaik114/mosaik-capture/commit/4a96d5c

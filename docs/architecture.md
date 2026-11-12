@@ -34,7 +34,7 @@ and pin it with tests, so a change on one side fails that side's suite.
 | host → engine | `WM_APP+3` | quit (refused while a recording is running) |
 | host → engine | `SendMessageTimeout` `WM_APP+10` | state query: bit 0 = busy (selection/countdown/recording), bit 1 = recording live |
 | engine → host | `PostMessage` `WM_APP+20` to window class `MosaikCapture.Host` | microphone / system sound / click display toggled in the recording bar (bits 0–2), so the host persists them |
-| anyone → host | second start of the host with `--screenshot`, `--recording`, `--quit`, `--probe`, `recording` | forwarded to the running instance (`WM_APP+1…+4`, `+9`, `+10`); exit code 9 if it does not answer |
+| anyone → host | second start of the host with `--screenshot`, `--recording`, `--quit`, `--probe`, `recording` | forwarded to the running instance (`WM_APP+1…+4`, `+9`, `+10`); exit code 9 if it does not answer; requests that arrive while the host is still starting are answered with 0 |
 
 Single instance on both sides uses session-local mutexes (`Local\MosaikCapture.Host`,
 `Local\MosaikCapture.Engine`). Settings are shared through
@@ -149,7 +149,7 @@ pause/resume: closes the segment, opens a new one on the same clocks            
 
 | Layer | How it is tested |
 |---|---|
-| Pure logic (Rust) | `cargo test`, 82 tests: hotkey grammar, settings defaults/normalisation/migration, INI layout and a real round trip through the Win32 profile API on a temp file, CLI parsing, exit codes, DPI scaling, COM vtable offsets, the resource writer against golden layouts |
+| Pure logic (Rust) | `cargo test`, 94 tests: hotkey grammar, settings defaults/normalisation/migration, INI layout and a real round trip through the Win32 profile API on a temp file, CLI parsing, exit codes, forwarding to a fake running instance (incl. timeouts), retrying atomic writes, DPI scaling, COM vtable offsets, the resource writer against golden layouts |
 | Host UI (Rust) | `cargo test -- --ignored` creates the real settings window in-process (own window class, temp settings, unusual hotkeys) and drives save, validation, Enter/Escape, IPC and a DPI change; runs in CI |
 | Engine logic (C#) | xUnit on a shared STA dispatcher thread: the recording state machine with fakes, WASAPI track padding/trimming with a fake capture client, shape recognition, highlighter snapping, selection geometry (including a randomized check over 5,000 rectangles), command-line quoting (500 random round trips through `CommandLineToArgvW`), settings parsing, error-log rotation |
 | Engine + ffmpeg | real ffmpeg runs: audio stays in sync after a pause, one or zero audio tracks, trim with and without sound, GIF export, broken input files (skipped when ffmpeg is missing) |
@@ -157,3 +157,29 @@ pause/resume: closes the segment, opens a new one on the same clocks            
 
 All suites run on every push; nothing in them opens a visible window or touches the real
 settings file or autostart entry.
+
+**Not covered automatically:** live screen capture itself (Desktop Duplication needs a real,
+unlocked interactive desktop, which neither CI nor a hidden test desktop provides), real
+audio devices, mouse interaction on the selection overlay, and multi-monitor DPI changes
+on physical displays. These are covered by `--live-test` and manual checks before a release.
+
+## Three problems worth describing
+
+**Keeping audio in sync across pauses.** Pausing has to stop the video pipeline, and
+restarting a capture input never happens at an exact instant, so every pause risks a few
+milliseconds of offset that add up over a long recording. The engine therefore keeps audio
+out of ffmpeg: it records system sound and microphone itself via WASAPI onto continuous
+tracks positioned by the device's own timestamps (`AudioTrack` pads gaps and trims overlaps).
+Each video segment records its start on both the wall clock and the audio clock; when
+saving, the real segment durations are measured with `ffprobe` and the audio is cut to
+exactly those windows. A real-ffmpeg test pauses, resumes and asserts the offset.
+
+**No black flash on very large screens.** A transparent, layered WPF window showing the
+frozen screen is too slow at 5120 × 1440 and can show a black frame before WPF has rendered.
+The overlay is instead an opaque window that is created *cloaked* through DWM, renders its
+first frame while invisible and is uncloaked only then; only the dimming animates.
+
+**Joining segments that use different encoders.** Encoder detection (NVENC or x264) used to
+run lazily with a timeout on the UI thread. If it timed out, the first segment used x264 and
+later ones NVENC, and the stream-copy concatenation produced a broken file. Detection now runs
+once in the background, and each recording session fixes its encoder for all its segments.

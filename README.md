@@ -28,13 +28,13 @@ pause/resume, trimming and GIF export.
 
 | | |
 |---|---|
-| **Instant capture** | The screen is frozen first, so menus and tooltips stay put. Drag an area, click a window, or press Space for the whole monitor. A magnifier shows the pixels under the cursor. Spans all monitors, tested on a 5120 × 1440 display. |
+| **Instant capture** | The screen is frozen first, so menus and tooltips stay put. Drag an area, click a window, or press Space for the whole monitor. A magnifier shows the pixels under the cursor. Spans all monitors, including very wide virtual screens such as 5120 × 1440. |
 | **Annotation editor** | Arrows, rectangles, ellipses, lines, pen, highlighter, spotlight, text (plain or on a plate), numbered steps, pixelate and blur. Hold the pen still and a rough stroke snaps into a clean line, arrow, ellipse, rectangle, triangle or rhombus; the highlighter snaps to text lines and word boundaries. |
 | **Offline text recognition** | `Ctrl+Shift+C` copies the text in the capture using the on-device Windows OCR engine — nothing leaves the machine. |
 | **Pin to screen** | Keep a capture floating above other windows as a reference. |
 | **Screen recording** | Desktop Duplication through ffmpeg's `ddagrab` on the GPU, NVENC with automatic x264 fallback, 30 or 60 fps. System sound (WASAPI loopback) and microphone are recorded as separate tracks and stay in sync across pauses. |
 | **Trim & GIF** | A film-strip trimmer (`Space` play, `I`/`O` in/out, arrow keys step) exports MP4 or GIF. |
-| **Tiny footprint** | A ~370 KB tray app with no runtime dependencies (CI prints the size of every build); the engine starts on the first capture and stays resident. No network access, no telemetry, no elevation. |
+| **Tiny footprint** | A ~270 KB tray app with no runtime dependencies (CI prints the size of every release build); the engine starts on the first capture and stays resident. No network access, no telemetry, no elevation. |
 
 <p align="center">
   <img src="docs/images/editor-annotations.png" alt="Annotations: highlighter on text, labelled plates, snapped circles, arrows, pixelated e-mail address" width="640">
@@ -86,7 +86,8 @@ first capture and then stays resident, so later captures open instantly.
 
 The two processes talk only through window messages and session-local mutexes; the
 contract (message numbers, class names, command-line flags) is pinned by tests on both
-sides. Details, including the recording pipeline and the testing strategy, are in
+sides. Details — the recording pipeline, the testing strategy, what is deliberately not
+tested, and three engineering problems and how they were solved — are in
 [docs/architecture.md](docs/architecture.md).
 
 ## Install
@@ -113,9 +114,13 @@ with *Smart App Control* enabled Windows refuses to run them.
 | `Space` · `I` / `O` · `←` `→` | Trim window: play, set in/out, step |
 
 Shortcuts, folders, microphone, system sound, click display, frame rate, countdown and
-autostart are configured in the settings window (tray icon → *Einstellungen*).
-Settings live in `%LOCALAPPDATA%\MosaikCapture\settings.ini`; screenshots go to
-`Pictures\Mosaiks-Screenshots`, recordings to `Videos\Mosaiks-Aufnahmen`.
+autostart are configured in the settings window (tray icon → *Einstellungen*). A custom
+shortcut is one key (letter, digit, Space or F1–F24) plus Ctrl or Alt, optionally with Shift,
+so it can never swallow normal typing.
+Settings live in `%LOCALAPPDATA%\MosaikCapture\settings.ini`. By default screenshots go to
+`Pictures\Mosaiks-Screenshots` and recordings to `Videos\Mosaiks-Aufnahmen` — user-facing
+names, so they follow the German UI (as do output file names like
+`Mosaiks-Aufnahme 2026-09-26 14-03-12.mp4`); both folders can be changed in the settings.
 
 ## Build from source
 
@@ -134,7 +139,7 @@ without external resource tools, so both toolchains produce the same resources.
 
 | Check | Rust host | C# engine |
 |---|---|---|
-| Tests | 82 unit tests (hotkeys, settings, migration, CLI, DPI, resource writer) + an end-to-end test that drives the real settings window | 251 xUnit cases: the recording state machine with fakes, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, IPC contract, pixel comparisons of 13 UI states |
+| Tests | 94 unit tests (hotkeys, settings, migration, CLI, forwarding, DPI, atomic writes, resource writer) + an end-to-end test that drives the real settings window | 251 xUnit cases: the recording state machine with fakes, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, IPC contract, pixel comparisons of 13 UI states |
 | Static analysis | `clippy::pedantic`, warnings as errors, every `unsafe` block carries a `// SAFETY:` note | Nullable reference types, .NET analyzers (`Recommended`), warnings as errors |
 | Formatting | `cargo fmt --check` | `dotnet format --verify-no-changes` |
 | Supply chain | `Cargo.lock`, a single dependency (`windows-sys`) | Central package management, `packages.lock.json`, locked restore |
