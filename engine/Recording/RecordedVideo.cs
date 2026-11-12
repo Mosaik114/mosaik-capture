@@ -1,3 +1,5 @@
+using System.ComponentModel;
+
 namespace MosaikCapture.Engine.Recording;
 
 /// <summary>A finished video or GIF with its key data and a thumbnail.</summary>
@@ -12,14 +14,18 @@ internal sealed class RecordedVideo
     public long Bytes { get; init; }
     public BitmapSource? Thumbnail { get; init; }
 
-    /// <summary>Reads the key data with ffprobe and takes a thumbnail from the middle (blocking).</summary>
+    /// <summary>Thumbnails are this wide at most.</summary>
+    const int ThumbnailWidth = 960;
+
+    /// <summary>Reads the key data with ffprobe and takes a thumbnail from the middle, without blocking a thread.</summary>
     /// <exception cref="InvalidOperationException">ffprobe cannot read the file (message: its last error line).</exception>
     /// <exception cref="TimeoutException">ffprobe did not answer in time.</exception>
-    public static RecordedVideo Load(string path)
+    public static async Task<RecordedVideo> LoadAsync(string path, CancellationToken cancellation = default)
     {
         var probe = new FfmpegArgs().Add("-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "default=nw=1", path);
-        if (Ffmpeg.Run(Ffmpeg.Probe, probe, FfmpegTimeouts.Quick, out string output, out string error) != 0)
-            throw new InvalidOperationException(FfmpegOutput.LastLine(error));
+        var result = await Ffmpeg.RunAsync(Ffmpeg.Probe, probe, FfmpegTimeouts.Quick, cancellation: cancellation).ConfigureAwait(false);
+        if (!result.Succeeded) throw new InvalidOperationException(FfmpegOutput.LastLine(result.Error));
+        string output = result.Output;
         double duration = FfmpegOutput.Field(output, "duration");
         return new RecordedVideo
         {
@@ -30,20 +36,23 @@ internal sealed class RecordedVideo
             Height = (int)FfmpegOutput.Field(output, "height"),
             Audio = output.Contains("codec_type=audio"),
             Bytes = new FileInfo(path).Length,
-            Thumbnail = Frame(path, duration / 2, 960)
+            Thumbnail = await RenderToImageAsync("mosaik-frame-", png => FrameArguments(path, duration / 2, ThumbnailWidth, png), cancellation).ConfigureAwait(false)
         };
     }
 
-    /// <summary>A single frame from the video, at most <paramref name="maxWidth"/> pixels wide (blocking).</summary>
+    /// <summary><see cref="LoadAsync"/> for callers that are on a background thread anyway (blocking).</summary>
+    public static RecordedVideo Load(string path) => LoadAsync(path).GetAwaiter().GetResult();
+
+    /// <summary>A single frame from the video, at most <paramref name="maxWidth"/> pixels wide (blocking); null if it cannot be made.</summary>
     public static BitmapSource? Frame(string path, double at, int maxWidth) =>
-        RenderToImage("mosaik-frame-", png => FrameArguments(path, at, maxWidth, png));
+        RenderToImageAsync("mosaik-frame-", png => FrameArguments(path, at, maxWidth, png), CancellationToken.None).GetAwaiter().GetResult();
 
     /// <summary>
     /// Film strip for trimming: <paramref name="count"/> frames side by side, <paramref name="height"/>
     /// pixels high (fast: every frame uses its own seek). Blocking.
     /// </summary>
     public static BitmapSource? Strip(string path, double duration, int count, int height) =>
-        RenderToImage("mosaik-strip-", png => StripArguments(path, duration, count, height, png));
+        RenderToImageAsync("mosaik-strip-", png => StripArguments(path, duration, count, height, png), CancellationToken.None).GetAwaiter().GetResult();
 
     internal static FfmpegArgs FrameArguments(string path, double at, int maxWidth, string png) =>
         FfmpegArgs.Batch().Add("-ss", FfmpegArgs.Number(Math.Max(0, at)), "-i", path, "-frames:v", "1", "-vf", "scale='min(" + maxWidth + ",iw)':-2", png);
@@ -62,15 +71,19 @@ internal sealed class RecordedVideo
         return args.Add("-filter_complex", filter.ToString(), "-frames:v", "1", png);
     }
 
-    static BitmapSource? RenderToImage(string prefix, Func<string, FfmpegArgs> arguments)
+    // A preview is optional: every documented failure of running ffmpeg (not installed, not startable,
+    // too slow, cancelled, unreadable output) gives no image instead of an error.
+    internal static async Task<BitmapSource?> RenderToImageAsync(string prefix, Func<string, FfmpegArgs> arguments, CancellationToken cancellation)
     {
         string png = System.IO.Path.Combine(System.IO.Path.GetTempPath(), prefix + Guid.NewGuid().ToString("N") + ".png");
         try
         {
-            if (Ffmpeg.Run(Ffmpeg.Exe, arguments(png), FfmpegTimeouts.Quick, out _, out _) != 0 || !File.Exists(png)) return null;
+            var result = await Ffmpeg.RunAsync(Ffmpeg.Exe, arguments(png), FfmpegTimeouts.Quick, cancellation: cancellation).ConfigureAwait(false);
+            if (!result.Succeeded || !File.Exists(png)) return null;
             return ToolWindows.LoadImage(png);
         }
-        catch (TimeoutException ex)
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or Win32Exception or InvalidOperationException
+            or IOException or UnauthorizedAccessException or NotSupportedException or FileFormatException)
         {
             ErrorLog.Write("Rendering a preview image", ex);
             return null;

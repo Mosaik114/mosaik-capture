@@ -12,12 +12,11 @@ internal sealed class RecordingSessionServices
     public IFfmpegRunner Runner { get; init; } = FfmpegRunner.Instance;
     public Func<string, AudioSettings, IAudioRecorder> CreateAudio { get; init; } = (directory, audio) => new AudioRecorder(directory, audio.Microphone, audio.SystemSound);
     public string WorkRoot { get; init; } = CaptureSettings.RecordingWorkRoot;
-    public Func<int> Fps { get; init; } = () => CaptureSettings.Fps;
     /// <summary>The encoder for all segments, waited for at most a few seconds.</summary>
     public Func<Task<VideoEncoder>> Encoder { get; init; } = () => Ffmpeg.EncoderOrSoftwareAsync(EncoderTimeout);
     /// <summary>Makes the screen change once so ffmpeg's Desktop Duplication delivers the first frame at once.</summary>
     public Action<int, int> NudgeFirstFrame { get; init; } = FirstFrameNudge.Poke;
-    public Func<string, RecordedVideo> LoadVideo { get; init; } = RecordedVideo.Load;
+    public Func<string, CancellationToken, Task<RecordedVideo>> LoadVideo { get; init; } = RecordedVideo.LoadAsync;
     /// <summary>Time to wait for the ffmpeg of the previous segment before the next one grabs the GPU output.</summary>
     public TimeSpan PreviousSegmentTimeout { get; init; } = TimeSpan.FromSeconds(3);
 }
@@ -33,7 +32,7 @@ internal sealed class RecordingSessionServices
 /// <item><see cref="ResumeAsync"/>, <see cref="Pause"/>, <see cref="SetMicrophone"/> and <see cref="SetSystemSound"/>
 /// come from the UI thread; <see cref="ResumeAsync"/> continues on a pool thread (ffmpeg starts there).</item>
 /// <item><see cref="Elapsed"/>, <see cref="Paused"/>, <see cref="Reason"/> and <see cref="MicrophoneLevel"/> may be read from any thread.</item>
-/// <item><see cref="Finish"/> or <see cref="Discard"/> runs once, on a background thread, after the UI stopped
+/// <item><see cref="FinishAsync"/> or <see cref="Discard"/> runs once (Discard on a background thread), after the UI stopped
 /// calling the methods above.</item>
 /// <item><see cref="Broke"/> is raised on the thread that noticed ffmpeg's exit, never while <c>gate</c> is held.</item>
 /// <item>Segment list, <c>current</c>, the pause counter and each segment's process and stop task change only
@@ -90,7 +89,7 @@ internal sealed class RecordingSession : IRecordingSession
 
     readonly RecordingSessionServices services;
     readonly IAudioRecorder audio;
-    readonly int output, offsetX, offsetY;
+    readonly int output, offsetX, offsetY, fps;
     readonly List<Segment> segments = new();
     readonly object gate = new();
     volatile Segment? current;       // under gate: the running segment, null while paused
@@ -101,8 +100,9 @@ internal sealed class RecordingSession : IRecordingSession
     int resuming;                    // 1 while a resume is starting a segment; Interlocked (full fences)
     volatile bool wantRunning;       // the user's intent: resumed and not paused since (shown at once, even while ffmpeg starts)
 
-    public RecordingSession(Int32Rect area, int output, RECT desktop, AudioSettings audioSettings, RecordingSessionServices? services = null)
+    public RecordingSession(Int32Rect area, int output, RECT desktop, AudioSettings audioSettings, int fps, RecordingSessionServices? services = null)
     {
+        this.fps = fps;
         this.services = services ?? RecordingSessionServices.Real;
         Area = area;
         this.output = output;
@@ -200,7 +200,7 @@ internal sealed class RecordingSession : IRecordingSession
             segments.Add(segment);
             current = segment;
         }
-        var args = SegmentArguments(output, services.Fps(), Area, offsetX, offsetY, segment.StartEpochMicros, videoEncoder, segment.File);
+        var args = SegmentArguments(output, fps, Area, offsetX, offsetY, segment.StartEpochMicros, videoEncoder, segment.File);
         IFfmpegProcess process;
         try
         {
@@ -284,6 +284,14 @@ internal sealed class RecordingSession : IRecordingSession
         lock (gate) return segments.ToList();
     }
 
+    async Task WaitForSegmentsAsync(TimeSpan timeout)
+    {
+        Task[] stopped;
+        lock (gate) stopped = segments.Select(s => s.Stopped).OfType<Task>().ToArray();
+        var all = Task.WhenAll(stopped);
+        if (await Task.WhenAny(all, Task.Delay(timeout)).ConfigureAwait(false) != all) ErrorLog.Write("A recording segment did not stop in time", null);
+    }
+
     void WaitForSegments(TimeSpan timeout)
     {
         Task[] stopped;
@@ -301,36 +309,48 @@ internal sealed class RecordingSession : IRecordingSession
         DeleteWorkDirectory();
     }
 
-    public RecordedVideo? Finish(string path)
+    /// <summary>
+    /// Stops recording and joins the segments into <paramref name="path"/>, without blocking a thread while
+    /// ffmpeg works. <paramref name="cancellation"/> (the caller's save timeout) kills a running ffmpeg.
+    /// Null on failure, see <see cref="Reason"/>.
+    /// </summary>
+    public async Task<RecordedVideo?> FinishAsync(string path, CancellationToken cancellation)
     {
         Pause();
-        WaitForSegments(SegmentStopTimeout);
-        bool audioComplete = audio.Stop();
+        await WaitForSegmentsAsync(SegmentStopTimeout).ConfigureAwait(false);
+        bool audioComplete = await Task.Run(audio.Stop).ConfigureAwait(false);   // joins the audio thread: seconds at most
         AudioLost = !audioComplete && (audio.SystemSoundUsed || audio.MicrophoneUsed);
-
-        var all = SnapshotSegments();
-        var parts = all.Where(s => File.Exists(s.File) && new FileInfo(s.File).Length > 0 && Probe(s)).ToList();
-        if (parts.Count == 0)
-        {
-            foreach (var segment in all)
-                if (!segment.Errors.IsEmpty) reason = FfmpegOutput.LastLine(segment.Errors.ToString());
-            return null;
-        }
-
-        var tracks = new List<string>();
-        if (audioComplete && audio.SystemSoundUsed) tracks.Add(audio.SystemSoundFile);
-        if (audioComplete && audio.MicrophoneUsed) tracks.Add(audio.MicrophoneFile);
         try
         {
+            var all = SnapshotSegments();
+            var parts = new List<Segment>();
+            foreach (var segment in all)
+                if (File.Exists(segment.File) && new FileInfo(segment.File).Length > 0 && await ProbeAsync(segment, cancellation).ConfigureAwait(false))
+                    parts.Add(segment);
+            if (parts.Count == 0)
+            {
+                foreach (var segment in all)
+                    if (!segment.Errors.IsEmpty) reason = FfmpegOutput.LastLine(segment.Errors.ToString());
+                return null;
+            }
+
+            var tracks = new List<string>();
+            if (audioComplete && audio.SystemSoundUsed) tracks.Add(audio.SystemSoundFile);
+            if (audioComplete && audio.MicrophoneUsed) tracks.Add(audio.MicrophoneFile);
             string list = Path.Combine(WorkDirectory, ConcatListName);
             File.WriteAllLines(list, ConcatList(parts.Select(p => p.File)));
             var args = Assemble(list, tracks, parts.Select(p => Math.Max(0, audio.Offset(p.AudioClockStart) + p.ProbedStart)).ToList(),
                 parts.Select(p => p.ProbedDuration).ToList(), path);
-            if (services.Runner.Run(FfmpegProgram.Ffmpeg, args, FfmpegTimeouts.ForMedia(parts.Sum(p => p.ProbedDuration)), out _, out string error) != 0 || !File.Exists(path))
-                return Failed(FfmpegOutput.LastLine(error), path);
-            var video = services.LoadVideo(path);
+            var result = await services.Runner.RunAsync(FfmpegProgram.Ffmpeg, args, FfmpegTimeouts.ForMedia(parts.Sum(p => p.ProbedDuration)), cancellation).ConfigureAwait(false);
+            if (!result.Succeeded || !File.Exists(path)) return Failed(FfmpegOutput.LastLine(result.Error), path);
+            var video = await services.LoadVideo(path, cancellation).ConfigureAwait(false);
             DeleteWorkDirectory();
             return video;
+        }
+        catch (OperationCanceledException ex)
+        {
+            ErrorLog.Write("Assembling a recording was cancelled (save timeout)", ex);
+            return Failed(UiText.Common.FfmpegTimedOut, path);
         }
         catch (Exception ex) when (ex is TimeoutException or InvalidOperationException or Win32Exception or IOException or UnauthorizedAccessException)
         {
@@ -407,14 +427,15 @@ internal sealed class RecordingSession : IRecordingSession
         return filter.ToString();
     }
 
-    bool Probe(Segment segment)
+    async Task<bool> ProbeAsync(Segment segment, CancellationToken cancellation)
     {
         var args = new FfmpegArgs().Add("-v", "error", "-show_entries", "format=start_time,duration", "-of", "default=nw=1", segment.File);
         try
         {
-            if (services.Runner.Run(FfmpegProgram.Probe, args, FfmpegTimeouts.Quick, out string probeOutput, out _) != 0) return false;
-            segment.ProbedStart = FfmpegOutput.Field(probeOutput, "start_time");
-            segment.ProbedDuration = FfmpegOutput.Field(probeOutput, "duration");
+            var result = await services.Runner.RunAsync(FfmpegProgram.Probe, args, FfmpegTimeouts.Quick, cancellation).ConfigureAwait(false);
+            if (!result.Succeeded) return false;
+            segment.ProbedStart = FfmpegOutput.Field(result.Output, "start_time");
+            segment.ProbedDuration = FfmpegOutput.Field(result.Output, "duration");
             return segment.ProbedDuration > MinimumSegmentSeconds;
         }
         catch (Exception ex) when (ex is TimeoutException or Win32Exception or InvalidOperationException)

@@ -25,6 +25,7 @@ public sealed class RobustnessTests
         ["aggregate with a bug"] = new AggregateException(new IOException(), new NullReferenceException()),
         ["empty aggregate"] = new AggregateException(),
         ["empty invocation"] = new TargetInvocationException(null),
+        ["native crash"] = new SEHException("access violation"),
     };
 
     [Theory]
@@ -43,8 +44,21 @@ public sealed class RobustnessTests
     [InlineData("aggregate with a bug", false)]
     [InlineData("empty aggregate", false)]
     [InlineData("empty invocation", false)]
+    [InlineData("native crash", false)]
     public void OnlyOutsideWorldFailuresAreSurvivable(string sample, bool recoverable) =>
         Assert.Equal(recoverable, Program.IsRecoverable(Samples[sample]));
+
+    [Fact]
+    public void UptimeCountsFromTheStart()
+    {
+        long started = Program.startedAt;
+        try
+        {
+            Program.startedAt = Stopwatch.GetTimestamp() - 90 * Stopwatch.Frequency;
+            Assert.InRange(Program.Uptime.TotalSeconds, 89.9, 95);
+        }
+        finally { Program.startedAt = started; }
+    }
 
     [Fact]
     public void RecoverableFailuresKeepTheEngineWithoutRestarting()

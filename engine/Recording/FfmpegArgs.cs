@@ -16,7 +16,7 @@ internal sealed class FfmpegArgs
 
     /// <summary>
     /// <see cref="Quiet"/> for calls that run to completion: <c>-nostdin</c> so ffmpeg never waits for or
-    /// reacts to input (<see cref="Ffmpeg.Run"/> also closes stdin right away).
+    /// reacts to input (<see cref="Ffmpeg.RunAsync"/> also closes stdin right away).
     /// </summary>
     public static FfmpegArgs Batch() => Quiet().Add("-nostdin");
 

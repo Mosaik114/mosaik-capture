@@ -26,8 +26,8 @@ internal interface IFfmpegRunner
     /// <exception cref="Win32Exception">ffmpeg could not be started.</exception>
     IFfmpegProcess Start(FfmpegArgs args, Action<string> errorLine, Action exited);
 
-    /// <summary>Runs to completion; see <see cref="Ffmpeg.Run"/> for timeout and errors.</summary>
-    int Run(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, out string output, out string error);
+    /// <summary>Runs to completion without blocking a thread; see <see cref="Ffmpeg.RunAsync"/> for timeout and errors.</summary>
+    Task<FfmpegResult> RunAsync(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, CancellationToken cancellation);
 }
 
 /// <summary>The real ffmpeg via <see cref="Ffmpeg"/>.</summary>
@@ -40,8 +40,8 @@ internal sealed class FfmpegRunner : IFfmpegRunner
     public IFfmpegProcess Start(FfmpegArgs args, Action<string> errorLine, Action exited) =>
         new RunningFfmpeg(Ffmpeg.Start(Ffmpeg.Exe, args, null, errorLine, exited));
 
-    public int Run(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, out string output, out string error) =>
-        Ffmpeg.Run(program == FfmpegProgram.Probe ? Ffmpeg.Probe : Ffmpeg.Exe, args, timeout, out output, out error);
+    public Task<FfmpegResult> RunAsync(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, CancellationToken cancellation) =>
+        Ffmpeg.RunAsync(program == FfmpegProgram.Probe ? Ffmpeg.Probe : Ffmpeg.Exe, args, timeout, cancellation: cancellation);
 
     sealed class RunningFfmpeg : IFfmpegProcess
     {

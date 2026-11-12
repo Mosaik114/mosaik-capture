@@ -1,9 +1,24 @@
 using System.ComponentModel;
 namespace MosaikCapture.Engine.Core;
 
+/// <summary>The settings as they were when a flow (a screenshot, a recording) started; immutable.</summary>
+internal sealed class CaptureSettingsSnapshot
+{
+    public string ScreenshotFolder { get; init; } = "";
+    public string RecordingFolder { get; init; } = "";
+    public bool Microphone { get; init; }
+    public bool SystemAudio { get; init; } = true;
+    public bool Clicks { get; init; } = true;
+    public int Fps { get; init; } = 60;
+    public int Countdown { get; init; } = 3;
+
+    public AudioSettings Audio => new(Microphone, SystemAudio, Clicks);
+}
+
 /// <summary>
-/// Settings shared with the host: a Unicode INI file, section [capture], written by the host.
-/// <c>MOSAIK_CAPTURE_TEST_CONFIG</c> points to a different file (tests and QA).
+/// Settings shared with the host: a Unicode INI file, section [capture], written by the host. Each flow
+/// reads it once (<see cref="Load()"/>) and works with that snapshot. <c>MOSAIK_CAPTURE_TEST_CONFIG</c>
+/// points to a different file; the host sets it in preview mode, and it is read once at startup.
 /// </summary>
 internal static class CaptureSettings
 {
@@ -23,15 +38,31 @@ internal static class CaptureSettings
     // Folder names of older versions (which used German names); only read to clean up their leftovers.
     const string LegacyHomeName = "Mosaiks-Aufnahme", LegacyWorkFolderName = "Aufnahme";
 
-    public static string FileName => Environment.GetEnvironmentVariable(TestConfigVariable) ?? Path.Combine(Home, "settings.ini");
+    static volatile string fileName = ResolveFileName(Environment.GetEnvironmentVariable(TestConfigVariable));
 
-    public static string ScreenshotFolder => Read("screenshot_folder", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), UiText.Files.ScreenshotFolder));
-    public static string RecordingFolder => Read("recording_folder", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), UiText.Files.RecordingFolder));
-    public static bool Microphone => Number("microphone", 0) != 0;
-    public static bool SystemAudio => Number("system_audio", 1) != 0;
-    public static bool Clicks => Number("show_clicks", 1) != 0;
-    public static int Fps => NormalizeFps(Number("fps", 60));
-    public static int Countdown => NormalizeCountdown(Number("countdown", 3));
+    /// <summary>The INI file, decided once at startup.</summary>
+    public static string FileName => fileName;
+
+    /// <summary>The override path if set, otherwise %LOCALAPPDATA%\MosaikCapture\settings.ini.</summary>
+    internal static string ResolveFileName(string? overridePath) =>
+        string.IsNullOrWhiteSpace(overridePath) ? Path.Combine(Home, "settings.ini") : overridePath!;
+
+    /// <summary>Points the engine at another settings file (self-test, live test, unit tests).</summary>
+    internal static void UseFile(string path) => fileName = path;
+
+    /// <summary>Reads all settings at once from <see cref="FileName"/>.</summary>
+    public static CaptureSettingsSnapshot Load() => Load(FileName);
+
+    internal static CaptureSettingsSnapshot Load(string file) => new()
+    {
+        ScreenshotFolder = Read(file, "screenshot_folder", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), UiText.Files.ScreenshotFolder)),
+        RecordingFolder = Read(file, "recording_folder", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), UiText.Files.RecordingFolder)),
+        Microphone = Number(file, "microphone", 0) != 0,
+        SystemAudio = Number(file, "system_audio", 1) != 0,
+        Clicks = Number(file, "show_clicks", 1) != 0,
+        Fps = NormalizeFps(Number(file, "fps", 60)),
+        Countdown = NormalizeCountdown(Number(file, "countdown", 3)),
+    };
 
     /// <summary>Only 30 and 60 fps are supported; anything else means 60.</summary>
     internal static int NormalizeFps(int fps) => fps == 30 ? 30 : 60;
@@ -54,13 +85,13 @@ internal static class CaptureSettings
     /// <summary>1 = microphone, 2 = system sound, 4 = show clicks.</summary>
     internal static int AudioFlags(bool microphone, bool sound, bool clicks) => (microphone ? 1 : 0) | (sound ? 2 : 0) | (clicks ? 4 : 0);
 
-    static string Read(string key, string fallback)
+    static string Read(string file, string key, string fallback)
     {
         var value = new StringBuilder(2048);
-        _ = NativeMethods.GetPrivateProfileString("capture", key, fallback, value, value.Capacity, FileName);
+        _ = NativeMethods.GetPrivateProfileString("capture", key, fallback, value, value.Capacity, file);
         return value.ToString();
     }
 
-    static int Number(string key, int fallback) =>
-        int.TryParse(Read(key, fallback.ToString(CultureInfo.InvariantCulture)), out int value) ? value : fallback;
+    static int Number(string file, string key, int fallback) =>
+        int.TryParse(Read(file, key, fallback.ToString(CultureInfo.InvariantCulture)), out int value) ? value : fallback;
 }

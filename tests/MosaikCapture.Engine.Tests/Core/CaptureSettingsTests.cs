@@ -10,28 +10,30 @@ public sealed class CaptureSettingsTests
     public void ReadsAllValuesFromUnicodeIni()
     {
         using var settings = new TestSettings(Full);
+        var loaded = settings.Load();
 
-        Assert.Equal("C:\\Bilder\\Grüße", CaptureSettings.ScreenshotFolder);
-        Assert.Equal("C:\\Videos\\Aufnahmen", CaptureSettings.RecordingFolder);
-        Assert.True(CaptureSettings.Microphone);
-        Assert.False(CaptureSettings.SystemAudio);
-        Assert.False(CaptureSettings.Clicks);
-        Assert.Equal(30, CaptureSettings.Fps);
-        Assert.Equal(5, CaptureSettings.Countdown);
+        Assert.Equal("C:\\Bilder\\Grüße", loaded.ScreenshotFolder);
+        Assert.Equal("C:\\Videos\\Aufnahmen", loaded.RecordingFolder);
+        Assert.True(loaded.Microphone);
+        Assert.False(loaded.SystemAudio);
+        Assert.False(loaded.Clicks);
+        Assert.Equal(30, loaded.Fps);
+        Assert.Equal(5, loaded.Countdown);
     }
 
     [Fact]
     public void MissingKeysFallBackToDefaults()
     {
         using var settings = new TestSettings("[capture]\r\n");
+        var loaded = settings.Load();
 
-        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Mosaiks-Screenshots"), CaptureSettings.ScreenshotFolder);
-        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Mosaiks-Aufnahmen"), CaptureSettings.RecordingFolder);
-        Assert.False(CaptureSettings.Microphone);
-        Assert.True(CaptureSettings.SystemAudio);
-        Assert.True(CaptureSettings.Clicks);
-        Assert.Equal(60, CaptureSettings.Fps);
-        Assert.Equal(3, CaptureSettings.Countdown);
+        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Mosaiks-Screenshots"), loaded.ScreenshotFolder);
+        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Mosaiks-Aufnahmen"), loaded.RecordingFolder);
+        Assert.False(loaded.Microphone);
+        Assert.True(loaded.SystemAudio);
+        Assert.True(loaded.Clicks);
+        Assert.Equal(60, loaded.Fps);
+        Assert.Equal(3, loaded.Countdown);
     }
 
     [Fact]
@@ -39,21 +41,23 @@ public sealed class CaptureSettingsTests
     {
         using var settings = new TestSettings("");
         File.Delete(settings.FileName);
+        var loaded = settings.Load();
 
-        Assert.False(CaptureSettings.Microphone);
-        Assert.True(CaptureSettings.SystemAudio);
-        Assert.Equal(60, CaptureSettings.Fps);
-        Assert.Equal(3, CaptureSettings.Countdown);
+        Assert.False(loaded.Microphone);
+        Assert.True(loaded.SystemAudio);
+        Assert.Equal(60, loaded.Fps);
+        Assert.Equal(3, loaded.Countdown);
     }
 
     [Fact]
     public void KeysOutsideTheCaptureSectionAreIgnored()
     {
         using var settings = new TestSettings("[other]\r\nfps=30\r\nmicrophone=1\r\n[capture]\r\ncountdown=0\r\n");
+        var loaded = settings.Load();
 
-        Assert.Equal(60, CaptureSettings.Fps);
-        Assert.False(CaptureSettings.Microphone);
-        Assert.Equal(0, CaptureSettings.Countdown);
+        Assert.Equal(60, loaded.Fps);
+        Assert.False(loaded.Microphone);
+        Assert.Equal(0, loaded.Countdown);
     }
 
     [Theory]
@@ -68,9 +72,10 @@ public sealed class CaptureSettingsTests
     public void InvalidNumbersAreNormalized(string lines, int fps, int countdown)
     {
         using var settings = new TestSettings("[capture]\r\n" + lines + "\r\n");
+        var loaded = settings.Load();
 
-        Assert.Equal(fps, CaptureSettings.Fps);
-        Assert.Equal(countdown, CaptureSettings.Countdown);
+        Assert.Equal(fps, loaded.Fps);
+        Assert.Equal(countdown, loaded.Countdown);
     }
 
     [Theory]
@@ -81,8 +86,9 @@ public sealed class CaptureSettingsTests
     public void MicrophoneIsOnForAnyNonZeroNumber(string value, bool expected)
     {
         using var settings = new TestSettings("[capture]\r\nmicrophone=" + value + "\r\n");
+        var loaded = settings.Load();
 
-        Assert.Equal(expected, CaptureSettings.Microphone);
+        Assert.Equal(expected, loaded.Microphone);
     }
 
     [Theory]
@@ -113,23 +119,37 @@ public sealed class CaptureSettingsTests
         Assert.Equal(expected, CaptureSettings.AudioFlags(mic, sound, clicks));
 
     [Fact]
-    public void FileNameFollowsTheTestOverride()
-    {
-        using var settings = new TestSettings("[capture]\r\n");
+    public void TheOverrideVariableNamesTheFile() =>
+        Assert.Equal("D:\\qa\\settings.ini", CaptureSettings.ResolveFileName("D:\\qa\\settings.ini"));
 
-        Assert.Equal(settings.FileName, CaptureSettings.FileName);
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void WithoutOverrideTheFileIsInLocalAppData(string? value)
+    {
+        string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MosaikCapture", "settings.ini");
+
+        Assert.Equal(expected, CaptureSettings.ResolveFileName(value));
     }
 
     [Fact]
-    public void FileNameDefaultsToLocalAppData()
+    public void ASnapshotDoesNotChangeWhenTheFileDoes()
     {
-        string? previous = Environment.GetEnvironmentVariable(CaptureSettings.TestConfigVariable);
-        try
-        {
-            Environment.SetEnvironmentVariable(CaptureSettings.TestConfigVariable, null);
-            string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MosaikCapture", "settings.ini");
-            Assert.Equal(expected, CaptureSettings.FileName);
-        }
-        finally { Environment.SetEnvironmentVariable(CaptureSettings.TestConfigVariable, previous); }
+        using var settings = new TestSettings("[capture]\r\nfps=30\r\n");
+        var loaded = settings.Load();
+
+        File.WriteAllText(settings.FileName, "[capture]\r\nfps=60\r\n", Encoding.Unicode);
+
+        Assert.Equal(30, loaded.Fps);
+        Assert.Equal(60, settings.Load().Fps);
+    }
+
+    [Fact]
+    public void SnapshotHandsOverTheAudioChoices()
+    {
+        using var settings = new TestSettings("[capture]\r\nmicrophone=1\r\nsystem_audio=0\r\nshow_clicks=1\r\n");
+
+        Assert.Equal(new AudioSettings(true, false, true), settings.Load().Audio);
     }
 }

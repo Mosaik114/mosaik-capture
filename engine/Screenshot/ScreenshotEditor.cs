@@ -13,6 +13,10 @@ namespace MosaikCapture.Engine.Screenshot;
 /// This file holds the fields and the construction of the window and its toolbar; the other parts are
 /// ScreenshotEditor.Mouse (open, layout, pointer), .Markup (placing markup), .Shapes (shape recognition)
 /// and .Result (undo, keyboard, result).
+/// The state lives in plain models: <see cref="EditorDocument"/> (markup items, crop, selection, text draft,
+/// undo/redo), <see cref="EditorInteraction"/> (tool, gesture, discard question), <see cref="PenSnap"/> and
+/// <see cref="InkStyle"/>. The window draws the document (one element per item, following its events) and
+/// routes input to the models.
 /// </remarks>
 internal sealed partial class ScreenshotEditor : Window
 {
@@ -21,8 +25,6 @@ internal sealed partial class ScreenshotEditor : Window
 
     // Button tags that drive Paint()
     const string PrimaryTag = "primary", ActiveTag = "on";
-    // Tags of markup elements
-    const string SpotTag = "spot", CoverTag = "cover", NumberTag = "nr", PlateTag = "plate";
 
     sealed class ToolGroup
     {
@@ -60,8 +62,14 @@ internal sealed partial class ScreenshotEditor : Window
     readonly List<ToolGroup> groups = new();
     readonly List<Shapes.Ellipse> colorRings = new();
     readonly List<Border> widthButtons = new();
-    readonly UndoHistory history = new();
     readonly InkStyle style = new();
+
+    // The model: items, crop, selection, text draft and undo live in the document; the pen-hold snap in
+    // its own model. The window keeps only what it needs to draw and to route input.
+    readonly EditorDocument document = new();
+    readonly PenSnap snap = new();
+    readonly Dictionary<MarkupItem, FrameworkElement> elements = new();
+    readonly Dictionary<FrameworkElement, MarkupItem> itemsByElement = new();
     /// <summary>Pen or highlighter held still this long: the stroke snaps to a shape.</summary>
     static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
     /// <summary>How long a notice (copied, saved, ...) stays.</summary>
@@ -71,31 +79,18 @@ internal sealed partial class ScreenshotEditor : Window
     readonly DispatcherTimer noticeTimer = new() { Interval = NoticeDuration };
     ToolGroup? openMenuGroup;
     Point holdPoint;
-    bool snapped;                                 // the stroke has already snapped to a clean shape
-    Geometry? snapShape;
-    Point snapCenter, snapStart;
-    double snapReach;
-    bool snapOpen, snapArrow;
     Shapes.Path? spotlightShade;                  // dimming for the spotlights
     FrameworkElement? textHost;                   // the text box itself or the plate around it
 
     ScreenCapture capture = null!;                // set by Load(), cleared by HideAndReset()
     double scale = 1;                             // device pixels per WPF unit
-    Rect crop;                                    // in WPF units
     readonly EditorInteraction interaction = new();
     FrameworkElement? numberPreview;              // semi-transparent preview of the next number at the pointer
     string? numberPreviewKey;
     Point pointer;
-    Point pressPoint;
-    Rect cropAtPress;
-    int activeHandle;
     Shapes.Path? stroke;
     PolyLineSegment strokeLine = null!;           // points of the current pen or highlighter stroke
-    FrameworkElement? selectedItem;
-    TranslateTransform itemOffset = null!;        // transform of the item being moved
-    double itemStartX, itemStartY;
     TextBox? textBox;
-    bool discardArmed;
 
     public ScreenshotEditor(Action<ScreenCapture, BitmapSource> onDone, Action<ScreenCapture> onCancelled, Action<ScreenCapture, BitmapSource> onPinned)
     {
@@ -125,6 +120,63 @@ internal sealed partial class ScreenshotEditor : Window
         hwnd = new WindowInteropHelper(this).EnsureHandle();
         NativeMethods.AddExtendedStyle(hwnd, NativeMethods.WS_EX_TOOLWINDOW);
         HookInput();
+        FollowDocument();
+    }
+
+    // The markup layer mirrors the document: its children are the items' elements in document order,
+    // the spotlight dimming right above the covers, and while drawing or typing one element on top.
+    void FollowDocument()
+    {
+        document.Inserted += (item, index) =>
+        {
+            if (spotlightShade != null) markup.Children.Remove(spotlightShade);
+            markup.Children.Insert(index, elements[item]);
+            RefreshSpotlightShade(null);
+        };
+        document.Removed += (item, _) =>
+        {
+            markup.Children.Remove(elements[item]);
+            RefreshSpotlightShade(null);
+        };
+        document.Moved += item =>
+        {
+            var offset = (TranslateTransform)elements[item].RenderTransform;
+            offset.X = item.Offset.X;
+            offset.Y = item.Offset.Y;
+            if (item.Kind == MarkupKind.Spotlight) RefreshSpotlightShade(null);
+        };
+        document.CropChanged += LayoutCrop;
+    }
+
+    // Draws the markup of a new item and hands the item to the document.
+    void AddMarkup(FrameworkElement element, MarkupKind kind)
+    {
+        var item = new MarkupItem(kind, AreaOf(element));
+        elements[item] = element;
+        itemsByElement[element] = item;
+        document.Add(item);
+    }
+
+    static Rect AreaOf(FrameworkElement element)
+    {
+        double left = Canvas.GetLeft(element), top = Canvas.GetTop(element);
+        left = double.IsNaN(left) ? 0 : left;
+        top = double.IsNaN(top) ? 0 : top;
+        if (element is Shapes.Path path && path.Data != null)
+        {
+            Rect bounds = path.Data.Bounds;
+            if (!bounds.IsEmpty) bounds.Offset(left, top);
+            return bounds;
+        }
+        return new Rect(left, top, double.IsNaN(element.Width) ? 0 : element.Width, double.IsNaN(element.Height) ? 0 : element.Height);
+    }
+
+    // A new screenshot or a closed editor: no markup elements left.
+    void ClearMarkup()
+    {
+        markup.Children.Clear();
+        elements.Clear();
+        itemsByElement.Clear();
     }
 
     void ConfigureWindow()
@@ -160,12 +212,12 @@ internal sealed partial class ScreenshotEditor : Window
     void HookInput()
     {
         holdTimer.Tick += delegate { holdTimer.Stop(); Guarded("Snapping a stroke", PenHeld); };
-        noticeTimer.Tick += delegate { noticeTimer.Stop(); notice.Visibility = Visibility.Hidden; discardArmed = false; };
+        noticeTimer.Tick += delegate { noticeTimer.Stop(); notice.Visibility = Visibility.Hidden; interaction.DisarmDiscard(); };
         MouseLeftButtonDown += (_, e) => Guarded("Pressing in the editor", () => PointerDown(e.GetPosition(root)));
         MouseMove += (_, e) => Guarded("Moving in the editor", () => PointerMoved(e.GetPosition(root)));
         MouseLeftButtonUp += (_, _) => Guarded("Releasing in the editor", PointerUp);
         MouseLeave += delegate { pointer = Offscreen; UpdateNumberPreview(); };
-        MouseWheel += (_, e) => Guarded("Changing the width", () => { if (textBox == null && interaction.Idle) StepWidth(e.Delta > 0 ? 1 : -1); });
+        MouseWheel += (_, e) => Guarded("Changing the width", () => { if (!document.Typing && interaction.Idle) StepWidth(e.Delta > 0 ? 1 : -1); });
         PreviewKeyDown += (_, e) => Guarded("Editor command " + e.Key, () => OnKey(e));
     }
 
@@ -205,8 +257,8 @@ internal sealed partial class ScreenshotEditor : Window
             {
                 CommitText();
                 interaction.Begin(PointerMode.ResizeCrop);
-                activeHandle = index;
-                cropAtPress = crop;
+                interaction.Handle = index;
+                interaction.CropAtPress = document.Crop;
                 CaptureMouse();
                 e.Handled = true;
             };
@@ -578,7 +630,7 @@ internal sealed partial class ScreenshotEditor : Window
             group.IconBrush.Color = ThemeColor(active ? Palette.Accent : Palette.Text);
             if (group.Button.IsMouseOver) ShowTooltip(group.Button, ToolLabel(group));
         }
-        if (selected != Tool.Move) selectedItem = null;
+        if (selected != Tool.Move) document.Selected = null;
         UpdateNumberPreview();
     }
 

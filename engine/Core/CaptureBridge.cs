@@ -48,6 +48,7 @@ internal static class CaptureBridge
 
     public static void Run(string[] args)
     {
+        EngineComposition.Compose();
         if (args.Length > 0 && args[0] == "--self-test") { Diagnostics.SelfTest.Run(args.Length > 1 ? args[1] : "capture-test.json"); return; }
         if (args.Length > 1 && args[0] == "--live-test") { Diagnostics.LiveTest.Run(args[1]); return; }
         int command = ParseCommand(args);

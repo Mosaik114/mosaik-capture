@@ -22,13 +22,15 @@ internal static class VideoExport
         double length = Math.Max(0.1, to - from);
         var dispatcher = Application.Current.Dispatcher;
         var reporter = new MonotonicProgress(p => dispatcher.BeginInvoke(new Action(() => { if (!cancellation.IsCancellationRequested) progress(p); })));
-        Task.Run(() =>
+        Task.Run(async () =>
         {
             string? target = null;
             try
             {
                 target = ReserveTarget(source.Path, gif);
-                return gif ? ExportGif(source, from, to, length, target, reporter, cancellation) : ExportMp4(source, from, to, sound, length, target, reporter, cancellation);
+                return gif
+                    ? await ExportGifAsync(source, from, to, length, target, reporter, cancellation).ConfigureAwait(false)
+                    : await ExportMp4Async(source, from, to, sound, length, target, reporter, cancellation).ConfigureAwait(false);
             }
             catch
             {
@@ -96,31 +98,31 @@ internal static class VideoExport
             .Add("-i", palette, "-lavfi", GifScale + "[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle")
             .Add("-loop", "0", "-progress", "pipe:1", "-nostats", target);
 
-    static RecordedVideo ExportMp4(RecordedVideo source, double from, double to, bool sound, double length, string target,
+    static async Task<RecordedVideo> ExportMp4Async(RecordedVideo source, double from, double to, bool sound, double length, string target,
         MonotonicProgress progress, CancellationToken cancellation)
     {
-        var encoder = Ffmpeg.EncoderOrSoftwareAsync(EncoderTimeout).GetAwaiter().GetResult();   // background thread
+        var encoder = await Ffmpeg.EncoderOrSoftwareAsync(EncoderTimeout).ConfigureAwait(false);
         var args = Mp4Arguments(source.Path, from, to, sound && source.Audio, encoder, target);
-        int code = Ffmpeg.Run(Ffmpeg.Exe, args, FfmpegTimeouts.ForMedia(length), out _, out string error, seconds => progress.Report(seconds / length), cancellation);
-        return Finish(code, error, target);
+        var result = await Ffmpeg.RunAsync(Ffmpeg.Exe, args, FfmpegTimeouts.ForMedia(length), seconds => progress.Report(seconds / length), cancellation).ConfigureAwait(false);
+        return await FinishAsync(result, target, cancellation).ConfigureAwait(false);
     }
 
-    static RecordedVideo ExportGif(RecordedVideo source, double from, double to, double length, string target,
+    static async Task<RecordedVideo> ExportGifAsync(RecordedVideo source, double from, double to, double length, string target,
         MonotonicProgress progress, CancellationToken cancellation)
     {
         string palette = Path.Combine(Path.GetTempPath(), "mosaik-palette-" + Guid.NewGuid().ToString("N") + ".png");
         try
         {
             progress.Report(PaletteStarted);
-            int code = Ffmpeg.Run(Ffmpeg.Exe, GifPaletteArguments(source.Path, from, to, palette), FfmpegTimeouts.ForMedia(length), out _, out string error,
-                cancellation: cancellation);
-            if (code == 0)
+            var result = await Ffmpeg.RunAsync(Ffmpeg.Exe, GifPaletteArguments(source.Path, from, to, palette), FfmpegTimeouts.ForMedia(length),
+                cancellation: cancellation).ConfigureAwait(false);
+            if (result.Succeeded)
             {
                 progress.Report(PaletteDone);
-                code = Ffmpeg.Run(Ffmpeg.Exe, GifArguments(source.Path, from, to, palette, target), FfmpegTimeouts.ForMedia(length), out _, out error,
-                    seconds => progress.Report(PaletteDone + (1 - PaletteDone) * seconds / length), cancellation);
+                result = await Ffmpeg.RunAsync(Ffmpeg.Exe, GifArguments(source.Path, from, to, palette, target), FfmpegTimeouts.ForMedia(length),
+                    seconds => progress.Report(PaletteDone + (1 - PaletteDone) * seconds / length), cancellation).ConfigureAwait(false);
             }
-            return Finish(code, error, target);
+            return await FinishAsync(result, target, cancellation).ConfigureAwait(false);
         }
         finally
         {
@@ -129,10 +131,10 @@ internal static class VideoExport
         }
     }
 
-    static RecordedVideo Finish(int exitCode, string error, string target)
+    static async Task<RecordedVideo> FinishAsync(FfmpegResult result, string target, CancellationToken cancellation)
     {
-        if (exitCode != 0) throw new InvalidOperationException(FfmpegOutput.LastLine(error));
-        return RecordedVideo.Load(target);
+        if (!result.Succeeded) throw new InvalidOperationException(FfmpegOutput.LastLine(result.Error));
+        return await RecordedVideo.LoadAsync(target, cancellation).ConfigureAwait(false);
     }
 
     static void DeletePartial(string target)

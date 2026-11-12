@@ -32,8 +32,8 @@ internal sealed class WpfRecordingUi : IRecordingUi
     public void HideFrame() => Frame.Hide();
     public void SetFramePaused(bool paused) => Frame.SetPaused(paused);
 
-    public void StartCountdown(Int32Rect area, RECT monitor, Action launch, Action finished, Action cancelled) =>
-        Countdown.Run(area, monitor, launch, finished, cancelled);
+    public void StartCountdown(Int32Rect area, RECT monitor, int seconds, Action launch, Action finished, Action cancelled) =>
+        Countdown.Run(area, monitor, seconds, launch, finished, cancelled);
 
     public void StopCountdown() => Countdown.Stop();
 
@@ -84,16 +84,15 @@ internal sealed class RecordingBackend : IRecordingBackend
 
     public OutputLookup FindOutput(RECT monitor, out int output, out RECT desktop) => Dxgi.Find(monitor, out output, out desktop);
 
-    public IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio)
+    public IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio, int fps)
     {
-        var session = new RecordingSession(area, output, desktop, audio);
+        var session = new RecordingSession(area, output, desktop, audio, fps);
         session.StartAudio();
         return session;
     }
 
-    public string NewRecordingPath(DateTime begun)
+    public string NewRecordingPath(DateTime begun, string folder)
     {
-        string folder = CaptureSettings.RecordingFolder;
         Directory.CreateDirectory(folder);
         return UniqueFile.Next(Path.Combine(folder, FileName(begun)));
     }
@@ -102,7 +101,7 @@ internal sealed class RecordingBackend : IRecordingBackend
     internal static string FileName(DateTime begun) =>
         UiText.Files.RecordingPrefix + begun.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.CurrentCulture) + ".mp4";
 
-    public AudioSettings LoadSettings() => new(CaptureSettings.Microphone, CaptureSettings.SystemAudio, CaptureSettings.Clicks);
+    public CaptureSettingsSnapshot LoadSettings() => CaptureSettings.Load();
 
     public void SaveSettings(AudioSettings settings) => CaptureSettings.SaveAudio(settings.Microphone, settings.SystemSound, settings.ShowClicks);
 

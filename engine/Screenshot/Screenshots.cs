@@ -10,11 +10,15 @@ namespace MosaikCapture.Engine.Screenshot;
 /// </summary>
 internal static class Screenshots
 {
-    static readonly Lazy<ScreenshotController> controller = new(() => new ScreenshotController(new WpfScreenshotUi(), new ScreenshotStore()));
+    static ScreenshotController? controller;
 
-    public static string Folder => CaptureSettings.ScreenshotFolder;
+    /// <summary>Called once by <see cref="EngineComposition"/>, which builds the object graph.</summary>
+    internal static void Use(ScreenshotController screenshotController) => controller = screenshotController;
 
-    public static void Start() => controller.Value.Start();
+    /// <summary>The screenshot folder as the settings say now (read once per use).</summary>
+    public static string Folder => CaptureSettings.Load().ScreenshotFolder;
+
+    public static void Start() => (controller ?? throw EngineComposition.NotComposed()).Start();
 
     /// <summary>Starts after a short delay so that whatever triggered it has left the screen.</summary>
     public static void StartSoon()

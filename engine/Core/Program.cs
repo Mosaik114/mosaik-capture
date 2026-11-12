@@ -6,7 +6,8 @@ internal static class Program
     const string RestartArgument = "--idle";
     static readonly TimeSpan MinimumUptimeForRestart = TimeSpan.FromMinutes(1);
 
-    internal static DateTime started = DateTime.Now;
+    /// <summary>Stopwatch timestamp of the start; monotonic, so clock changes (sleep, DST, sync) do not matter.</summary>
+    internal static long startedAt = Stopwatch.GetTimestamp();
     internal static int restarting;
 
     [STAThread]
@@ -75,7 +76,8 @@ internal static class Program
         AggregateException aggregate => aggregate.InnerExceptions.Count > 0 && aggregate.InnerExceptions.All(IsRecoverable),
         TargetInvocationException invocation => invocation.InnerException != null && IsRecoverable(invocation.InnerException),
         IOException or UnauthorizedAccessException or TimeoutException or OperationCanceledException => true,
-        ExternalException => true,   // COMException, Win32Exception, SEHException ...
+        SEHException => false,       // a native crash (access violation ...): state may be corrupt
+        ExternalException => true,   // COMException, Win32Exception ...
         _ => false,
     };
 
@@ -83,10 +85,12 @@ internal static class Program
     /// Restarts only if the engine has been running for a while; otherwise a crash at startup would loop.
     /// Returns whether a new engine was started (then this one should end).
     /// </summary>
+    internal static TimeSpan Uptime => TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - startedAt) / (double)Stopwatch.Frequency);
+
     internal static bool Restart()
     {
         if (Interlocked.Exchange(ref restarting, 1) == 1) return false;
-        if (DateTime.Now - started < MinimumUptimeForRestart)
+        if (Uptime < MinimumUptimeForRestart)
         {
             ErrorLog.Write("No restart: crashed within the first minute", null);
             return false;

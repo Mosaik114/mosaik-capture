@@ -13,8 +13,8 @@ internal static class FfmpegTool
 
     public static void Run(params string[] args)
     {
-        int code = Ffmpeg.Run(Ffmpeg.Exe, FfmpegArgs.Quiet().Add(args), FfmpegTimeouts.ForMedia(60), out _, out string error);
-        if (code != 0) throw new InvalidOperationException("ffmpeg " + code + ": " + error);
+        var result = Ffmpeg.RunAsync(Ffmpeg.Exe, FfmpegArgs.Quiet().Add(args), FfmpegTimeouts.ForMedia(60)).GetAwaiter().GetResult();   // test setup on a worker thread
+        if (!result.Succeeded) throw new InvalidOperationException("ffmpeg " + result.ExitCode + ": " + result.Error);
     }
 
     /// <summary>A 1280 x 720 test pattern of the given length with a 440 Hz tone.</summary>

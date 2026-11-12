@@ -52,6 +52,35 @@ internal sealed class EditorInteraction
     /// <summary>Text and label tools place a text box.</summary>
     public bool TextTool => Tool is ScreenshotEditor.Tool.Text or ScreenshotEditor.Tool.Label;
 
+    /// <summary>Where the current gesture started (WPF units).</summary>
+    public Point PressPoint { get; set; }
+
+    /// <summary>The crop when a crop drag started (for its single undo step).</summary>
+    public Rect CropAtPress { get; set; }
+
+    /// <summary>The crop handle being dragged (0-7, clockwise from the top left).</summary>
+    public int Handle { get; set; }
+
+    /// <summary>The moved item's offset when its drag started.</summary>
+    public Vector ItemStart { get; set; }
+
+    /// <summary>Esc was pressed once with changes: the next Esc discards them.</summary>
+    public bool DiscardArmed { get; private set; }
+
+    /// <summary>
+    /// Esc with changes asks once so nothing gets lost by accident: true means "ask now" (and arms the
+    /// next Esc), false means "close".
+    /// </summary>
+    public bool ConfirmDiscard(bool hasChanges)
+    {
+        if (!hasChanges || DiscardArmed) return false;
+        DiscardArmed = true;
+        return true;
+    }
+
+    /// <summary>Any other action, or the notice fading out, takes the question back.</summary>
+    public void DisarmDiscard() => DiscardArmed = false;
+
     public void Begin(PointerMode mode) => Mode = mode;
 
     /// <summary>Ends the gesture and returns what it was.</summary>

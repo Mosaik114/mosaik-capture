@@ -35,11 +35,11 @@ internal static class SelfTest
 
     static void CheckSettings(string ini)
     {
-        Environment.SetEnvironmentVariable(CaptureSettings.TestConfigVariable, ini);
         File.WriteAllText(ini, "[capture]\r\nscreenshot_folder=C:\\Bilder\\Grüße\r\nrecording_folder=C:\\Videos\\Aufnahmen\r\nmicrophone=1\r\nsystem_audio=0\r\nshow_clicks=0\r\nfps=30\r\ncountdown=5\r\n", Encoding.Unicode);
-        Check(CaptureSettings.ScreenshotFolder == "C:\\Bilder\\Grüße", "Unicode screenshot folder");
-        Check(CaptureSettings.Microphone && !CaptureSettings.SystemAudio && !CaptureSettings.Clicks, "audio settings");
-        Check(CaptureSettings.Fps == 30 && CaptureSettings.Countdown == 5, "frame rate and countdown");
+        var settings = CaptureSettings.Load(ini);
+        Check(settings.ScreenshotFolder == "C:\\Bilder\\Grüße", "Unicode screenshot folder");
+        Check(settings.Microphone && !settings.SystemAudio && !settings.Clicks, "audio settings");
+        Check(settings.Fps == 30 && settings.Countdown == 5, "frame rate and countdown");
     }
 
     static void CheckRecordingArea()

@@ -38,7 +38,7 @@ public sealed class RecordingControllerTests
     [Fact]
     public async Task FullRecordingGoesThroughAllPhasesAndEndsIdle()
     {
-        backend.Settings = new AudioSettings(microphone: true, systemSound: false, showClicks: true);
+        backend.Settings = new CaptureSettingsSnapshot { Microphone = true, SystemAudio = false, Clicks = true, Fps = 30, Countdown = 5, RecordingFolder = "D:\\Clips" };
 
         controller.Toggle();
         Assert.Equal(RecordingPhase.Picking, controller.Phase);
@@ -54,6 +54,8 @@ public sealed class RecordingControllerTests
         var session = backend.Sessions.Single();
         Assert.Equal(Fitted, session.Area);
         Assert.Equal(new AudioSettings(true, false, true), backend.StartedWith);
+        Assert.Equal(30, backend.StartedFps);                   // the settings are read once, when the recording starts
+        Assert.Contains("StartCountdown 5", ui.Calls);
         Assert.Contains("ShowFrame " + Fitted, ui.Calls);
         Assert.Equal(0, session.Resumes);
 
@@ -70,6 +72,7 @@ public sealed class RecordingControllerTests
         Assert.Equal(RecordingPhase.Idle, controller.Phase);
         Assert.False(controller.Busy);
         Assert.Equal("C:\\Videos\\out.mp4", session.FinishedInto);
+        Assert.Equal("D:\\Clips", backend.PathFolder);   // the folder from the snapshot taken at the start
         Assert.Equal(new[] { "StopClickHighlights", "HideToolbar", "HideFrame", "ShowSaving", "CopyFileToClipboard C:\\Videos\\out.mp4", "ShowRecording Aufnahme gespeichert" },
             ui.Calls.SkipWhile(c => c != "StopClickHighlights"));
     }
@@ -161,7 +164,7 @@ public sealed class RecordingControllerTests
         using var root = new TempDirectory();
         var encoder = new TaskCompletionSource<VideoEncoder>(TaskCreationOptions.RunContinuationsAsynchronously);
         RecordingSession? real = null;
-        backend.CreateSession = (area, audio) => real = new RecordingSession(area, 0, Monitor, audio, new RecordingSessionServices
+        backend.CreateSession = (area, audio) => real = new RecordingSession(area, 0, Monitor, audio, 60, new RecordingSessionServices
         {
             Runner = new NeverStartedRunner(),
             CreateAudio = (_, _) => new SilentAudio(),
@@ -189,7 +192,7 @@ public sealed class RecordingControllerTests
     {
         public IFfmpegProcess Start(FfmpegArgs args, Action<string> errorLine, Action exited) => throw new InvalidOperationException("no ffmpeg in this test");
 
-        public int Run(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, out string output, out string error) => throw new InvalidOperationException("no ffmpeg in this test");
+        public Task<FfmpegResult> RunAsync(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, CancellationToken cancellation) => throw new InvalidOperationException("no ffmpeg in this test");
     }
 
     sealed class SilentAudio : IAudioRecorder
@@ -423,6 +426,7 @@ public sealed class RecordingControllerTests
         Assert.Equal(RecordingPhase.Idle, controller.Phase);
         Assert.False(controller.Busy);
         Assert.Equal("ShowProblem Aufnahme fehlgeschlagen | " + UiText.Common.FfmpegTimedOut, ui.Calls.Last());
+        Assert.True(session.FinishToken.IsCancellationRequested, "the timeout must cancel the save so ffmpeg is killed");
         session.ReleaseFinish();
     }
 
@@ -460,7 +464,7 @@ public sealed class RecordingControllerTests
     public async Task WindowErrorDuringTheCountdownDiscardsTheSession()
     {
         controller.Toggle();
-        ui.FailOn = "StartCountdown";
+        ui.FailOn = "StartCountdown";   // matches "StartCountdown <seconds>"
         ui.Pick!(Picked, Monitor, Work);
         var session = backend.Sessions.Single();
 
@@ -557,9 +561,9 @@ public sealed class RecordingControllerTests
         public void HideFrame() => Log("HideFrame");
         public void SetFramePaused(bool paused) => Log("SetFramePaused " + paused);
 
-        public void StartCountdown(Int32Rect area, RECT monitor, Action launch, Action finished, Action cancelled)
+        public void StartCountdown(Int32Rect area, RECT monitor, int seconds, Action launch, Action finished, Action cancelled)
         {
-            Log("StartCountdown");
+            Log("StartCountdown " + seconds);
             Launch = launch;
             CountdownFinished = finished;
             CountdownCancelled = cancelled;
@@ -605,8 +609,10 @@ public sealed class RecordingControllerTests
         public OutputLookup Output = OutputLookup.Found;
         public Func<Int32Rect, AudioSettings, IRecordingSession>? CreateSession;
         public Exception? StartFailure;
-        public AudioSettings Settings = new(false, true, true);
+        public CaptureSettingsSnapshot Settings = new() { Microphone = false, SystemAudio = true, Clicks = true };
         public AudioSettings? StartedWith;
+        public int StartedFps;
+        public string? PathFolder;
 
         public bool FfmpegAvailable { get; set; } = true;
 
@@ -621,8 +627,9 @@ public sealed class RecordingControllerTests
             return Output;
         }
 
-        public IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio)
+        public IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio, int fps)
         {
+            StartedFps = fps;
             if (StartFailure != null) throw StartFailure;
             StartedWith = audio;
             if (CreateSession != null) return CreateSession(area, audio);
@@ -631,9 +638,13 @@ public sealed class RecordingControllerTests
             return session;
         }
 
-        public string NewRecordingPath(DateTime begun) => "C:\\Videos\\out.mp4";
+        public string NewRecordingPath(DateTime begun, string folder)
+        {
+            PathFolder = folder;
+            return "C:\\Videos\\out.mp4";
+        }
 
-        public AudioSettings LoadSettings()
+        public CaptureSettingsSnapshot LoadSettings()
         {
             Calls.Add("LoadSettings");
             return Settings;
@@ -695,9 +706,13 @@ public sealed class RecordingControllerTests
 
         public void SetSystemSound(bool on) => SystemSound = on;
 
-        public RecordedVideo? Finish(string path)
+        /// <summary>The token the controller passed; cancelled when its save timeout hits.</summary>
+        public CancellationToken FinishToken { get; private set; }
+
+        public async Task<RecordedVideo?> FinishAsync(string path, CancellationToken cancellation)
         {
-            Assert.True(finishAllowed.Wait(TimeSpan.FromSeconds(10)), "finish was never released");
+            FinishToken = cancellation;
+            await finishAllowed;   // held by HoldFinish: waits without blocking any thread
             if (FinishFailure != null) throw FinishFailure;
             FinishedInto = path;
             return Video;

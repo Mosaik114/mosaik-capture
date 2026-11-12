@@ -23,7 +23,7 @@ internal static class ScreenGrabber
         try
         {
             screen = NativeMethods.GetDC(IntPtr.Zero);
-            if (screen == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetDC failed");
+            if (screen == IntPtr.Zero) throw new Win32Exception(NativeMethods.ERROR_INVALID_PARAMETER, "GetDC failed");   // GetDC sets no error code
             memory = NativeMethods.CreateCompatibleDC(screen);
             bitmap = NativeMethods.CreateCompatibleBitmap(screen, width, height);
             if (memory == IntPtr.Zero || bitmap == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "Creating a " + width + " x " + height + " screen bitmap failed");

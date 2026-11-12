@@ -8,7 +8,6 @@ public sealed class SelfTestTests
     {
         using var directory = new TempDirectory();
         string report = directory.File("capture-test.json");
-        string? previous = Environment.GetEnvironmentVariable(CaptureSettings.TestConfigVariable);
         int exitCode = Environment.ExitCode;
         try
         {
@@ -19,7 +18,6 @@ public sealed class SelfTestTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable(CaptureSettings.TestConfigVariable, previous);
             Environment.ExitCode = exitCode;
         }
     }

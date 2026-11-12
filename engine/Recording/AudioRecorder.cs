@@ -134,11 +134,28 @@ internal sealed class AudioRecorder : IAudioRecorder
         }
         finally
         {
-            long end = Clocks.Now100Ns();
-            systemSound.End(startTicks, end);
-            microphone.End(startTicks, end);
-            if (enumerator != null) Marshal.ReleaseComObject(enumerator);
-            finished.TrySetResult(true);
+            try
+            {
+                long end = Clocks.Now100Ns();
+                EndQuietly(systemSound, end);
+                EndQuietly(microphone, end);
+                if (enumerator != null) Marshal.ReleaseComObject(enumerator);
+            }
+            finally
+            {
+                finished.TrySetResult(true);   // always: the work folder is removed after this
+            }
+        }
+    }
+
+    // Finishing one track must not keep the other open or let an exception escape the audio thread.
+    void EndQuietly(AudioTrack track, long end)
+    {
+        try { track.End(startTicks, end); }
+        catch (Exception ex)   // e.g. a COM error while closing a vanished device
+        {
+            failed = true;
+            ErrorLog.Write("Finishing an audio track", ex);
         }
     }
 

@@ -5,24 +5,9 @@ internal sealed partial class ScreenshotEditor
 {
     // ---------- Undo ----------
 
-    void AddMarkup(FrameworkElement element)
-    {
-        // pixelated and blurred areas belong to the image: at the very bottom, below dimming and markup
-        Action put = delegate
-        {
-            if (CoverTag.Equals(element.Tag)) markup.Children.Insert(0, element);
-            else markup.Children.Add(element);
-        };
-        put();
-        PushUndo(delegate { markup.Children.Remove(element); }, put);
-        RefreshSpotlightShade(null);
-    }
+    void Undo() => Replay(document.Undo);
 
-    void PushUndo(Action undoAction, Action redoAction) => history.Push(undoAction, redoAction);
-
-    void Undo() => Replay(history.Undo);
-
-    void Redo() => Replay(history.Redo);
+    void Redo() => Replay(document.Redo);
 
     void Replay(Func<bool> step)
     {
@@ -32,17 +17,7 @@ internal sealed partial class ScreenshotEditor
         UpdateNumberPreview();
     }
 
-    void RemoveSelectedItem()
-    {
-        var element = selectedItem;
-        if (element == null) return;
-        int index = markup.Children.IndexOf(element);
-        if (index < 0) return;
-        selectedItem = null;
-        markup.Children.RemoveAt(index);
-        PushUndo(delegate { markup.Children.Insert(Math.Min(index, markup.Children.Count), element); }, delegate { markup.Children.Remove(element); });
-        RefreshSpotlightShade(null);
-    }
+    void RemoveSelectedItem() => document.DeleteSelected();
 
     // ---------- Keyboard ----------
 
@@ -51,7 +26,7 @@ internal sealed partial class ScreenshotEditor
         Key key = e.Key == Key.System ? e.SystemKey : e.Key;
         var modifiers = Keyboard.Modifiers;
         bool control = (modifiers & ModifierKeys.Control) != 0, shift = (modifiers & ModifierKeys.Shift) != 0;
-        if (textBox != null)
+        if (document.Typing)
         {
             if (key == Key.Escape || (key == Key.Enter && !shift)) { CommitText(); e.Handled = true; }
             return;
@@ -77,7 +52,7 @@ internal sealed partial class ScreenshotEditor
 
     // ---------- Result ----------
 
-    /// <summary>The crop including all markup at full resolution.</summary>
+    /// <summary>The document.Crop including all markup at full resolution.</summary>
     internal BitmapSource Render()
     {
         Int32Rect pixels = CropInPixels();
@@ -88,7 +63,7 @@ internal sealed partial class ScreenshotEditor
         result.Render(background);
         if (markup.Children.Count > 0)
         {
-            // shift the markup so the top-left corner of the crop is at 0,0
+            // shift the markup so the top-left corner of the document.Crop is at 0,0
             Transform previous = markup.RenderTransform;
             markup.RenderTransform = new TranslateTransform(-pixels.X / scale, -pixels.Y / scale);
             markup.UpdateLayout();
@@ -100,7 +75,7 @@ internal sealed partial class ScreenshotEditor
         return result;
     }
 
-    // Recognizes the text in the crop and copies it as text.
+    // Recognizes the text in the document.Crop and copies it as text.
     void CopyText() => CopyTextAsync().OnFailure("Copying the text of a screenshot", () => ShowNotice(UiText.Common.TextRecognitionUnavailable));
 
     async Task CopyTextAsync()
@@ -153,9 +128,8 @@ internal sealed partial class ScreenshotEditor
     void Cancel()
     {
         CommitText();
-        if (history.HasChanges && !discardArmed)
+        if (interaction.ConfirmDiscard(document.HasChanges))
         {
-            discardArmed = true;
             ShowNotice(UiText.Editor.ConfirmDiscard);
             return;
         }
@@ -172,8 +146,8 @@ internal sealed partial class ScreenshotEditor
         holdTimer.Stop();
         CloseMenu();
         Hide();
-        markup.Children.Clear();
-        history.Clear();
+        ClearMarkup();
+        document.Reset(Rect.Empty);
         frozenImage.Source = null;
         notice.Visibility = tooltip.Visibility = Visibility.Hidden;
         capture = null!;

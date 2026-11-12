@@ -20,15 +20,14 @@ public sealed class RecordingSessionTests : IDisposable
 
     public void Dispose() => root.Dispose();
 
-    RecordingSession NewSession() => new(Area, 0, Desktop, new AudioSettings(false, true, false), new RecordingSessionServices
+    RecordingSession NewSession() => new(Area, 0, Desktop, new AudioSettings(false, true, false), 30, new RecordingSessionServices
     {
         Runner = runner,
         CreateAudio = (_, _) => audio,
         WorkRoot = root.Path,
-        Fps = () => 30,
         Encoder = () => encoder(),
         NudgeFirstFrame = (x, y) => { lock (nudges) nudges.Add(new Point(x, y)); },
-        LoadVideo = path => new RecordedVideo { Path = path, Duration = 4 },
+        LoadVideo = (path, _) => Task.FromResult(new RecordedVideo { Path = path, Duration = 4 }),
         PreviousSegmentTimeout = TimeSpan.FromSeconds(5),
     });
 
@@ -339,7 +338,7 @@ public sealed class RecordingSessionTests : IDisposable
         await Within(session.ResumeAsync());
         string target = root.File("out.mp4");
 
-        var video = await Task.Run(() => session.Finish(target));
+        var video = await session.FinishAsync(target, TestContext.Current.CancellationToken);
 
         Assert.NotNull(video);
         Assert.Equal(target, video!.Path);
@@ -360,7 +359,7 @@ public sealed class RecordingSessionTests : IDisposable
         await Within(session.ResumeAsync());
         runner.Processes.Single().Error("Could not open the output");
 
-        var video = await Task.Run(() => session.Finish(root.File("out.mp4")));
+        var video = await session.FinishAsync(root.File("out.mp4"), TestContext.Current.CancellationToken);
 
         Assert.Null(video);
         Assert.Equal("Could not open the output", session.Reason);
@@ -375,12 +374,36 @@ public sealed class RecordingSessionTests : IDisposable
         await Within(session.ResumeAsync());
         string target = root.File("out.mp4");
 
-        var video = await Task.Run(() => session.Finish(target));
+        var video = await session.FinishAsync(target, TestContext.Current.CancellationToken);
 
         Assert.Null(video);
         Assert.Equal("Conversion failed!", session.Reason);
         Assert.False(File.Exists(target));
         Assert.True(Directory.Exists(session.WorkDirectory));
+    }
+
+    [Fact]
+    public async Task CancellingTheSaveStopsAHangingAssemblyAndReportsTheTimeout()
+    {
+        runner.HangOnAssemble = true;
+        var session = NewSession();
+        await Within(session.ResumeAsync());
+        string target = root.File("out.mp4");
+        using var cancel = new CancellationTokenSource();
+
+        var saving = session.FinishAsync(target, cancel.Token);
+        cancel.Cancel();
+        var video = await WithinResult(saving);
+
+        Assert.Null(video);
+        Assert.Equal(UiText.Common.FfmpegTimedOut, session.Reason);
+        Assert.False(File.Exists(target));
+    }
+
+    static async Task<T> WithinResult<T>(Task<T> task)
+    {
+        await Within(task);
+        return await task;
     }
 
     [Fact]
@@ -390,7 +413,7 @@ public sealed class RecordingSessionTests : IDisposable
         var session = NewSession();
         await Within(session.ResumeAsync());
 
-        var video = await Task.Run(() => session.Finish(root.File("out.mp4")));
+        var video = await session.FinishAsync(root.File("out.mp4"), TestContext.Current.CancellationToken);
 
         Assert.NotNull(video);
         Assert.True(session.AudioLost);
@@ -473,25 +496,22 @@ public sealed class RecordingSessionTests : IDisposable
             return process;
         }
 
-        public int Run(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, out string output, out string error)
+        /// <summary>Holds the assembling run until the token fires (a hanging ffmpeg).</summary>
+        public bool HangOnAssemble;
+
+        public async Task<FfmpegResult> RunAsync(FfmpegProgram program, FfmpegArgs args, TimeSpan timeout, CancellationToken cancellation)
         {
             lock (Runs) Runs.Add((program, args.Arguments));
-            error = "";
-            if (program == FfmpegProgram.Probe)
-            {
-                output = "start_time=0.1\nduration=" + FfmpegArgs.Number(ProbedDuration) + "\n";
-                return 0;
-            }
-            output = "";
+            if (program == FfmpegProgram.Probe) return new FfmpegResult(0, "start_time=0.1\nduration=" + FfmpegArgs.Number(ProbedDuration) + "\n", "");
             ConcatLines = File.ReadAllLines(args.Arguments[args.Arguments.ToList().IndexOf("-i") + 1]);
+            if (HangOnAssemble) await Task.Delay(Timeout.Infinite, cancellation);   // like Ffmpeg.RunAsync: killed and cancelled
             if (AssembleExitCode != 0)
             {
                 File.WriteAllText(args.Arguments.LastItem(), "partial");
-                error = "Conversion failed!";
-                return AssembleExitCode;
+                return new FfmpegResult(AssembleExitCode, "", "Conversion failed!");
             }
             File.WriteAllText(args.Arguments.LastItem(), "video");
-            return 0;
+            return new FfmpegResult(0, "", "");
         }
     }
 

@@ -37,8 +37,6 @@ internal static class FfmpegTimeouts
 /// <remarks>Thread-safe: all members may be called from any thread.</remarks>
 internal static class Ffmpeg
 {
-    const int WaitSliceMs = 100;
-
     /// <summary>Characters kept from the end of ffmpeg's error output (the actual error is printed last).</summary>
     const int ErrorTail = 8000;
 
@@ -77,7 +75,7 @@ internal static class Ffmpeg
             if (detection == null || retry)
             {
                 detectionFailed = false;
-                detection = Task.Run(DetectEncoder);
+                detection = Task.Run(ProbeEncoderAsync);
             }
             return detection;
         }
@@ -102,12 +100,12 @@ internal static class Ffmpeg
         ? new[] { "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0", "-pix_fmt", "yuv420p" }
         : new[] { "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p" };
 
-    static VideoEncoder DetectEncoder()
+    static async Task<VideoEncoder> ProbeEncoderAsync()
     {
         if (Exe == null) return VideoEncoder.Software;
         var test = new FfmpegArgs().Add("-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
             "-frames:v", "2", "-c:v", "h264_nvenc", "-f", "null", "-");
-        try { return Run(Exe, test, FfmpegTimeouts.Quick, out _, out _) == 0 ? VideoEncoder.Nvenc : VideoEncoder.Software; }
+        try { return (await RunAsync(Exe, test, FfmpegTimeouts.Quick).ConfigureAwait(false)).Succeeded ? VideoEncoder.Nvenc : VideoEncoder.Software; }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or TimeoutException)
         {
             ErrorLog.Write("Detecting the video encoder", ex);
@@ -178,7 +176,6 @@ internal static class Ffmpeg
     {
         var process = new Process
         {
-            EnableRaisingEvents = exited != null,
             StartInfo = new ProcessStartInfo(exe, args.ToString())
             {
                 UseShellExecute = false,
@@ -190,9 +187,6 @@ internal static class Ffmpeg
                 StandardErrorEncoding = Encoding.UTF8
             }
         };
-        process.OutputDataReceived += (_, e) => { if (e.Data != null) outputLine?.Invoke(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data != null) errorLine?.Invoke(e.Data); };
-        if (exited != null) process.Exited += (_, _) => ReportExit(process, exited);
         try
         {
             process.Start();
@@ -205,8 +199,15 @@ internal static class Ffmpeg
         try
         {
             AddToKillOnCloseJob(process);
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+            // Two own reader threads instead of BeginOutputReadLine: on .NET Framework those block pool threads
+            // for the whole run. The exit is reported once both streams ended, so the last error line is in.
+            int openStreams = 2;
+            void StreamEnded()
+            {
+                if (Interlocked.Decrement(ref openStreams) == 0 && exited != null) ReportExit(process, exited);
+            }
+            ReadLines(process.StandardOutput, outputLine, StreamEnded, "ffmpeg output");
+            ReadLines(process.StandardError, errorLine, StreamEnded, "ffmpeg errors");
             return process;
         }
         catch
@@ -217,8 +218,27 @@ internal static class Ffmpeg
         }
     }
 
-    // On .NET Framework Exited can fire before the last redirected lines arrived: the parameterless
-    // WaitForExit waits for the end of both streams, so the callback sees ffmpeg's final error line.
+    // Both streams have ended (ffmpeg closed them on exit): wait for the exit itself, then report.
+    static void ReadLines(StreamReader reader, Action<string>? line, Action ended, string name)
+    {
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                string? text;
+                while ((text = reader.ReadLine()) != null) line?.Invoke(text);
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { }   // process disposed by a stop
+            catch (Exception ex)   // a line handler failed: must not escape a background thread
+            {
+                ErrorLog.Write("Reading " + name, ex);
+            }
+            finally { ended(); }
+        })
+        { IsBackground = true, Name = name };
+        thread.Start();
+    }
+
     static void ReportExit(Process process, Action exited)
     {
         try { process.WaitForExit(); }
@@ -226,49 +246,48 @@ internal static class Ffmpeg
         exited();
     }
 
-    /// <summary>
-    /// Runs to completion (call from a background thread) and returns the exit code. <paramref name="progress"/>
-    /// receives the seconds reported by <c>-progress pipe:1</c>.
-    /// </summary>
-    /// <exception cref="TimeoutException">The call took longer than <paramref name="timeout"/>; the process was killed.</exception>
-    /// <exception cref="OperationCanceledException"><paramref name="cancellation"/> fired; the process was killed.</exception>
-    public static int Run(string? exe, FfmpegArgs args, TimeSpan timeout, out string output, out string error,
-        Action<double>? progress = null, CancellationToken cancellation = default)
-    {
-        cancellation.ThrowIfCancellationRequested();
-        // with -progress ffmpeg prints a status block every half second: only the progress is used then
-        var outputText = new TailBuffer(progress == null ? OutputTail : ErrorTail);
-        var errorText = new TailBuffer(ErrorTail);
-        using var process = Start(exe, args, line =>
-        {
-            outputText.Add(line);
-            if (progress != null && FfmpegOutput.ProgressSeconds(line) is double seconds) progress(seconds);
-        }, errorText.Add);
-        CloseInput(process);   // nothing is ever sent: a call that reads stdin ends instead of waiting
-        var waited = Stopwatch.StartNew();
-        while (!process.WaitForExit(WaitSliceMs))
-        {
-            if (cancellation.IsCancellationRequested)
-            {
-                Kill(process);
-                throw new OperationCanceledException(cancellation);
-            }
-            if (waited.Elapsed > timeout)
-            {
-                Kill(process);
-                throw new TimeoutException(UiText.Common.FfmpegTimedOut);
-            }
-        }
-        process.WaitForExit();   // has exited: this only waits for the last redirected output lines
-        output = outputText.ToString();
-        error = errorText.ToString().Trim();
-        return process.ExitCode;
-    }
-
     static void CloseInput(Process process)
     {
         try { process.StandardInput.Close(); }
         catch (Exception ex) when (ex is IOException or InvalidOperationException) { }   // exited already
+    }
+
+    /// <summary>
+    /// Runs to completion without blocking a thread: the process's exit completes the task, the timeout and
+    /// <paramref name="cancellation"/> kill it. <paramref name="progress"/> receives the seconds reported by
+    /// <c>-progress pipe:1</c>.
+    /// </summary>
+    /// <exception cref="TimeoutException">The call took longer than <paramref name="timeout"/>; the process was killed.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellation"/> fired; the process was killed.</exception>
+    public static async Task<FfmpegResult> RunAsync(string? exe, FfmpegArgs args, TimeSpan timeout,
+        Action<double>? progress = null, CancellationToken cancellation = default)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        var outputText = new TailBuffer(progress == null ? OutputTail : ErrorTail);
+        var errorText = new TailBuffer(ErrorTail);
+        var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var process = Start(exe, args, line =>
+        {
+            outputText.Add(line);
+            if (progress != null && FfmpegOutput.ProgressSeconds(line) is double seconds) progress(seconds);
+        }, errorText.Add, () => exited.TrySetResult(true));   // reported after the last output line arrived
+        CloseInput(process);
+        using var timer = new CancellationTokenSource(timeout);
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellation, timer.Token);
+        using (stop.Token.Register(() => exited.TrySetCanceled()))
+        {
+            try
+            {
+                await exited.Task.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                await Task.Run(() => Kill(process), CancellationToken.None).ConfigureAwait(false);   // waits a few seconds at most
+                cancellation.ThrowIfCancellationRequested();
+                throw new TimeoutException(UiText.Common.FfmpegTimedOut);
+            }
+        }
+        return new FfmpegResult(process.ExitCode, outputText.ToString(), errorText.ToString().Trim());
     }
 
     /// <summary>Kills the process and waits (bounded) until it is gone.</summary>
@@ -281,6 +300,12 @@ internal static class Ffmpeg
     }
 
     // Puts the process into a job object that kills it when the engine exits (no orphaned recordings).
+    // Only ffmpeg joins the job, not the engine itself: a job is inherited by every child, and the engine also
+    // starts things that must outlive it - the restarted engine after a crash (it would be killed the moment
+    // the old one exits) and, through Shell.Open (ShellExecute), the user's video player or Explorer. ShellExecute
+    // cannot ask for CREATE_BREAKAWAY_FROM_JOB, so a job on the engine would kill those. The price is the moment
+    // between ffmpeg's start and this call (see Start): an engine crash right then could leave ffmpeg running
+    // until its input ends (stdin closes with the engine, so a recording ends at once).
     static void AddToKillOnCloseJob(Process process)
     {
         lock (jobGate)

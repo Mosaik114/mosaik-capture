@@ -67,6 +67,33 @@ public sealed class EditorInteractionTests
     }
 
     [Fact]
+    public void EscWithChangesAsksOnceThenDiscards()
+    {
+        var interaction = new EditorInteraction();
+
+        Assert.False(interaction.ConfirmDiscard(hasChanges: false));   // nothing to lose: close at once
+        Assert.True(interaction.ConfirmDiscard(hasChanges: true));     // ask
+        Assert.True(interaction.DiscardArmed);
+        Assert.False(interaction.ConfirmDiscard(hasChanges: true));    // asked already: close
+
+        interaction.DisarmDiscard();
+        Assert.True(interaction.ConfirmDiscard(hasChanges: true));     // after anything else it asks again
+    }
+
+    [Fact]
+    public void GestureStartIsKeptForItsUndoStep()
+    {
+        var interaction = new EditorInteraction { PressPoint = new Point(5, 6), CropAtPress = new Rect(1, 2, 3, 4), Handle = 7, ItemStart = new Vector(9, 9) };
+
+        interaction.Begin(PointerMode.ResizeCrop);
+
+        Assert.Equal(new Point(5, 6), interaction.PressPoint);
+        Assert.Equal(new Rect(1, 2, 3, 4), interaction.CropAtPress);
+        Assert.Equal(7, interaction.Handle);
+        Assert.Equal(new Vector(9, 9), interaction.ItemStart);
+    }
+
+    [Fact]
     public void MovingIsNoDrawing()
     {
         var interaction = With(ScreenshotEditor.Tool.Pen);

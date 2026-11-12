@@ -27,19 +27,18 @@ internal sealed partial class ScreenshotEditor
         capture = screenshot;
         scale = screenshot.Scale;
         Palette.Apply(Resources);
-        markup.Children.Clear();
-        history.Clear();
+        ClearMarkup();
+        document.Reset(new Rect(screenshot.Crop.X / screenshot.Scale, screenshot.Crop.Y / screenshot.Scale,
+            screenshot.Crop.Width / screenshot.Scale, screenshot.Crop.Height / screenshot.Scale));
         textBox = null;
         textHost = null;
         CloseMenu();
-        selectedItem = null;
         interaction.Reset();
-        discardArmed = false;
+        interaction.DisarmDiscard();
         pointer = Offscreen;
         frozenImage.Source = screenshot.FullScreen;
         root.Width = frozenImage.Width = screenshot.VirtualWidth / scale;
         root.Height = frozenImage.Height = screenshot.VirtualHeight / scale;
-        crop = new Rect(screenshot.Crop.X / scale, screenshot.Crop.Y / scale, screenshot.Crop.Width / scale, screenshot.Crop.Height / scale);
         notice.Visibility = tooltip.Visibility = Visibility.Hidden;
         SetTool(interaction.Tool);
         SetColor(style.ColorIndex);
@@ -54,39 +53,39 @@ internal sealed partial class ScreenshotEditor
         return new Rect((monitor.left - capture.VirtualLeft) / scale, (monitor.top - capture.VirtualTop) / scale, monitor.Width / scale, monitor.Height / scale);
     }
 
-    Int32Rect CropInPixels() => CropGeometry.InPixels(crop, scale, capture.FullScreen.PixelWidth, capture.FullScreen.PixelHeight);
+    Int32Rect CropInPixels() => CropGeometry.InPixels(document.Crop, scale, capture.FullScreen.PixelWidth, capture.FullScreen.PixelHeight);
 
-    /// <summary>Fits dimming, frame, handles, size chip and toolbar to the crop.</summary>
+    /// <summary>Fits dimming, frame, handles, size chip and toolbar to the document.Crop.</summary>
     internal void LayoutCrop()
     {
         var holes = new GeometryGroup { FillRule = FillRule.EvenOdd };
         holes.Children.Add(new RectangleGeometry(new Rect(0, 0, root.Width, root.Height)));
-        holes.Children.Add(new RectangleGeometry(crop));
+        holes.Children.Add(new RectangleGeometry(document.Crop));
         dimming.Data = holes;
-        markup.Clip = new RectangleGeometry(crop);
-        frame.Width = crop.Width + 2;
-        frame.Height = crop.Height + 2;
-        Canvas.SetLeft(frame, crop.X - 1);
-        Canvas.SetTop(frame, crop.Y - 1);
+        markup.Clip = new RectangleGeometry(document.Crop);
+        frame.Width = document.Crop.Width + 2;
+        frame.Height = document.Crop.Height + 2;
+        Canvas.SetLeft(frame, document.Crop.X - 1);
+        Canvas.SetTop(frame, document.Crop.Y - 1);
         for (int i = 0; i < resizeHandles.Length; i++)
         {
-            Point center = CropGeometry.HandleCenter(crop, i);
+            Point center = CropGeometry.HandleCenter(document.Crop, i);
             Canvas.SetLeft(resizeHandles[i], center.X - Metrics.HandleHitSize / 2);
             Canvas.SetTop(resizeHandles[i], center.Y - Metrics.HandleHitSize / 2);
         }
         Int32Rect pixels = CropInPixels();
         sizeText.Text = UiText.Common.Size(pixels.Width, pixels.Height);
         Rect monitor = MonitorArea();
-        Canvas.SetLeft(sizeChip, crop.X);
-        Canvas.SetTop(sizeChip, CropGeometry.SizeChipTop(crop, monitor));
+        Canvas.SetLeft(sizeChip, document.Crop.X);
+        Canvas.SetTop(sizeChip, CropGeometry.SizeChipTop(document.Crop, monitor));
         PlaceToolbar(monitor);
     }
 
-    // Below the crop; no room below: above, otherwise inside.
+    // Below the document.Crop; no room below: above, otherwise inside.
     void PlaceToolbar(Rect monitor)
     {
         toolbar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        Point position = CropGeometry.ToolbarPosition(crop, toolbar.DesiredSize, monitor);
+        Point position = CropGeometry.ToolbarPosition(document.Crop, toolbar.DesiredSize, monitor);
         Canvas.SetLeft(toolbar, position.X);
         Canvas.SetTop(toolbar, position.Y);
     }
@@ -96,11 +95,11 @@ internal sealed partial class ScreenshotEditor
     internal void PointerDown(Point position)
     {
         var hit = interaction.Tool == Tool.Move ? ItemAt(position) : null;
-        var action = interaction.Press(openMenuGroup != null, textBox != null, hit != null, crop.Contains(position));
+        var action = interaction.Press(openMenuGroup != null, document.Typing, hit != null, document.Crop.Contains(position));
         if (action == PressAction.CloseMenu) { CloseMenu(); return; }
         if (action == PressAction.CommitText) { CommitText(); return; }
-        discardArmed = false;
-        pressPoint = position;
+        interaction.DisarmDiscard();
+        interaction.PressPoint = position;
         switch (action)
         {
             case PressAction.MoveItem:
@@ -126,19 +125,18 @@ internal sealed partial class ScreenshotEditor
     void StartMovingItem(FrameworkElement hit)
     {
         interaction.Begin(PointerMode.MoveItem);
-        selectedItem = hit;
-        itemOffset = (TranslateTransform)hit.RenderTransform;
-        itemStartX = itemOffset.X;
-        itemStartY = itemOffset.Y;
+        var item = itemsByElement[hit];
+        document.Selected = item;
+        interaction.ItemStart = item.Offset;
         CaptureMouse();
     }
 
-    // ...or the whole crop when pressing inside it.
+    // ...or the whole document.Crop when pressing inside it.
     void StartMovingCrop()
     {
         interaction.Begin(PointerMode.MoveCrop);
-        cropAtPress = crop;
-        selectedItem = null;
+        interaction.CropAtPress = document.Crop;
+        document.Selected = null;
         CaptureMouse();
     }
 
@@ -167,7 +165,7 @@ internal sealed partial class ScreenshotEditor
             stroke.StrokeDashArray = new DoubleCollection(new double[] { 3, 3 });
             stroke.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Text);
         }
-        snapped = false;
+        snap.Reset();
         if (interaction.Tool is Tool.Pen or Tool.Marker)
         {
             strokeLine = new PolyLineSegment();
@@ -198,9 +196,7 @@ internal sealed partial class ScreenshotEditor
                 UpdateCursor(position);
                 break;
             case PointerMode.MoveItem:
-                itemOffset.X = itemStartX + position.X - pressPoint.X;
-                itemOffset.Y = itemStartY + position.Y - pressPoint.Y;
-                if (SpotTag.Equals(selectedItem!.Tag)) RefreshSpotlightShade(null);
+                document.MoveTo(document.Selected!, interaction.ItemStart + (position - interaction.PressPoint));
                 break;
             case PointerMode.MoveCrop:
                 MoveCrop(position);
@@ -217,48 +213,46 @@ internal sealed partial class ScreenshotEditor
     void UpdateCursor(Point position)
     {
         if (UpdateNumberPreview()) Cursor = Cursors.None;   // the preview is the pointer
-        else if (interaction.Tool == Tool.Move) Cursor = ItemAt(position) != null || crop.Contains(position) ? Cursors.SizeAll : Cursors.Arrow;
-        else Cursor = !crop.Contains(position) ? Cursors.Arrow : interaction.Tool == Tool.Text ? Cursors.IBeam : Cursors.Cross;
+        else if (interaction.Tool == Tool.Move) Cursor = ItemAt(position) != null || document.Crop.Contains(position) ? Cursors.SizeAll : Cursors.Arrow;
+        else Cursor = !document.Crop.Contains(position) ? Cursors.Arrow : interaction.Tool == Tool.Text ? Cursors.IBeam : Cursors.Cross;
     }
 
     Size SurfaceSize => new(root.Width, root.Height);
 
     void MoveCrop(Point position)
     {
-        crop = CropGeometry.Moved(cropAtPress, position - pressPoint, SurfaceSize, scale);
-        LayoutCrop();
+        document.SetCrop(CropGeometry.Moved(interaction.CropAtPress, position - interaction.PressPoint, SurfaceSize, scale));
     }
 
     void ResizeCrop(Point position)
     {
-        crop = CropGeometry.Resized(cropAtPress, activeHandle, position, SurfaceSize, scale);
-        LayoutCrop();
+        document.SetCrop(CropGeometry.Resized(interaction.CropAtPress, interaction.Handle, position, SurfaceSize, scale));
     }
 
-    Point KeepInCrop(Point position) => CropGeometry.KeepInside(crop, position);
+    Point KeepInCrop(Point position) => CropGeometry.KeepInside(document.Crop, position);
 
     void Drag(Point position, bool shift)
     {
         switch (interaction.Tool)
         {
             case Tool.Arrow:
-                if (shift) position = SnapTo45Degrees(pressPoint, position);
-                stroke!.Data = ShapeRecognizer.Arrow(pressPoint, position, style.StrokeWidth);
+                if (shift) position = SnapTo45Degrees(interaction.PressPoint, position);
+                stroke!.Data = ShapeRecognizer.Arrow(interaction.PressPoint, position, style.StrokeWidth);
                 break;
             case Tool.Line:
-                if (shift) position = SnapTo45Degrees(pressPoint, position);
-                stroke!.Data = new LineGeometry(pressPoint, position);
+                if (shift) position = SnapTo45Degrees(interaction.PressPoint, position);
+                stroke!.Data = new LineGeometry(interaction.PressPoint, position);
                 break;
             case Tool.Box:
             case Tool.Ellipse:
             case Tool.Pixel:
             case Tool.Blur:
             case Tool.Spot:
-                if (shift) position = SquareFrom(pressPoint, position);
-                if (interaction.Tool == Tool.Ellipse) { stroke!.Data = new EllipseGeometry(new Rect(pressPoint, position)); break; }
+                if (shift) position = SquareFrom(interaction.PressPoint, position);
+                if (interaction.Tool == Tool.Ellipse) { stroke!.Data = new EllipseGeometry(new Rect(interaction.PressPoint, position)); break; }
                 double radius = interaction.Tool == Tool.Box ? 6 : interaction.Tool == Tool.Spot ? 8 : 0;
-                stroke!.Data = new RectangleGeometry(new Rect(pressPoint, position), radius, radius);
-                if (interaction.Tool == Tool.Spot) RefreshSpotlightShade(new Rect(pressPoint, position));   // show the spotlight while dragging
+                stroke!.Data = new RectangleGeometry(new Rect(interaction.PressPoint, position), radius, radius);
+                if (interaction.Tool == Tool.Spot) RefreshSpotlightShade(new Rect(interaction.PressPoint, position));   // show the spotlight while dragging
                 break;
             case Tool.Pen:
             case Tool.Marker:
@@ -269,12 +263,12 @@ internal sealed partial class ScreenshotEditor
 
     void DrawFreehand(Point position, bool shift)
     {
-        if (snapped) { Reshape(position); return; }
+        if (snap.Snapped) { Reshape(position); return; }
         if (shift)
         {
             // Shift = straight line, horizontal for the highlighter
             strokeLine.Points.Clear();
-            if (interaction.Tool == Tool.Marker) position = new Point(position.X, pressPoint.Y);
+            if (interaction.Tool == Tool.Marker) position = new Point(position.X, interaction.PressPoint.Y);
         }
         strokeLine.Points.Add(position);
         if ((position - holdPoint).Length > 2 || shift)
@@ -286,9 +280,9 @@ internal sealed partial class ScreenshotEditor
         }
     }
 
-    Point SnapTo45Degrees(Point start, Point end) => CropGeometry.SnapTo45Degrees(start, end, crop);
+    Point SnapTo45Degrees(Point start, Point end) => CropGeometry.SnapTo45Degrees(start, end, document.Crop);
 
-    Point SquareFrom(Point start, Point end) => CropGeometry.SquareCorner(start, end, crop);
+    Point SquareFrom(Point start, Point end) => CropGeometry.SquareCorner(start, end, document.Crop);
 
     List<Point> StrokePoints(Shapes.Path path)
     {

@@ -77,7 +77,7 @@ internal sealed class CountdownWindow : Window
     /// Counts down the configured seconds centered on <paramref name="area"/>. With a countdown of 0
     /// the callbacks run right away and nothing is shown.
     /// </summary>
-    public void Run(Int32Rect area, RECT monitor, Action onLaunch, Action onFinished, Action onCancelled)
+    public void Run(Int32Rect area, RECT monitor, int seconds, Action onLaunch, Action onFinished, Action onCancelled)
     {
         launch = onLaunch;
         finished = onFinished;
@@ -85,7 +85,7 @@ internal sealed class CountdownWindow : Window
         launched = false;
         shownNumber = 0;
         Palette.Apply(Resources);
-        duration = CaptureSettings.Countdown;
+        duration = seconds;
         if (duration == 0) { onLaunch(); onFinished(); return; }
         ShowFrame(duration, 0);
         Left = -10000;

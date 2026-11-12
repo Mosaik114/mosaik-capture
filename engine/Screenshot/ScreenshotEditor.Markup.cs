@@ -28,17 +28,11 @@ internal sealed partial class ScreenshotEditor
 
     void FinishMovingItem()
     {
-        var offset = itemOffset;
-        double x0 = itemStartX, y0 = itemStartY, x1 = offset.X, y1 = offset.Y;
-        if (x0 != x1 || y0 != y1) PushUndo(delegate { offset.X = x0; offset.Y = y0; }, delegate { offset.X = x1; offset.Y = y1; });
+        document.CommitMove(document.Selected!, interaction.ItemStart);
         RefreshSpotlightShade(null);
     }
 
-    void FinishCropChange()
-    {
-        Rect before = cropAtPress, after = crop;
-        if (before != after) PushUndo(delegate { crop = before; LayoutCrop(); }, delegate { crop = after; LayoutCrop(); });
-    }
+    void FinishCropChange() => document.CommitCrop(interaction.CropAtPress);
 
     // The drawn preview becomes markup: as drawn, smoothed, snapped to text, or turned into an effect area.
     void FinishStroke()
@@ -51,31 +45,31 @@ internal sealed partial class ScreenshotEditor
         Rect bounds = drawn.Data == null ? Rect.Empty : drawn.Data.Bounds;
         if (bounds.IsEmpty || (bounds.Width < MinStrokeSize && bounds.Height < MinStrokeSize)) { RefreshSpotlightShade(null); return; }   // just a click
         if (!PlaceStroke(drawn, bounds)) return;
-        snapped = false;
+        snap.Reset();
     }
 
-    // False if nothing was placed and the stroke state must stay as it is (spotlight outside the crop).
+    // False if nothing was placed and the stroke state must stay as it is (spotlight outside the document.Crop).
     bool PlaceStroke(Shapes.Path drawn, Rect bounds)
     {
         if (interaction.Tool == Tool.Pixel || interaction.Tool == Tool.Blur)
         {
             var cover = interaction.Tool == Tool.Pixel ? Pixelated(bounds) : Blurred(bounds);
-            if (cover != null) AddMarkup(cover);
+            if (cover != null) AddMarkup(cover, MarkupKind.Cover);
         }
         else if (interaction.Tool == Tool.Spot)
         {
-            bounds.Intersect(crop);
+            bounds.Intersect(document.Crop);
             if (bounds.IsEmpty) { RefreshSpotlightShade(null); return false; }
-            AddMarkup(SpotlightFrame(bounds));
+            AddMarkup(SpotlightFrame(bounds), MarkupKind.Spotlight);
         }
-        else if (interaction.Tool == Tool.Marker && !snapped) AddMarkup(TextHighlight(StrokePoints(drawn), style.MarkerWidth) ?? drawn);
-        else if (interaction.Tool == Tool.Pen && !snapped)
+        else if (interaction.Tool == Tool.Marker && !snap.Snapped) AddMarkup(TextHighlight(StrokePoints(drawn), style.MarkerWidth) ?? drawn, MarkupKind.Highlight);
+        else if (interaction.Tool == Tool.Pen && !snap.Snapped)
         {
             var smooth = ShapeRecognizer.Smooth(StrokePoints(drawn));
             if (smooth != null) drawn.Data = smooth;
-            AddMarkup(drawn);
+            AddMarkup(drawn, MarkupKind.Shape);
         }
-        else AddMarkup(drawn);
+        else AddMarkup(drawn, interaction.Tool == Tool.Marker ? MarkupKind.Highlight : MarkupKind.Shape);
         return true;
     }
 
@@ -85,7 +79,6 @@ internal sealed partial class ScreenshotEditor
         var spot = new Shapes.Path
         {
             Data = new RectangleGeometry(new Rect(0, 0, area.Width, area.Height), Metrics.SpotlightRadius, Metrics.SpotlightRadius),
-            Tag = SpotTag,
             Stroke = Brushes.Transparent,
             StrokeThickness = Metrics.SpotlightGrabWidth,
             RenderTransform = new TranslateTransform()
@@ -95,10 +88,10 @@ internal sealed partial class ScreenshotEditor
         return spot;
     }
 
-    // Blur: take a slightly larger crop so the edge does not fade into transparency, then clip to the area.
+    // Blur: take a slightly larger document.Crop so the edge does not fade into transparency, then clip to the area.
     FrameworkElement? Blurred(Rect r)
     {
-        r.Intersect(crop);
+        r.Intersect(document.Crop);
         if (r.IsEmpty) return null;
         int x = (int)Math.Round(r.X * scale), y = (int)Math.Round(r.Y * scale);
         int w = Math.Min((int)Math.Round(r.Width * scale), capture.FullScreen.PixelWidth - x), h = Math.Min((int)Math.Round(r.Height * scale), capture.FullScreen.PixelHeight - y);
@@ -119,7 +112,7 @@ internal sealed partial class ScreenshotEditor
         };
         Canvas.SetLeft(img, (px - x) / scale);
         Canvas.SetTop(img, (py - y) / scale);
-        var c = new Canvas { Width = w / scale, Height = h / scale, ClipToBounds = true, RenderTransform = new TranslateTransform(), Tag = CoverTag };
+        var c = new Canvas { Width = w / scale, Height = h / scale, ClipToBounds = true, RenderTransform = new TranslateTransform() };
         c.Children.Add(img);
         Canvas.SetLeft(c, x / scale);
         Canvas.SetTop(c, y / scale);
@@ -130,16 +123,8 @@ internal sealed partial class ScreenshotEditor
     void RefreshSpotlightShade(Rect? extra)
     {
         Geometry? g = null;
-        var holes = new List<Geometry>();
-        foreach (UIElement c in markup.Children)
-        {
-            if (c is not Shapes.Path sp || !SpotTag.Equals(sp.Tag)) continue;
-            var tt = (TranslateTransform)sp.RenderTransform;
-            Rect r = sp.Data.Bounds;
-            r.Offset(Canvas.GetLeft(sp) + tt.X, Canvas.GetTop(sp) + tt.Y);
-            holes.Add(new RectangleGeometry(r, 8, 8));
-        }
-        if (extra.HasValue) holes.Add(new RectangleGeometry(extra.Value, 8, 8));
+        var holes = document.SpotlightHoles.Select(hole => (Geometry)new RectangleGeometry(hole, Metrics.SpotlightRadius, Metrics.SpotlightRadius)).ToList();
+        if (extra.HasValue) holes.Add(new RectangleGeometry(extra.Value, Metrics.SpotlightRadius, Metrics.SpotlightRadius));
         if (holes.Count == 0)
         {
             if (spotlightShade != null) markup.Children.Remove(spotlightShade);
@@ -150,9 +135,7 @@ internal sealed partial class ScreenshotEditor
         if (spotlightShade == null) spotlightShade = new Shapes.Path { Fill = Palette.Frozen(0x99, 0x14, 0x14, 0x13), IsHitTestVisible = false };
         spotlightShade.Data = g;
         markup.Children.Remove(spotlightShade);
-        int under = 0;
-        foreach (UIElement c in markup.Children) if (CoverTag.Equals(((FrameworkElement)c).Tag)) under++;
-        markup.Children.Insert(under, spotlightShade);
+        markup.Children.Insert(document.CoverCount, spotlightShade);   // right above the covers
     }
 
     // Highlighter over text: snap to the line height and word boundaries; null if no text is recognizable there.
@@ -164,7 +147,7 @@ internal sealed partial class ScreenshotEditor
         if (dev.IsEmpty) return null;
         double m = 2;
         Rect r = new Rect(dev.X / scale - m, dev.Y / scale - m, dev.Width / scale + 2 * m, dev.Height / scale + 2 * m);
-        r.Intersect(crop);
+        r.Intersect(document.Crop);
         if (r.IsEmpty) return null;
         var hl = new Shapes.Path { Data = new RectangleGeometry(new Rect(0, 0, r.Width, r.Height), 3, 3), Fill = MarkerBrush(), RenderTransform = new TranslateTransform() };
         Canvas.SetLeft(hl, r.X);
@@ -176,7 +159,7 @@ internal sealed partial class ScreenshotEditor
     // Coarsely pixelates an area: scale down, then scale up again with hard edges.
     FrameworkElement? Pixelated(Rect r)
     {
-        r.Intersect(crop);
+        r.Intersect(document.Crop);
         if (r.IsEmpty) return null;
         int x = (int)Math.Round(r.X * scale), y = (int)Math.Round(r.Y * scale);
         int w = Math.Min((int)Math.Round(r.Width * scale), capture.FullScreen.PixelWidth - x), h = Math.Min((int)Math.Round(r.Height * scale), capture.FullScreen.PixelHeight - y);
@@ -185,21 +168,11 @@ internal sealed partial class ScreenshotEditor
         var source = new CroppedBitmap(capture.FullScreen, new Int32Rect(x, y, w, h));
         var small = new TransformedBitmap(source, new ScaleTransform(Math.Max(1, Math.Round(w / block)) / w, Math.Max(1, Math.Round(h / block)) / h));
         small.Freeze();
-        var img = new Image { Source = small, Width = w / scale, Height = h / scale, Stretch = Stretch.Fill, RenderTransform = new TranslateTransform(), Tag = CoverTag };
+        var img = new Image { Source = small, Width = w / scale, Height = h / scale, Stretch = Stretch.Fill, RenderTransform = new TranslateTransform() };
         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.NearestNeighbor);
         Canvas.SetLeft(img, x / scale);
         Canvas.SetTop(img, y / scale);
         return img;
-    }
-
-    int NextNumber()
-    {
-        int n = 1;
-        foreach (UIElement c in markup.Children)
-        {
-            if (c is FrameworkElement fe && NumberTag.Equals(fe.Tag)) n++;
-        }
-        return n;
     }
 
     // Digits as geometry whose visible outline is centered exactly on point c
@@ -227,7 +200,6 @@ internal sealed partial class ScreenshotEditor
         {
             Width = w,
             Height = h,
-            Tag = NumberTag,
             RenderTransform = new TranslateTransform(),
             Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 7, ShadowDepth = 1.5, Direction = 270, Opacity = 0.38 }
         };
@@ -251,22 +223,22 @@ internal sealed partial class ScreenshotEditor
     void PlaceNumber(Point p)
     {
         double h = style.BadgeSize;
-        var g = NumberBadge(NextNumber(), style.Ink, h);
+        var g = NumberBadge(document.NextNumber, style.Ink, h);
         Canvas.SetLeft(g, Math.Round(p.X - g.Width / 2));
         Canvas.SetTop(g, Math.Round(p.Y - h / 2));
-        AddMarkup(g);
+        AddMarkup(g, MarkupKind.Number);
     }
 
     // Preview of the next number at the pointer; true while it is visible.
     bool UpdateNumberPreview()
     {
-        bool show = interaction.Tool == Tool.Number && interaction.Idle && textBox == null && crop.Contains(pointer) && !toolbar.IsMouseOver;
+        bool show = interaction.Tool == Tool.Number && interaction.Idle && !document.Typing && document.Crop.Contains(pointer) && !toolbar.IsMouseOver;
         if (!show)
         {
             numberPreview?.Visibility = Visibility.Hidden;
             return false;
         }
-        int n = NextNumber();
+        int n = document.NextNumber;
         string key = n + "|" + style.ColorIndex + "|" + style.WidthIndex;
         if (key != numberPreviewKey)
         {
@@ -314,9 +286,10 @@ internal sealed partial class ScreenshotEditor
             FocusVisualStyle = null
         };
         textBox = tb;
+        document.BeginText(p, plate);
         if (plate)
         {
-            var host = new Border { Child = tb, Effect = PlateShadow(), Tag = PlateTag };
+            var host = new Border { Child = tb, Effect = PlateShadow() };
             textHost = host;
             StyleTextBox();
             Canvas.SetLeft(host, p.X - host.Padding.Left);
@@ -362,10 +335,10 @@ internal sealed partial class ScreenshotEditor
         textBox = null;
         textHost = null;
         Rect first = tb.GetRectFromCharacterIndex(0);
-        int idx = markup.Children.IndexOf(hostEl);
+        bool placed = markup.Children.Contains(hostEl);
         markup.Children.Remove(hostEl);
         Keyboard.Focus(this);
-        if (tb.Text.Trim().Length == 0 || idx < 0) return;
+        if (!document.EndText(tb.Text) || !placed) return;   // empty: the text is dropped (also how typing is cancelled)
         double fx = first.IsEmpty ? 2 : first.X, fy = first.IsEmpty ? 0 : first.Y;
         var t = new TextBlock { Text = tb.Text, FontFamily = tb.FontFamily, FontWeight = tb.FontWeight, FontSize = tb.FontSize, Foreground = tb.Foreground };
         FrameworkElement el;
@@ -386,8 +359,7 @@ internal sealed partial class ScreenshotEditor
             Canvas.SetTop(t, Canvas.GetTop(tb) + fy);
             el = t;
         }
-        markup.Children.Insert(idx, el);
-        PushUndo(delegate { markup.Children.Remove(el); }, delegate { markup.Children.Add(el); });
+        AddMarkup(el, MarkupKind.Text);
     }
 
     // Topmost markup under the pointer (with some tolerance so thin lines can be hit).
@@ -401,6 +373,6 @@ internal sealed partial class ScreenshotEditor
             found = o as FrameworkElement;
             return found != null ? HitTestResultBehavior.Stop : HitTestResultBehavior.Continue;
         }, new GeometryHitTestParameters(new EllipseGeometry(p, 5, 5)));
-        return found != null && found.RenderTransform is TranslateTransform ? found : null;
+        return found != null && itemsByElement.ContainsKey(found) ? found : null;   // only placed items, not the shade or a draft
     }
 }

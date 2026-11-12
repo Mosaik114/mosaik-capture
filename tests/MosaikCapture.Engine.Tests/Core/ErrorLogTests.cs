@@ -117,11 +117,11 @@ public sealed class ErrorLogTests : IDisposable
     [Fact]
     public void NoRestartWhenCrashingInTheFirstMinute()
     {
-        DateTime started = Program.started;
+        long started = Program.startedAt;
         int restarting = Program.restarting;
         try
         {
-            Program.started = DateTime.Now;
+            Program.startedAt = Stopwatch.GetTimestamp();
             Program.restarting = 0;
 
             Program.Restart();
@@ -132,7 +132,7 @@ public sealed class ErrorLogTests : IDisposable
         }
         finally
         {
-            Program.started = started;
+            Program.startedAt = started;
             Program.restarting = restarting;
         }
     }

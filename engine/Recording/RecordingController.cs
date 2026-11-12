@@ -31,6 +31,7 @@ internal sealed class RecordingController
     readonly IRecordingBackend backend;
     readonly Func<double, TimeSpan> saveTimeout;
     IRecordingSession? session;
+    CaptureSettingsSnapshot settings = new();   // read once when a recording starts
     Action? brokeHandler;            // subscribed to session.Broke; removed when the session is taken
     RECT workArea;
 
@@ -82,10 +83,10 @@ internal sealed class RecordingController
             ui.ShowProblem(UiText.Recording.FfmpegMissing, UiText.Recording.FfmpegInstallHint, ui.WorkAreaAtCursor());
             return;
         }
-        var settings = backend.LoadSettings();
+        settings = backend.LoadSettings();
         Microphone = settings.Microphone;
-        SystemSound = settings.SystemSound;
-        ShowClicks = settings.ShowClicks;
+        SystemSound = settings.SystemAudio;
+        ShowClicks = settings.Clicks;
         backend.RemoveLeftovers();
         backend.PrepareEncoder();   // probe the encoder while the area is being picked
         Phase = RecordingPhase.Picking;
@@ -112,7 +113,7 @@ internal sealed class RecordingController
         }
         try
         {
-            session = backend.StartSession(area, output, desktop, new AudioSettings(Microphone, SystemSound, ShowClicks));
+            session = backend.StartSession(area, output, desktop, new AudioSettings(Microphone, SystemSound, ShowClicks), settings.Fps);
             var started = session;
             brokeHandler = () => OnSessionBroke(started);
             started.Broke += brokeHandler;
@@ -127,7 +128,7 @@ internal sealed class RecordingController
         }
         Phase = RecordingPhase.Counting;
         ui.ShowFrame(area, monitor);
-        ui.StartCountdown(area, monitor, () => LaunchAsync().LogFailures("Starting ffmpeg"), CountdownFinished, CancelCountdown);
+        ui.StartCountdown(area, monitor, settings.Countdown, () => LaunchAsync().LogFailures("Starting ffmpeg"), CountdownFinished, CancelCountdown);
     }
 
     /// <summary>Shortly before zero: start ffmpeg so the first frame arrives exactly when the countdown ends.</summary>
@@ -188,8 +189,9 @@ internal sealed class RecordingController
         string reason;
         try
         {
-            string path = backend.NewRecordingPath(finished.Begun);
-            var saving = Task.Run(() => finished.Finish(path));
+            string path = backend.NewRecordingPath(finished.Begun, settings.RecordingFolder);
+            using var cancel = new CancellationTokenSource();
+            var saving = finished.FinishAsync(path, cancel.Token);
             if (await Task.WhenAny(saving, Task.Delay(saveTimeout(finished.Elapsed))) == saving)
             {
                 video = await saving;
@@ -197,6 +199,7 @@ internal sealed class RecordingController
             }
             else
             {
+                cancel.Cancel();   // kills ffmpeg; the session cleans up on its own
                 saving.LogFailures("Saving a recording (after the timeout)");
                 ErrorLog.Write("Saving a recording took too long", null);
                 reason = UiText.Common.FfmpegTimedOut;

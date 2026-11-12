@@ -36,8 +36,11 @@ internal interface IRecordingSession
     void Pause();
     void SetMicrophone(bool on);
     void SetSystemSound(bool on);
-    /// <summary>Blocking: assembles the segments into <paramref name="path"/>; null on failure (see <see cref="Reason"/>).</summary>
-    RecordedVideo? Finish(string path);
+    /// <summary>
+    /// Assembles the segments into <paramref name="path"/> without blocking a thread; null on failure (see
+    /// <see cref="Reason"/>). Cancelling kills a running ffmpeg.
+    /// </summary>
+    Task<RecordedVideo?> FinishAsync(string path, CancellationToken cancellation);
     /// <summary>Blocking: stops everything and deletes the work files.</summary>
     void Discard();
 }
@@ -52,9 +55,11 @@ internal interface IRecordingBackend
     /// <summary>The GPU output that shows the monitor, for ddagrab.</summary>
     OutputLookup FindOutput(RECT monitor, out int output, out RECT desktop);
     /// <summary>Creates a session and starts its audio (audio already runs during the countdown).</summary>
-    IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio);
-    string NewRecordingPath(DateTime begun);
-    AudioSettings LoadSettings();
+    IRecordingSession StartSession(Int32Rect area, int output, RECT desktop, AudioSettings audio, int fps);
+    /// <summary>A new file name in <paramref name="folder"/> for a recording started at <paramref name="begun"/>.</summary>
+    string NewRecordingPath(DateTime begun, string folder);
+    /// <summary>Reads the settings once for this recording.</summary>
+    CaptureSettingsSnapshot LoadSettings();
     void SaveSettings(AudioSettings settings);
 }
 
@@ -71,7 +76,7 @@ internal interface IRecordingUi
     /// Counts down; <paramref name="launch"/> runs shortly before zero, then <paramref name="finished"/>,
     /// or <paramref name="cancelled"/> on Esc.
     /// </summary>
-    void StartCountdown(Int32Rect area, RECT monitor, Action launch, Action finished, Action cancelled);
+    void StartCountdown(Int32Rect area, RECT monitor, int seconds, Action launch, Action finished, Action cancelled);
     void StopCountdown();
     void ShowToolbar(Int32Rect area, RECT work);
     void RefreshToolbar();

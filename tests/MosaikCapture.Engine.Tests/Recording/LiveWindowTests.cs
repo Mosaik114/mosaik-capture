@@ -57,13 +57,12 @@ public sealed class LiveWindowTests
     [Fact]
     public void CountdownOfZeroStartsImmediatelyWithoutShowingAWindow()
     {
-        using var settings = new TestSettings("[capture]\r\ncountdown=0\r\n");
         WpfThread.Run(() =>
         {
             var calls = new List<string>();
             var countdown = new CountdownWindow();
 
-            countdown.Run(new Int32Rect(100, 100, 640, 360), Monitor, () => calls.Add("launch"), () => calls.Add("done"), () => calls.Add("abort"));
+            countdown.Run(new Int32Rect(100, 100, 640, 360), Monitor, 0, () => calls.Add("launch"), () => calls.Add("done"), () => calls.Add("abort"));
 
             Assert.Equal(new[] { "launch", "done" }, calls);
             Assert.False(countdown.IsVisible);

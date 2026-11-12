@@ -14,7 +14,7 @@ internal static class LiveTest
         Directory.CreateDirectory(directory);
         string ini = Path.Combine(directory, "live-test.ini");
         File.WriteAllText(ini, "[capture]\r\nfps=30\r\ncountdown=0\r\nmicrophone=0\r\nsystem_audio=0\r\nshow_clicks=0\r\n", Encoding.Unicode);
-        Environment.SetEnvironmentVariable(CaptureSettings.TestConfigVariable, ini);
+        CaptureSettings.UseFile(ini);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var (window, animation) = CreateTestWindow();
         RecordingSession? session = null;
@@ -34,13 +34,13 @@ internal static class LiveTest
                 var area = CaptureWindowArea(window, out RECT monitor);
                 CheckScreenshot(directory, area);
                 if (Dxgi.Find(monitor, out int output, out RECT desktop) != OutputLookup.Found) throw new InvalidOperationException("The test monitor is not available to Desktop Duplication");
-                session = new RecordingSession(area, output, desktop, new AudioSettings(false, false, false));
+                session = new RecordingSession(area, output, desktop, new AudioSettings(false, false, false), CaptureSettings.Load().Fps);
                 session.StartAudio();
                 await session.ResumeAsync();
                 await Task.Delay(RecordingLength);
                 string video = Path.Combine(directory, "live-test.mp4");
                 var finished = session;
-                var result = await Task.Run(() => finished.Finish(video)) ?? throw new InvalidOperationException(finished.Reason);
+                var result = await finished.FinishAsync(video, CancellationToken.None) ?? throw new InvalidOperationException(finished.Reason);
                 if (result.Width != area.Width || result.Height != area.Height || result.Duration < 1)
                     throw new InvalidOperationException("The recording has unexpected dimensions or length");
                 WriteReport(directory, "{\"passed\":true,\"screenshot\":true,\"video\":true,\"width\":" + result.Width + ",\"height\":" + result.Height +

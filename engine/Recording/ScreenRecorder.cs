@@ -10,10 +10,19 @@ namespace MosaikCapture.Engine.Recording;
 /// </summary>
 internal static class ScreenRecorder
 {
-    static readonly WpfRecordingUi ui = new();
-    static readonly Lazy<RecordingController> controller = new(() => new RecordingController(ui, new RecordingBackend()));
+    static RecordingController? controller;
+    static WpfRecordingUi? windows;
 
-    static RecordingController Controller => controller.Value;
+    /// <summary>Called once by <see cref="EngineComposition"/>, which builds the object graph.</summary>
+    internal static void Use(RecordingController recordingController, WpfRecordingUi recordingWindows)
+    {
+        controller = recordingController;
+        windows = recordingWindows;
+    }
+
+    static RecordingController Controller => controller ?? throw EngineComposition.NotComposed();
+
+    static WpfRecordingUi ui => windows ?? throw EngineComposition.NotComposed();
 
     public static bool Busy => Controller.Busy;
     public static bool Live => Controller.Live;

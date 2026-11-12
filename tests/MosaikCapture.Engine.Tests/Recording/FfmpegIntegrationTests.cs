@@ -32,7 +32,7 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
     static List<double> Beeps(string video)
     {
         var args = new FfmpegArgs().Add("-hide_banner", "-nostats", "-i", video, "-map", "0:a", "-af", "silencedetect=noise=-30dB:d=0.1", "-f", "null", "-");
-        Ffmpeg.Run(Ffmpeg.Exe, args, FfmpegTimeouts.Quick, out _, out string error);
+        string error = Ffmpeg.RunAsync(Ffmpeg.Exe, args, FfmpegTimeouts.Quick).GetAwaiter().GetResult().Error;
         var beeps = new List<double>();
         double end = -1;
         foreach (Match m in Regex.Matches(error, @"silence_(start|end): ([\d.]+)"))
@@ -60,7 +60,8 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
         string list = Path.Combine(Path.GetDirectoryName(segments[0])!, RecordingSession.ConcatListName);
         File.WriteAllLines(list, RecordingSession.ConcatList(segments));
         var args = RecordingSession.Assemble(list, tracks, new List<double> { 1.0, 5.5 }, new List<double> { 2.0, 3.0 }, target);
-        Assert.True(Ffmpeg.Run(Ffmpeg.Exe, args, FfmpegTimeouts.Quick, out _, out string error) == 0, "ffmpeg: " + error);
+        var result = Ffmpeg.RunAsync(Ffmpeg.Exe, args, FfmpegTimeouts.Quick).GetAwaiter().GetResult();
+        Assert.True(result.Succeeded, "ffmpeg: " + result.Error);
     }
 
     [Fact]
