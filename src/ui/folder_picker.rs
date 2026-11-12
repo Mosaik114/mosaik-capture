@@ -33,8 +33,11 @@ type This = *mut c_void;
 
 #[repr(C)]
 struct UnknownVtbl {
+    // HRESULT QueryInterface(REFIID riid, void **ppvObject);
     query_interface: Slot,
+    // ULONG AddRef(void);
     add_ref: Slot,
+    // ULONG Release(void);
     release: unsafe extern "system" fn(This) -> u32,
 }
 
@@ -42,23 +45,41 @@ struct UnknownVtbl {
 #[repr(C)]
 struct FileDialogVtbl {
     unknown: UnknownVtbl,
+    // IModalWindow: HRESULT Show(HWND hwndOwner);
     show: unsafe extern "system" fn(This, HWND) -> HRESULT,
+    // HRESULT SetFileTypes(UINT cFileTypes, const COMDLG_FILTERSPEC *rgFilterSpec);
     set_file_types: Slot,
+    // HRESULT SetFileTypeIndex(UINT iFileType);
     set_file_type_index: Slot,
+    // HRESULT GetFileTypeIndex(UINT *piFileType);
     get_file_type_index: Slot,
+    // HRESULT Advise(IFileDialogEvents *pfde, DWORD *pdwCookie);
     advise: Slot,
+    // HRESULT Unadvise(DWORD dwCookie);
     unadvise: Slot,
+    // HRESULT SetOptions(FILEOPENDIALOGOPTIONS fos);
     set_options: unsafe extern "system" fn(This, u32) -> HRESULT,
+    // HRESULT GetOptions(FILEOPENDIALOGOPTIONS *pfos);
     get_options: unsafe extern "system" fn(This, *mut u32) -> HRESULT,
+    // HRESULT SetDefaultFolder(IShellItem *psi);
     set_default_folder: Slot,
+    // HRESULT SetFolder(IShellItem *psi);
     set_folder: unsafe extern "system" fn(This, This) -> HRESULT,
+    // HRESULT GetFolder(IShellItem **ppsi);
     get_folder: Slot,
+    // HRESULT GetCurrentSelection(IShellItem **ppsi);
     get_current_selection: Slot,
+    // HRESULT SetFileName(LPCWSTR pszName);
     set_file_name: Slot,
+    // HRESULT GetFileName(LPWSTR *pszName);
     get_file_name: Slot,
+    // HRESULT SetTitle(LPCWSTR pszTitle);
     set_title: unsafe extern "system" fn(This, PCWSTR) -> HRESULT,
+    // HRESULT SetOkButtonLabel(LPCWSTR pszText);
     set_ok_button_label: Slot,
+    // HRESULT SetFileNameLabel(LPCWSTR pszLabel);
     set_file_name_label: Slot,
+    // HRESULT GetResult(IShellItem **ppsi);
     get_result: unsafe extern "system" fn(This, *mut This) -> HRESULT,
 }
 
@@ -66,8 +87,11 @@ struct FileDialogVtbl {
 #[repr(C)]
 struct ShellItemVtbl {
     unknown: UnknownVtbl,
+    // HRESULT BindToHandler(IBindCtx *pbc, REFGUID bhid, REFIID riid, void **ppv);
     bind_to_handler: Slot,
+    // HRESULT GetParent(IShellItem **ppsi);
     get_parent: Slot,
+    // HRESULT GetDisplayName(SIGDN sigdnName, LPWSTR *ppszName);
     get_display_name: unsafe extern "system" fn(This, i32, *mut PWSTR) -> HRESULT,
 }
 

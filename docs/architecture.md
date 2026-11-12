@@ -178,7 +178,7 @@ pause/resume: closes the segment, opens a new one on the same clocks            
 
 | Layer | How it is tested |
 |---|---|
-| Pure logic (Rust) | `cargo test`, 114 unit tests: hotkey grammar, settings defaults/normalisation/migration, INI layout and a real round trip through the Win32 profile API on a temp file, CLI parsing, exit codes, forwarding to a fake running instance (incl. timeouts), retrying atomic writes, DPI scaling, COM vtable offsets, the resource writer against golden layouts |
+| Pure logic (Rust) | `cargo test`, 117 unit tests: hotkey grammar, settings defaults/normalisation/migration, INI layout and a real round trip through the Win32 profile API on a temp file, CLI parsing, exit codes, forwarding to a fake running instance (incl. timeouts), retrying atomic writes, DPI scaling, COM vtable offsets, the resource writer against golden layouts |
 | Host UI (Rust) | `cargo test -- --include-ignored` also creates the real settings window in-process (own window class, temp settings, unusual hotkeys) and drives save, validation, Enter/Escape, IPC and a DPI change; CI always runs it |
 | Engine logic (C#) | xUnit on a shared STA dispatcher thread: the recording state machine with fakes, WASAPI track padding/trimming with a fake capture client, shape recognition, highlighter snapping, selection geometry (including a randomized check over 5,000 rectangles), command-line quoting (500 random round trips through `CommandLineToArgvW`), settings parsing, error-log rotation |
 | Engine + ffmpeg | real ffmpeg runs: audio stays in sync after a pause, one or zero audio tracks, trim with and without sound, GIF export, broken input files (skipped when ffmpeg is missing) |

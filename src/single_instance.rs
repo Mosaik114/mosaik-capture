@@ -20,7 +20,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::cli::Action;
 use crate::ipc;
-use crate::process::{process_image, same_file};
+use crate::process::window_runs;
 use crate::wide::to_wide;
 
 /// Session-local mutex that marks the primary instance.
@@ -118,21 +118,17 @@ impl Target {
             if after.is_null() {
                 return None;
             }
-            let image = process_image(after);
-            if is_trusted(image.as_deref(), self.image.as_deref()) {
+            if is_trusted(after, self.image.as_deref()) {
                 return Some(after);
             }
         }
     }
 }
 
-/// Whether a window whose process runs `image` may receive forwarded actions.
-fn is_trusted(image: Option<&Path>, expected: Option<&Path>) -> bool {
-    match (image, expected) {
-        (_, None) => true,
-        (Some(image), Some(expected)) => same_file(image, expected),
-        (None, Some(_)) => false,
-    }
+/// Whether `window` may receive forwarded actions: its process runs `expected`
+/// (see [`window_runs`]), or there is nothing to compare with.
+fn is_trusted(window: HWND, expected: Option<&Path>) -> bool {
+    expected.is_none_or(|expected| window_runs(window, expected))
 }
 
 /// Waits for the primary instance's window and sends it `action`.
@@ -147,7 +143,7 @@ pub fn forward_to(target: &Target, action: Action) -> Forwarded {
     };
 
     let mut pid = 0u32;
-    // SAFETY: `pid` outlives the calls; the handle came from FindWindowW, and a stale
+    // SAFETY: `pid` outlives the calls; the handle came from FindWindowExW, and a stale
     // handle only makes these calls fail.
     unsafe {
         GetWindowThreadProcessId(window, &raw mut pid);
@@ -330,12 +326,13 @@ mod tests {
 
     #[test]
     fn trust_decision() {
+        let primary = FakePrimary::start("Trust", true);
+        let window = primary.target().trusted_window(&to_wide(&primary.class)).unwrap();
         let exe = std::env::current_exe().unwrap();
-        let other = std::env::temp_dir();
-        assert!(is_trusted(Some(&exe), Some(&exe)));
-        assert!(!is_trusted(Some(&other), Some(&exe)));
-        assert!(!is_trusted(None, Some(&exe)), "unknown process image");
-        assert!(is_trusted(None, None), "no expectation, no check");
+        assert!(is_trusted(window, Some(&exe)), "our own executable");
+        assert!(!is_trusted(window, Some(&std::env::temp_dir())), "another file");
+        assert!(is_trusted(window, None), "no expectation, no check");
+        assert!(!is_trusted(ptr::null_mut(), Some(&exe)), "no window, no process");
         assert!(Target::primary().image.is_some());
     }
 

@@ -38,7 +38,9 @@ pub unsafe fn from_wide_ptr(ptr: *const u16) -> OsString {
 }
 
 /// Copies `text` into a fixed-size buffer such as `NOTIFYICONDATAW::szTip`,
-/// truncating if necessary and always leaving room for the terminating NUL.
+/// truncating if necessary and always leaving room for the terminating NUL. A
+/// character that does not fit completely is dropped, so the buffer never ends in
+/// half a surrogate pair.
 pub fn copy_to_buffer(buffer: &mut [u16], text: &str) {
     let Some(capacity) = buffer.len().checked_sub(1) else {
         return;
@@ -47,6 +49,9 @@ pub fn copy_to_buffer(buffer: &mut [u16], text: &str) {
     for (slot, unit) in buffer.iter_mut().zip(text.encode_utf16().take(capacity)) {
         *slot = unit;
         written += 1;
+    }
+    if written > 0 && (0xD800..=0xDBFF).contains(&buffer[written - 1]) {
+        written -= 1;
     }
     buffer[written] = 0;
 }
@@ -103,5 +108,18 @@ mod tests {
         assert_eq!(from_wide(&buffer), "ok");
 
         copy_to_buffer(&mut [], "ignored");
+    }
+
+    #[test]
+    fn copy_to_buffer_never_splits_a_surrogate_pair() {
+        // "ab📷" is a, b, high surrogate, low surrogate: only 3 units fit before the NUL.
+        let mut buffer = [0xFFFF; 4];
+        copy_to_buffer(&mut buffer, "ab📷");
+        assert_eq!(buffer, [u16::from(b'a'), u16::from(b'b'), 0, 0xFFFF]);
+        assert_eq!(from_wide(&buffer), "ab");
+
+        let mut buffer = [0xFFFF; 5];
+        copy_to_buffer(&mut buffer, "ab📷");
+        assert_eq!(from_wide(&buffer), "ab📷", "a pair that fits is kept");
     }
 }

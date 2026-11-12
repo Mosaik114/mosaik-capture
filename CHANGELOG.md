@@ -40,7 +40,7 @@ First public release as a standalone project.
 
 ### Internal
 - Rust host rewritten from a `no_std` single file into an idiomatic Cargo project
-  (`windows-sys`, `clippy::pedantic`, documented `unsafe`), 114 unit tests and a
+  (`windows-sys`, `clippy::pedantic`, documented `unsafe`), 117 unit tests and a
   window end-to-end test.
 - C# engine moved to an SDK-style project with nullable types and analyzers; recording and
   screenshot flows extracted into tested state machines; one home each for P/Invoke, UI

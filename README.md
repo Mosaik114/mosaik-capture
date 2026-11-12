@@ -139,7 +139,7 @@ without external resource tools, so both toolchains produce the same resources.
 
 | Check | Rust host | C# engine |
 |---|---|---|
-| Tests | 114 unit tests (hotkeys, settings, migration, CLI, forwarding, DPI, atomic writes, resource writer) + an end-to-end test that drives the real settings window | 405 xUnit cases: the recording and screenshot state machines with fakes (incl. recovery from UI errors), ffmpeg timeouts and cancellation, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, IPC contract, pixel comparisons of 13 UI states |
+| Tests | 117 unit tests (hotkeys, settings, migration, CLI, forwarding, DPI, atomic writes, resource writer) + an end-to-end test that drives the real settings window | 405 xUnit cases: the recording and screenshot state machines with fakes (incl. recovery from UI errors), ffmpeg timeouts and cancellation, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, IPC contract, pixel comparisons of 13 UI states |
 | Static analysis | `clippy::pedantic`, warnings as errors, every `unsafe` block carries a `// SAFETY:` note | Nullable reference types, .NET analyzers (`Recommended`), warnings as errors |
 | Formatting | `cargo fmt --check` | `dotnet format --verify-no-changes` |
 | Supply chain | `Cargo.lock`, a single dependency (`windows-sys`) | Central package management, `packages.lock.json`, locked restore |

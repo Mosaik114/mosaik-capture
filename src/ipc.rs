@@ -6,7 +6,7 @@
 
 use windows_sys::Win32::UI::WindowsAndMessaging::WM_APP;
 
-/// Window class of the app window, looked up with `FindWindowW`.
+/// Window class of the app window, looked up with `FindWindowExW`.
 pub const WINDOW_CLASS: &str = "MosaikCapture.Host";
 
 /// Show the settings window, focusing the screenshot hotkey.

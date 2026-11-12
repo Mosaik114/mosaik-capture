@@ -1,5 +1,7 @@
 //! The dark theme: colours, fonts, brushes and the owner-drawn rounded buttons.
 
+use std::marker::PhantomData;
+
 use windows_sys::Win32::Foundation::{COLORREF, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush,
@@ -161,9 +163,9 @@ impl Scaled {
         }
     }
 
-    /// Everything needed to paint `item`: its style and the cached GDI handles. The
-    /// result is plain data, so no borrow of `self` is held while painting.
-    pub fn button_paint(&self, item: &DRAWITEMSTRUCT) -> ButtonPaint {
+    /// Everything needed to paint `item`: its style and the cached GDI handles,
+    /// valid while `self` is borrowed.
+    pub fn button_paint(&self, item: &DRAWITEMSTRUCT) -> ButtonPaint<'_> {
         let accent = layout::is_accent_button(item.CtlID.cast_signed());
         let pressed = item.itemState & ODS_SELECTED != 0;
         let index = ButtonStyle::index(accent, pressed);
@@ -173,6 +175,7 @@ impl Scaled {
             outline: self.button_outlines[index].handle(),
             font: self.body.handle(),
             focused: item.itemState & ODS_FOCUS != 0 && item.itemState & ODS_NOFOCUSRECT == 0,
+            scaled: PhantomData,
         }
     }
 }
@@ -204,19 +207,22 @@ impl ButtonStyle {
     }
 }
 
-/// The cached GDI handles and state for painting one button.
+/// The cached GDI handles and state for painting one button. It borrows the
+/// [`Scaled`] it came from, so the handles cannot outlive (or be deleted by a DPI
+/// change during) the paint.
 #[derive(Clone, Copy, Debug)]
-pub struct ButtonPaint {
+pub struct ButtonPaint<'a> {
     style: ButtonStyle,
     fill: HBRUSH,
     outline: HGDIOBJ,
     font: HFONT,
     focused: bool,
+    scaled: PhantomData<&'a Scaled>,
 }
 
 /// Paints an owner-drawn button: rounded rectangle, centred label, darker while
 /// pressed and with a focus rectangle when it has the keyboard focus.
-pub fn draw_button(item: &DRAWITEMSTRUCT, paint: ButtonPaint, dpi: Dpi) {
+pub fn draw_button(item: &DRAWITEMSTRUCT, paint: ButtonPaint<'_>, dpi: Dpi) {
     let dc = item.hDC;
     let rect = item.rcItem;
     let radius = dpi.scale(BUTTON_RADIUS);

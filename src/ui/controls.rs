@@ -10,7 +10,7 @@
 use std::ffi::{OsStr, OsString};
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::HFONT;
 use windows_sys::Win32::UI::Controls::{BST_CHECKED, DRAWITEMSTRUCT, EM_LIMITTEXT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -49,8 +49,8 @@ pub(super) struct Creation<'a> {
 }
 
 impl Control {
-    /// Creates a child control; `None` if Windows refuses.
-    pub(super) fn create(creation: &Creation<'_>) -> Option<Self> {
+    /// Creates a child control; on failure, the Windows error code.
+    pub(super) fn create(creation: &Creation<'_>) -> Result<Self, u32> {
         let text = to_wide(creation.text);
         let [x, y, width, height] = creation.rect;
         // SAFETY: class and text are NUL-terminated and outlive the call; the control
@@ -71,7 +71,11 @@ impl Control {
                 ptr::null(),
             )
         };
-        (!control.is_null()).then_some(Self(control))
+        if control.is_null() {
+            // SAFETY: reads the calling thread's last-error value, set by CreateWindowExW.
+            return Err(unsafe { GetLastError() });
+        }
+        Ok(Self(control))
     }
 
     /// The control with `id` on our window `parent`.

@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_APP,
 };
 
-use crate::process::{process_image, same_file};
+use crate::process::window_runs;
 use crate::store::PREVIEW_CONFIG_VAR;
 use crate::wide::to_wide;
 
@@ -161,7 +161,7 @@ impl Engine {
             if after.is_null() {
                 return None;
             }
-            if process_image(after).is_some_and(|image| same_file(&image, &expected)) {
+            if window_runs(after, &expected) {
                 return Some(after);
             }
         }

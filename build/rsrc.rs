@@ -122,6 +122,11 @@ pub struct VersionInfo<'a> {
 
 impl VersionInfo<'_> {
     /// Builds the `VS_VERSIONINFO` block.
+    ///
+    /// # Panics
+    ///
+    /// If a node grows beyond the format's 64 KiB `wLength` limit, i.e. with string
+    /// values of tens of thousands of characters — never for real metadata.
     pub fn to_resource(&self) -> Vec<u8> {
         let [major, minor, patch] = self.version.map(u32::from);
         let mut fixed = Vec::new();
@@ -176,6 +181,10 @@ enum NodeValue<'a> {
 
 /// Serialises one node of the version resource tree (`wLength`, `wValueLength`,
 /// `wType`, key, value, children), each part aligned to 4 bytes.
+///
+/// # Panics
+///
+/// If the node or its value exceeds the 16-bit length fields (64 KiB).
 fn version_node(key: &str, value: NodeValue<'_>, children: &[Vec<u8>]) -> Vec<u8> {
     let (value_bytes, value_length, kind) = match value {
         // rc.exe marks value-less container nodes as text, too.
@@ -308,6 +317,11 @@ fn rsrc_section(resources: &Resources) -> (Vec<u8>, Vec<u32>) {
     (out, relocations)
 }
 
+/// Writes an `IMAGE_RESOURCE_DIRECTORY` header with `id_entries` id entries.
+///
+/// # Panics
+///
+/// If `id_entries` exceeds the 16-bit count field.
 fn push_directory_header(out: &mut Vec<u8>, id_entries: usize) {
     push_u32(out, 0); // characteristics
     push_u32(out, 0); // time stamp
@@ -331,6 +345,12 @@ const SCN_MEM_READ: u32 = 0x4000_0000;
 const SECTION_FLAGS: u32 = SCN_INITIALIZED_DATA | SCN_ALIGN_8BYTES | SCN_MEM_READ;
 
 /// Wraps the `.rsrc` section into a relocatable COFF object with one section symbol.
+///
+/// # Panics
+///
+/// If the resources exceed the format's limits: more than 65 535 entries in one
+/// directory or relocations, or more than 4 GiB of data. An app icon, a manifest and
+/// version information are orders of magnitude below that.
 pub fn coff_object(machine: Machine, resources: &Resources) -> Vec<u8> {
     let (section, relocations) = rsrc_section(resources);
     let raw_data = FILE_HEADER + SECTION_HEADER;
@@ -384,10 +404,16 @@ pub fn coff_object(machine: Machine, resources: &Resources) -> Vec<u8> {
     out
 }
 
+/// # Panics
+///
+/// For offsets beyond 4 GiB, which a resource object never reaches.
 fn to_u32(value: usize) -> u32 {
     u32::try_from(value).expect("resource object fits u32")
 }
 
+/// # Panics
+///
+/// Never on Windows targets, where `usize` has at least 32 bits.
 fn to_usize(value: u32) -> usize {
     usize::try_from(value).expect("u32 fits usize on Windows targets")
 }

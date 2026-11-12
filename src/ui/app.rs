@@ -4,7 +4,10 @@
 //! stable) and reached from the window procedure through `GWLP_USERDATA`. Window
 //! procedures are re-entered (e.g. `SendMessage` inside a handler, modal dialogs and
 //! menus), so all methods take `&self`; mutable state sits in `Cell`/`RefCell`, and
-//! `RefCell` borrows are never held across Win32 calls.
+//! `RefCell` borrows are not held across Win32 calls that can dispatch messages to
+//! this window. The one deliberate exception is painting a button, which keeps the
+//! GDI objects borrowed: drawing calls (and `WM_GETTEXT` to the button itself) never
+//! re-enter this window procedure.
 //!
 //! Session end: `WM_QUERYENDSESSION` is left to the default (logoff is never
 //! blocked). On `WM_ENDSESSION` the hotkeys and the tray icon are released; settings
@@ -230,13 +233,16 @@ impl App {
     /// Adds the tray icon; while the taskbar is not ready (e.g. early during logon),
     /// a timer retries every few seconds.
     fn add_tray_icon(&self) {
+        // Read once: if the window is destroyed during the shell call, `self.window()`
+        // is detached (null), but the icon is registered under this handle.
+        let window = self.window();
         let icon = self.tray_icon.borrow().handle();
-        let state = tray::advance(self.window(), icon, self.tray_state.get());
+        let state = tray::advance(window, icon, self.tray_state.get());
         // Shell_NotifyIconW dispatches sent messages; if one of them destroyed the
         // window meanwhile, an icon added afterwards would be orphaned.
         // SAFETY: no pointer arguments.
-        if unsafe { IsWindow(self.window()) } == 0 {
-            tray::remove(self.window());
+        if unsafe { IsWindow(window) } == 0 {
+            tray::remove(window);
             return;
         }
         self.tray_state.set(state);
@@ -247,9 +253,9 @@ impl App {
         // SAFETY: no pointer arguments; the timer belongs to our window.
         unsafe {
             if retry {
-                SetTimer(self.window(), TRAY_RETRY_TIMER, TRAY_RETRY_MS, None);
+                SetTimer(window, TRAY_RETRY_TIMER, TRAY_RETRY_MS, None);
             } else {
-                KillTimer(self.window(), TRAY_RETRY_TIMER);
+                KillTimer(window, TRAY_RETRY_TIMER);
             }
         }
     }
@@ -381,8 +387,10 @@ impl App {
                 // SAFETY: for WM_DRAWITEM, lParam is null or points to a DRAWITEMSTRUCT
                 // that is valid for the duration of the message.
                 let item = unsafe { (lparam as *const DRAWITEMSTRUCT).as_ref() }?;
-                let paint = self.scaled.borrow().button_paint(item);
-                theme::draw_button(item, paint, self.dpi());
+                // The borrow keeps the brushes, pens and font alive for the whole paint;
+                // nothing in it can re-enter this window (see the module docs).
+                let scaled = self.scaled.borrow();
+                theme::draw_button(item, scaled.button_paint(item), self.dpi());
                 1
             }
             WM_COMMAND => {
@@ -474,7 +482,7 @@ impl App {
                 id: spec.id,
             };
             let control = Control::create(&creation)
-                .ok_or_else(|| UiError::last(UiErrorKind::CreateControls))?;
+                .map_err(|code| UiError { kind: UiErrorKind::CreateControls, code })?;
             let font = self.scaled.borrow().font(spec.font_role());
             control.set_font(font);
             match spec.kind {
