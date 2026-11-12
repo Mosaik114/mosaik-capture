@@ -198,7 +198,7 @@ This started as a personal tool that I use every day. This repository was create
 2026-11-12: the first commit imports that tool unchanged, and the following commits are a
 deliberate restructuring for publication — modular Rust, an SDK-style C# project, tests,
 CI — done in several rounds of independent AI-assisted code review whose findings were fixed
-and verified by the test suites. Further changes go through pull requests with CI.
+and verified by the test suites. From the first public release on, changes go through pull requests with CI.
 
 It was developed with AI coding assistants (OpenAI Codex, Anthropic Claude) as pair
 programmers; requirements, design decisions, review and day-to-day testing are the author's.

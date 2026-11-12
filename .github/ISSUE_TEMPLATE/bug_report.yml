@@ -1,0 +1,36 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Press Shift+Alt+5
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: File properties of MosaikCapture.exe → Details → Product version
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and display setup
+      placeholder: Windows 11 24H2, two monitors at 100 % and 150 %
+  - type: textarea
+    id: log
+    attributes:
+      label: Error log
+      description: Relevant lines from %LOCALAPPDATA%\MosaikCapture\logs\error.log, if any
+      render: text

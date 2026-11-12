@@ -90,7 +90,7 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
   `// SAFETY:` justification (enforced by `clippy::undocumented_unsafe_blocks`), and all
   logic — hotkey parsing, settings normalisation, INI layout, migration, argument parsing,
   DPI scaling — is pure Rust that the unit tests reach without a window.
-  The roughly 140 `unsafe` blocks are almost all single Win32 calls; there is no `unsafe` data
+  The roughly 150 `unsafe` blocks are almost all single Win32 calls; there is no `unsafe` data
   structure or pointer arithmetic beyond reading buffers that Windows hands back.
 - **Per-monitor DPI.** Layout is a table of controls in 96-DPI units; on `WM_DPICHANGED`
   fonts are rebuilt and every child is moved to the scaled rectangle.
@@ -184,7 +184,8 @@ pause/resume: closes the segment, opens a new one on the same clocks            
 | Engine + ffmpeg | real ffmpeg runs: audio stays in sync after a pause, one or zero audio tracks, trim with and without sound, GIF export, broken input files (skipped when ffmpeg is missing) |
 | Visual | 5 pixel tests render 13 states of the real windows off-screen (editor toolbar, menu, scene; recording bar, card, frame, countdown; trim window) and compare them with reference images; on mismatch the actual image and a red diff are written. They skip, naming the font, when a reference font is missing; `MOSAIK_PIXEL_TOLERANCE=lenient` compares slightly blurred images to absorb font-version differences (used in CI) |
 
-All suites run on every push; nothing in them opens a visible window or touches the real
+All suites run on every push. Only the settings-window end-to-end test creates a real
+window (briefly, with its own class and temp settings); nothing touches the real
 settings file or autostart entry.
 
 **Not covered automatically:** live screen capture itself (Desktop Duplication needs a real,
