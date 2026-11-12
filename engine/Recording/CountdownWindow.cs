@@ -50,7 +50,7 @@ internal sealed class CountdownWindow : Window
     Grid BuildCircle()
     {
         var circle = new Grid { Width = CircleSize, Height = CircleSize };
-        var background = new Shapes.Ellipse { StrokeThickness = 1, Effect = ToolWindows.Shadow(28, 8, 0.35) };
+        var background = new Shapes.Ellipse { StrokeThickness = 1, Effect = Metrics.CardShadow() };
         background.SetResourceReference(Shapes.Shape.FillProperty, Palette.Background);
         background.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Line);
         circle.Children.Add(background);

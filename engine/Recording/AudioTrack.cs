@@ -103,17 +103,31 @@ internal sealed class AudioTrack
             if (source.GetNextPacketSize(out uint pending) != 0) return false;
             if (pending == 0) return true;
             if (source.GetBuffer(out IntPtr data, out uint frames, out uint flags, out _, out ulong qpcPosition) != 0) return false;
-            long target = (flags & Wasapi.BufferFlagsTimestampError) != 0 ? framesWritten : ((long)qpcPosition - start) * Rate / TicksPerSecond;
-            if (target > framesWritten + Tolerance) WriteSilence(target - framesWritten);
-            long skip = target < framesWritten - Tolerance ? Math.Min(frames, framesWritten - target) : 0;
-            int count = (int)(frames - skip);
-            if (count > 0)
+            try
             {
-                if ((flags & Wasapi.BufferFlagsSilent) != 0 || Mute) WriteSilence(count);
-                else peak = Math.Max(peak, WriteSamples(new IntPtr(data.ToInt64() + skip * BytesPerFrame), count));
+                peak = Math.Max(peak, Write(data, frames, flags, (long)qpcPosition - start));
             }
-            source.ReleaseBuffer(frames);
+            finally
+            {
+                source.ReleaseBuffer(frames);   // also after a write error, or the device stalls
+            }
         }
+    }
+
+    // Places one packet on the timeline: pads a gap, cuts an overlap, writes the rest; returns its peak.
+    float Write(IntPtr data, uint frames, uint flags, long ticksSinceStart)
+    {
+        long target = (flags & Wasapi.BufferFlagsTimestampError) != 0 ? framesWritten : ticksSinceStart * Rate / TicksPerSecond;
+        if (target > framesWritten + Tolerance) WriteSilence(target - framesWritten);
+        long skip = target < framesWritten - Tolerance ? Math.Min(frames, framesWritten - target) : 0;
+        int count = (int)(frames - skip);
+        if (count <= 0) return 0;
+        if ((flags & Wasapi.BufferFlagsSilent) != 0 || Mute)
+        {
+            WriteSilence(count);
+            return 0;
+        }
+        return WriteSamples(new IntPtr(data.ToInt64() + skip * BytesPerFrame), count);
     }
 
     // Copies the samples and returns their peak; every second frame is enough for the meter.

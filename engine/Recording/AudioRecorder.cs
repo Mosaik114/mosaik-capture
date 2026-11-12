@@ -1,16 +1,46 @@
 namespace MosaikCapture.Engine.Recording;
 
+/// <summary>The audio side of a recording (a seam so the session can be tested without devices).</summary>
+internal interface IAudioRecorder
+{
+    string SystemSoundFile { get; }
+    string MicrophoneFile { get; }
+    bool SystemSoundUsed { get; }
+    bool MicrophoneUsed { get; }
+    float MicrophoneLevel { get; }
+    /// <summary>Completes when the capture thread has ended and the WAV files are closed.</summary>
+    Task Finished { get; }
+    void Start();
+    /// <summary>Stops and finalizes the WAV files; false if they must not be used.</summary>
+    bool Stop();
+    /// <summary>Seconds from the start of the tracks to the given moment (100 ns ticks).</summary>
+    double Offset(long ticks);
+    void SetMicrophone(bool on);
+    void SetSystemSound(bool on);
+}
+
 /// <summary>
 /// Records system sound (loopback) and the microphone via WASAPI into two WAV files on a shared
 /// timeline, so they can be laid under the video segments with exact timing.
 /// </summary>
-internal sealed class AudioRecorder
+/// <remarks>
+/// The capture thread polls both devices every <see cref="PollInterval"/> (WASAPI loopback cannot be
+/// event-driven in shared mode on all Windows 10 versions). Stopping wakes it at once through
+/// <c>stopSignal</c>; if it still does not end in time, <see cref="Finished"/> tells when the files are
+/// released so their folder can be removed afterwards.
+/// </remarks>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "The stop signal lives as long as the recording; it is only set, never waited on after the capture thread ended.")]
+internal sealed class AudioRecorder : IAudioRecorder
 {
     static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
+    static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(10);
+    const int OpenRetryMs = 1000, DeviceChangeRetryMs = 500;
 
     readonly AudioTrack systemSound, microphone;
+    readonly ManualResetEventSlim stopSignal = new();
+    readonly TaskCompletionSource<bool> finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
     Thread? thread;
-    volatile bool stopping, failed;
+    volatile bool failed;
     volatile float microphoneLevel;
     long startTicks;   // start of the timeline (100 ns ticks)
 
@@ -36,6 +66,8 @@ internal sealed class AudioRecorder
     /// <summary>True if the capture loop failed; the tracks may be incomplete.</summary>
     public bool Failed => failed;
 
+    public Task Finished => thread == null ? Task.CompletedTask : finished.Task;
+
     public void Start()
     {
         startTicks = Clocks.Now100Ns();
@@ -44,7 +76,6 @@ internal sealed class AudioRecorder
         thread.Start();
     }
 
-    /// <summary>Seconds from the start of the tracks to the given moment (100 ns ticks).</summary>
     public double Offset(long ticks) => (ticks - startTicks) / 1e7;
 
     // The microphone is only opened while it is on (otherwise Windows permanently shows "microphone in use").
@@ -67,7 +98,7 @@ internal sealed class AudioRecorder
     /// </summary>
     public bool Stop()
     {
-        stopping = true;
+        stopSignal.Set();
         if (thread == null) return true;
         if (!thread.Join(StopTimeout))
         {
@@ -85,12 +116,12 @@ internal sealed class AudioRecorder
             systemSound.Begin();
             microphone.Begin();
             enumerator = (IMMDeviceEnumerator)Activator.CreateInstance(Type.GetTypeFromCLSID(Wasapi.DeviceEnumeratorClass)!)!;
-            while (!stopping)
+            do
             {
                 Serve(systemSound, enumerator, isMicrophone: false);
                 Serve(microphone, enumerator, isMicrophone: true);
-                Thread.Sleep(10);
             }
+            while (!stopSignal.Wait(PollInterval));
         }
         catch (Exception ex)   // any failure here must not crash the process; the recording continues without sound
         {
@@ -103,6 +134,7 @@ internal sealed class AudioRecorder
             systemSound.End(startTicks, end);
             microphone.End(startTicks, end);
             if (enumerator != null) Marshal.ReleaseComObject(enumerator);
+            finished.TrySetResult(true);
         }
     }
 
@@ -110,14 +142,14 @@ internal sealed class AudioRecorder
     {
         if (track.Want && track.Client == null && unchecked(Environment.TickCount - track.RetryAt) >= 0)
         {
-            if (!track.Open(enumerator)) track.RetryAt = Environment.TickCount + 1000;
+            if (!track.Open(enumerator)) track.RetryAt = Environment.TickCount + OpenRetryMs;
         }
         else if (!track.Want && track.Client != null) track.Close();
         if (track.Client == null) return;
         if (!track.Drain(startTicks, out float peak))
         {
             track.Close();   // e.g. a different output device was selected
-            track.RetryAt = Environment.TickCount + 500;
+            track.RetryAt = Environment.TickCount + DeviceChangeRetryMs;
         }
         if (isMicrophone) microphoneLevel = peak;
     }

@@ -255,7 +255,7 @@ internal sealed partial class ScreenshotEditor
         {
             case Tool.Arrow:
                 if (shift) position = SnapTo45Degrees(pressPoint, position);
-                stroke!.Data = Arrow(pressPoint, position, StrokeWidths[widthIndex]);
+                stroke!.Data = ShapeRecognizer.Arrow(pressPoint, position, StrokeWidths[widthIndex]);
                 break;
             case Tool.Line:
                 if (shift) position = SnapTo45Degrees(pressPoint, position);

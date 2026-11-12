@@ -1,6 +1,6 @@
 namespace MosaikCapture.Engine.Tests.Screenshot;
 
-// The highlighter snaps onto the words of the text line it crosses (ScreenshotEditor.SnapToText).
+// The highlighter snaps onto the words of the text line it crosses (TextLineFinder).
 public sealed class HighlighterSnapTests
 {
     static readonly string[] Sentence = { "Die", "zweite", "Zeile", "ist", "wichtig" };
@@ -46,7 +46,7 @@ public sealed class HighlighterSnapTests
         double middle = (line.Top + line.Bottom) / 2;
 
         // starts in the middle of "zweite", ends in the middle of "Zeile", 3 px too high
-        Rect r = ScreenshotEditor.SnapToText(image, (words[1].Left + words[1].Right) / 2, (words[2].Left + words[2].Right) / 2, middle - 3, 12);
+        Rect r = TextLineFinder.Find(image, (words[1].Left + words[1].Right) / 2, (words[2].Left + words[2].Right) / 2, middle - 3, 12);
 
         CoversExactly(r, line, "zweite Zeile");
         Assert.True(r.Left > words[0].Right && r.Right < words[3].Left, "neighbouring words must not be highlighted");
@@ -58,7 +58,7 @@ public sealed class HighlighterSnapTests
         var image = TextImage(Sentence, new Point(40, 80), 20, Color.FromRgb(0x22, 0x22, 0x22), Colors.White, out var words);
         double middle = (words[4].Top + words[4].Bottom) / 2;
 
-        Rect r = ScreenshotEditor.SnapToText(image, words[4].Left + 6, words[4].Left + 26, middle, 12);
+        Rect r = TextLineFinder.Find(image, words[4].Left + 6, words[4].Left + 26, middle, 12);
 
         CoversExactly(r, words[4], "wichtig");
     });
@@ -69,7 +69,7 @@ public sealed class HighlighterSnapTests
         var image = TextImage(Sentence, new Point(60, 90), 16, Color.FromRgb(0xEE, 0xEE, 0xEE), Color.FromRgb(0x1F, 0x1F, 0x1E), out var words);
         Rect line = Rect.Union(words[2], words[3]);
 
-        Rect r = ScreenshotEditor.SnapToText(image, words[2].Left + 2, words[3].Right - 2, (line.Top + line.Bottom) / 2, 10);
+        Rect r = TextLineFinder.Find(image, words[2].Left + 2, words[3].Right - 2, (line.Top + line.Bottom) / 2, 10);
 
         CoversExactly(r, line, "Zeile ist");
     });
@@ -78,7 +78,7 @@ public sealed class HighlighterSnapTests
     public void EmptyAreaOrPhotoStaysAPlainStroke() => WpfThread.Run(() =>
     {
         var image = TextImage(Sentence, new Point(40, 80), 20, Color.FromRgb(0x22, 0x22, 0x22), Colors.White, out _);
-        Assert.True(ScreenshotEditor.SnapToText(image, 100, 300, 170, 12).IsEmpty, "empty area below the text");
+        Assert.True(TextLineFinder.Find(image, 100, 300, 170, 12).IsEmpty, "empty area below the text");
 
         // photo-like noise: no calm background
         var random = new Random(7);
@@ -86,7 +86,7 @@ public sealed class HighlighterSnapTests
         random.NextBytes(pixels);
         for (int i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
         var photo = BitmapSource.Create(400, 120, 96, 96, PixelFormats.Bgra32, null, pixels, 400 * 4);
-        Assert.True(ScreenshotEditor.SnapToText(photo, 100, 300, 60, 12).IsEmpty, "photo");
+        Assert.True(TextLineFinder.Find(photo, 100, 300, 60, 12).IsEmpty, "photo");
     });
 
     [Fact]
@@ -94,6 +94,6 @@ public sealed class HighlighterSnapTests
     {
         var tiny = BitmapSource.Create(3, 3, 96, 96, PixelFormats.Bgra32, null, new byte[3 * 3 * 4], 12);
 
-        Assert.True(ScreenshotEditor.SnapToText(tiny, 0, 3, 1, 12).IsEmpty);
+        Assert.True(TextLineFinder.Find(tiny, 0, 3, 1, 12).IsEmpty);
     });
 }

@@ -90,7 +90,7 @@ internal sealed class SelectionOverlay : Window
         {
             Width = LoupeSize + 6,
             Height = LoupeSize + 6,
-            Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Direction = 270, Opacity = 0.5 }
+            Effect = Metrics.ToolbarShadow()
         };
         background.SetResourceReference(Shapes.Shape.FillProperty, Palette.Background);
         container.Children.Add(background);
@@ -137,7 +137,7 @@ internal sealed class SelectionOverlay : Window
         var chip = ToolWindows.Chip(hintText);
         chip.CornerRadius = new CornerRadius(10);
         chip.Padding = new Thickness(14, 8, 14, 8);
-        chip.Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Direction = 270, Opacity = 0.4 };
+        chip.Effect = Metrics.ChipShadow();
         return chip;
     }
 
@@ -433,9 +433,12 @@ internal sealed class SelectionOverlay : Window
         captured!(capture);
     }
 
-    async void CopyColor(string color)
+    void CopyColor(string color) => CopyColorAsync(color).OnFailure("Copying a color", () => { if (IsVisible) colorText.Text = UiText.Common.CopyFailed; });
+
+    async Task CopyColorAsync(string color)
     {
-        if (await ClipboardWriter.SetTextAsync(color) && IsVisible) colorText.Text = color + UiText.Overlay.ColorCopiedSuffix;
+        bool copied = await ClipboardWriter.SetTextAsync(color);
+        if (IsVisible) colorText.Text = copied ? color + UiText.Overlay.ColorCopiedSuffix : UiText.Common.CopyFailed;
     }
 
     /// <summary>Closes the overlay; while picking a recording area this reports "aborted".</summary>

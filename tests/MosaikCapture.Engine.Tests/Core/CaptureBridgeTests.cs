@@ -8,7 +8,8 @@ public sealed class CaptureBridgeTests
     [InlineData(new[] { "--screenshot" }, 1)]
     [InlineData(new[] { "--recording" }, 2)]
     [InlineData(new[] { "--idle" }, 0)]
-    [InlineData(new[] { "--unknown" }, 1)]
+    [InlineData(new[] { "--unknown" }, 0)]      // logged and started idle, never an unasked screenshot
+    [InlineData(new[] { "-screenshot" }, 0)]
     [InlineData(new[] { "--recording", "--idle" }, 2)]
     public void CommandLineSelectsTheCommand(string[] args, int expected) => Assert.Equal(expected, CaptureBridge.ParseCommand(args));
 

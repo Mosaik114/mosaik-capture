@@ -10,8 +10,7 @@ public sealed class AssembleArgumentsTests : IDisposable
     string List => Path.Combine(directory.Path, "segments.txt");
 
     IReadOnlyList<string> Assemble(IList<string> tracks, string target = "C:\\Videos\\out.mp4") => RecordingSession.Assemble(
-        directory.Path,
-        new[] { "C:\\Temp\\segment-01.mkv", "C:\\Temp\\it's\\segment-02.mkv" },
+        List,
         tracks,
         new List<double> { 1.0, 5.5 },
         new List<double> { 2.0, 3.0 / 7 },
@@ -20,11 +19,16 @@ public sealed class AssembleArgumentsTests : IDisposable
     static string FilterOf(IReadOnlyList<string> args) => args[args.ToList().IndexOf("-filter_complex") + 1];
 
     [Fact]
-    public void WritesAConcatListWithForwardSlashesAndEscapedQuotes()
-    {
-        Assemble(new List<string>());
+    public void ConcatListUsesForwardSlashesAndEscapedQuotes() =>
+        Assert.Equal(new[] { "file 'C:/Temp/segment-01.mkv'", "file 'C:/Temp/it'\\''s/segment-02.mkv'" },
+            RecordingSession.ConcatList(new[] { "C:\\Temp\\segment-01.mkv", "C:\\Temp\\it's\\segment-02.mkv" }));
 
-        Assert.Equal(new[] { "file 'C:/Temp/segment-01.mkv'", "file 'C:/Temp/it'\\''s/segment-02.mkv'" }, File.ReadAllLines(List));
+    [Fact]
+    public void AssemblingWritesNothing()
+    {
+        Assemble(new List<string> { "C:\\Temp\\system.wav" });
+
+        Assert.Empty(Directory.GetFiles(directory.Path));
     }
 
     [Fact]
@@ -69,7 +73,7 @@ public sealed class AssembleArgumentsTests : IDisposable
     [Fact]
     public void TargetWithSpacesIsQuotedOnTheCommandLine()
     {
-        string line = RecordingSession.Assemble(directory.Path, new[] { "C:\\a.mkv" }, new List<string>(), new List<double> { 0 }, new List<double> { 1 },
+        string line = RecordingSession.Assemble(List, new List<string>(), new List<double> { 0 }, new List<double> { 1 },
             "C:\\Users\\Jane Doe\\Videos\\Mosaiks-Aufnahme 2026-09-26 14-03-12.mp4").ToString();
 
         Assert.EndsWith(" \"C:\\Users\\Jane Doe\\Videos\\Mosaiks-Aufnahme 2026-09-26 14-03-12.mp4\"", line);

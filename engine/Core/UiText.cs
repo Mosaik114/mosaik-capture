@@ -6,7 +6,12 @@ namespace MosaikCapture.Engine.Core;
 /// </summary>
 static class UiText
 {
-    /// <summary>Window titles. Also used by tests and QA scripts to find the windows.</summary>
+    /// <summary>
+    /// Window titles. They are part of the German UI and its brand ("Mosaiks-Screenshot", "Mosaiks-Aufnahme"):
+    /// Alt+Tab, the taskbar and screen readers show them. The invisible helper windows of a recording
+    /// (frame, countdown, toolbar, click ring) are never listed there, but screen readers and UI automation
+    /// still read their titles, and tests and QA scripts find all windows by them, so they follow the same scheme.
+    /// </summary>
     public static class Titles
     {
         public const string Overlay = "Mosaiks-Screenshot";

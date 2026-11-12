@@ -3,69 +3,97 @@ namespace MosaikCapture.Engine.Screenshot;
 // Screenshot editor: placing markup (blur, spotlight, highlighter, pixelate, numbers, text) (fields and construction in ScreenshotEditor.cs).
 internal sealed partial class ScreenshotEditor
 {
+    /// <summary>A stroke smaller than this in both directions was a click.</summary>
+    const double MinStrokeSize = 3;
+
     internal void PointerUp()
     {
         if (mode == Mode.None) return;
-        Mode m = mode;
+        Mode finished = mode;
         mode = Mode.None;
         ReleaseMouseCapture();
-        if (m == Mode.MoveItem)
+        switch (finished)
         {
-            var tt = itemOffset;
-            double x0 = itemStartX, y0 = itemStartY, x1 = tt.X, y1 = tt.Y;
-            if (x0 != x1 || y0 != y1) PushUndo(delegate { tt.X = x0; tt.Y = y0; }, delegate { tt.X = x1; tt.Y = y1; });
-            RefreshSpotlightShade(null);
+            case Mode.MoveItem:
+                FinishMovingItem();
+                break;
+            case Mode.MoveCrop:
+            case Mode.ResizeCrop:
+                FinishCropChange();
+                break;
+            case Mode.Draw:
+                FinishStroke();
+                break;
         }
-        else if (m == Mode.MoveCrop || m == Mode.ResizeCrop)
+    }
+
+    void FinishMovingItem()
+    {
+        var offset = itemOffset;
+        double x0 = itemStartX, y0 = itemStartY, x1 = offset.X, y1 = offset.Y;
+        if (x0 != x1 || y0 != y1) PushUndo(delegate { offset.X = x0; offset.Y = y0; }, delegate { offset.X = x1; offset.Y = y1; });
+        RefreshSpotlightShade(null);
+    }
+
+    void FinishCropChange()
+    {
+        Rect before = cropAtPress, after = crop;
+        if (before != after) PushUndo(delegate { crop = before; LayoutCrop(); }, delegate { crop = after; LayoutCrop(); });
+    }
+
+    // The drawn preview becomes markup: as drawn, smoothed, snapped to text, or turned into an effect area.
+    void FinishStroke()
+    {
+        holdTimer.Stop();
+        var drawn = stroke!;
+        stroke = null;
+        markup.Children.Remove(drawn);
+        drawn.BeginAnimation(OpacityProperty, null);
+        Rect bounds = drawn.Data == null ? Rect.Empty : drawn.Data.Bounds;
+        if (bounds.IsEmpty || (bounds.Width < MinStrokeSize && bounds.Height < MinStrokeSize)) { RefreshSpotlightShade(null); return; }   // just a click
+        if (!PlaceStroke(drawn, bounds)) return;
+        snapped = false;
+    }
+
+    // False if nothing was placed and the stroke state must stay as it is (spotlight outside the crop).
+    bool PlaceStroke(Shapes.Path drawn, Rect bounds)
+    {
+        if (tool == Tool.Pixel || tool == Tool.Blur)
         {
-            Rect a = cropAtPress, b = crop;
-            if (a != b) PushUndo(delegate { crop = a; LayoutCrop(); }, delegate { crop = b; LayoutCrop(); });
+            var cover = tool == Tool.Pixel ? Pixelated(bounds) : Blurred(bounds);
+            if (cover != null) AddMarkup(cover);
         }
-        else if (m == Mode.Draw)
+        else if (tool == Tool.Spot)
         {
-            holdTimer.Stop();
-            var el = stroke!;
-            stroke = null;
-            markup.Children.Remove(el);
-            el.BeginAnimation(OpacityProperty, null);
-            Rect b = el.Data == null ? Rect.Empty : el.Data.Bounds;
-            if (b.IsEmpty || (b.Width < 3 && b.Height < 3)) { RefreshSpotlightShade(null); return; }   // just a click
-            if (tool == Tool.Pixel || tool == Tool.Blur)
-            {
-                var px = tool == Tool.Pixel ? Pixelated(b) : Blurred(b);
-                if (px != null) AddMarkup(px);
-            }
-            else if (tool == Tool.Spot)
-            {
-                b.Intersect(crop);
-                if (b.IsEmpty) { RefreshSpotlightShade(null); return; }
-                var spot = new Shapes.Path
-                {
-                    Data = new RectangleGeometry(new Rect(0, 0, b.Width, b.Height), 8, 8),
-                    Tag = SpotTag,
-                    Stroke = Brushes.Transparent,
-                    StrokeThickness = 12,
-                    RenderTransform = new TranslateTransform()   // only grabbable at the edge
-                };
-                Canvas.SetLeft(spot, b.X);
-                Canvas.SetTop(spot, b.Y);
-                AddMarkup(spot);
-            }
-            else if (tool == Tool.Marker && !snapped)
-            {
-                var pts = StrokePoints(el);
-                var hl = TextHighlight(pts, MarkerWidths[widthIndex]);
-                AddMarkup(hl ?? el);
-            }
-            else if (tool == Tool.Pen && !snapped)
-            {
-                var g = Smooth(StrokePoints(el));
-                if (g != null) el.Data = g;
-                AddMarkup(el);
-            }
-            else AddMarkup(el);
-            snapped = false;
+            bounds.Intersect(crop);
+            if (bounds.IsEmpty) { RefreshSpotlightShade(null); return false; }
+            AddMarkup(SpotlightFrame(bounds));
         }
+        else if (tool == Tool.Marker && !snapped) AddMarkup(TextHighlight(StrokePoints(drawn), MarkerWidths[widthIndex]) ?? drawn);
+        else if (tool == Tool.Pen && !snapped)
+        {
+            var smooth = ShapeRecognizer.Smooth(StrokePoints(drawn));
+            if (smooth != null) drawn.Data = smooth;
+            AddMarkup(drawn);
+        }
+        else AddMarkup(drawn);
+        return true;
+    }
+
+    // An invisible frame for the spotlight hole; only its edge can be grabbed to move it.
+    static Shapes.Path SpotlightFrame(Rect area)
+    {
+        var spot = new Shapes.Path
+        {
+            Data = new RectangleGeometry(new Rect(0, 0, area.Width, area.Height), Metrics.SpotlightRadius, Metrics.SpotlightRadius),
+            Tag = SpotTag,
+            Stroke = Brushes.Transparent,
+            StrokeThickness = Metrics.SpotlightGrabWidth,
+            RenderTransform = new TranslateTransform()
+        };
+        Canvas.SetLeft(spot, area.X);
+        Canvas.SetTop(spot, area.Y);
+        return spot;
     }
 
     // Blur: take a slightly larger crop so the edge does not fade into transparency, then clip to the area.
@@ -131,9 +159,9 @@ internal sealed partial class ScreenshotEditor
     // Highlighter over text: snap to the line height and word boundaries; null if no text is recognizable there.
     FrameworkElement? TextHighlight(List<Point> pts, double thick)
     {
-        Rect b = Bounds(pts);
+        Rect b = ShapeRecognizer.Bounds(pts);
         if (b.Width < 12 || b.Height > b.Width * 0.35) return null;   // only nearly horizontal strokes
-        Rect dev = SnapToText(capture.FullScreen, b.Left * scale, b.Right * scale, (b.Top + b.Bottom) / 2 * scale, thick / 2 * scale);
+        Rect dev = TextLineFinder.Find(capture.FullScreen, b.Left * scale, b.Right * scale, (b.Top + b.Bottom) / 2 * scale, thick / 2 * scale);
         if (dev.IsEmpty) return null;
         double m = 2;
         Rect r = new Rect(dev.X / scale - m, dev.Y / scale - m, dev.Width / scale + 2 * m, dev.Height / scale + 2 * m);
@@ -145,99 +173,6 @@ internal sealed partial class ScreenshotEditor
         return hl;
     }
 
-    // Finds the text line in the image (device pixels) below a horizontal stroke from x0 to x1 at height yc.
-    // Background = most frequent color; ink = everything clearly different. Returns the words hit by the stroke.
-    internal static Rect SnapToText(BitmapSource full, double x0, double x1, double yc, double half)
-    {
-        int W = full.PixelWidth, H = full.PixelHeight;
-        double reach = Math.Max(half * 3, 30);
-        int top = Math.Max(0, (int)(yc - reach)), bot = Math.Min(H, (int)(yc + reach));
-        int left = Math.Max(0, (int)(x0 - reach * 3)), right = Math.Min(W, (int)(x1 + reach * 3));
-        int bw = right - left, bh = bot - top;
-        if (bw < 4 || bh < 8) return Rect.Empty;
-        var src = new FormatConvertedBitmap(new CroppedBitmap(full, new Int32Rect(left, top, bw, bh)), PixelFormats.Bgr32, null, 0);
-        var px = new byte[bw * bh * 4];
-        src.CopyPixels(px, bw * 4, 0);
-
-        // background color: most frequent color (5 bits per channel)
-        var hist = new int[32768];
-        for (int i = 0; i < px.Length; i += 4) hist[(px[i] >> 3) | (px[i + 1] >> 3) << 5 | (px[i + 2] >> 3) << 10]++;
-        int mode = 0;
-        for (int i = 1; i < hist.Length; i++) if (hist[i] > hist[mode]) mode = i;
-        if (hist[mode] < bw * bh * 0.3) return Rect.Empty;   // no calm background, more like a photo
-        int bB = (mode & 31) * 8 + 4, bG = (mode >> 5 & 31) * 8 + 4, bR = (mode >> 10) * 8 + 4;
-        var inkPx = new bool[bw * bh];
-        for (int y = 0; y < bh; y++)
-            for (int x = 0; x < bw; x++)
-            {
-                int i = (y * bw + x) * 4;
-                int d = Math.Max(Math.Abs(px[i] - bB), Math.Max(Math.Abs(px[i + 1] - bG), Math.Abs(px[i + 2] - bR)));
-                inkPx[y * bw + x] = d > 60;
-            }
-
-        // lines: which rows contain ink below the stroke
-        int sx0 = Math.Max(0, (int)x0 - left), sx1 = Math.Min(bw, (int)x1 - left);
-        var rowInk = new bool[bh];
-        for (int y = 0; y < bh; y++)
-            for (int x = sx0; x < sx1; x++)
-                if (inkPx[y * bw + x]) { rowInk[y] = true; break; }
-        int cy = (int)yc - top, lt = -1, lb = -1;
-        double bestDist = double.MaxValue;
-        for (int y = 0; y < bh;)
-        {
-            if (!rowInk[y]) { y++; continue; }
-            int a = y;
-            while (y < bh && (rowInk[y] || (y + 1 < bh && rowInk[y + 1]))) y++;   // bridge a single blank row inside a line
-            int z = y - 1;
-            double dist = cy < a ? a - cy : cy > z ? cy - z : 0;
-            if (dist < bestDist) { bestDist = dist; lt = a; lb = z; }
-        }
-        if (lt < 0 || bestDist > half + 2) return Rect.Empty;
-        int core = lb - lt + 1;
-        if (core < 4) return Rect.Empty;
-
-        // complete the line upwards and downwards: if the stroke only hits small letters (w, i, c), ascenders,
-        // i-dots and descenders are missing. Search in a wider band, bridge small gaps (i-dot),
-        // and stay at most about twice the core height so no neighbouring line is included.
-        int bx0 = Math.Max(0, sx0 - 2 * core), bx1 = Math.Min(bw, sx1 + 2 * core);
-        int gap = Math.Max(2, (int)Math.Round(core * 0.25)), maxH = (int)(core * 2.2);
-        for (int y = lt - 1, blank = 0; y >= 0 && blank <= gap && lb - y + 1 <= maxH; y--)
-            if (AnyInk(inkPx, bw, y, bx0, bx1)) { lt = y; blank = 0; } else blank++;
-        for (int y = lb + 1, blank = 0; y < bh && blank <= gap && y - lt + 1 <= maxH; y++)
-            if (AnyInk(inkPx, bw, y, bx0, bx1)) { lb = y; blank = 0; } else blank++;
-        int lh = lb - lt + 1;
-        if (lt == 0 || lb == bh - 1) return Rect.Empty;   // reaches the border: not a text line
-
-        // columns of this line: words are runs of ink, small gaps (letter spacing) belong to them.
-        // letters are up to about 0.15 font size apart, words from about 0.3 (a space).
-        var colInk = new bool[bw];
-        for (int x = 0; x < bw; x++)
-            for (int y = lt; y <= lb; y++)
-                if (inkPx[y * bw + x]) { colInk[x] = true; break; }
-        int join = Math.Max(2, (int)Math.Round(lh * 0.27));
-        int wl = -1, wr = -1;
-        for (int x = 0; x < bw;)
-        {
-            if (!colInk[x]) { x++; continue; }
-            int a = x, lastInk = x;
-            while (x < bw && x - lastInk <= join) { if (colInk[x]) lastInk = x; x++; }
-            int z = lastInk;
-            double over = Math.Min(z + 1, sx1) - Math.Max(a, sx0);
-            if (over > 0.25 * (z - a + 1) || (over > 0 && sx1 - sx0 < z - a + 1 && over >= 0.6 * (sx1 - sx0)))
-            {
-                if (wl < 0) wl = a;
-                wr = z;
-            }
-        }
-        if (wl < 0 || wl == 0 || wr == bw - 1) return Rect.Empty;
-        return new Rect(left + wl, top + lt, wr - wl + 1, lh);
-    }
-
-    static bool AnyInk(bool[] inkPx, int bw, int y, int x0, int x1)
-    {
-        for (int x = x0; x < x1; x++) if (inkPx[y * bw + x]) return true;
-        return false;
-    }
 
     // Coarsely pixelates an area: scale down, then scale up again with hard edges.
     FrameworkElement? Pixelated(Rect r)

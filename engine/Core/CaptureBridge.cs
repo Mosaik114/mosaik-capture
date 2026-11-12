@@ -121,9 +121,24 @@ internal static class CaptureBridge
         app.Run();
     }
 
-    /// <summary>0 = idle, 1 = screenshot, 2 = recording; added to <see cref="CommandBase"/> when forwarded.</summary>
-    internal static int ParseCommand(string[] args) =>
-        (int)(args.Length > 0 && args[0] == "--recording" ? Command.Recording : args.Length > 0 && args[0] == "--idle" ? Command.Idle : Command.Screenshot);
+    /// <summary>
+    /// 0 = idle, 1 = screenshot, 2 = recording; added to <see cref="CommandBase"/> when forwarded.
+    /// No argument means a screenshot (a plain start of the exe). An unknown first argument is logged and
+    /// treated as idle: starting the engine must never take a screenshot nobody asked for.
+    /// </summary>
+    internal static int ParseCommand(string[] args)
+    {
+        if (args.Length == 0) return (int)Command.Screenshot;
+        switch (args[0])
+        {
+            case "--screenshot": return (int)Command.Screenshot;
+            case "--recording": return (int)Command.Recording;
+            case "--idle": return (int)Command.Idle;
+            default:
+                ErrorLog.Write("Unknown command line argument " + args[0] + "; starting idle", null);
+                return (int)Command.Idle;
+        }
+    }
 
     /// <summary>Reply to <see cref="StateMessage"/>.</summary>
     internal static int StateFlags(bool busy, bool live) => (busy ? 1 : 0) | (live ? 2 : 0);

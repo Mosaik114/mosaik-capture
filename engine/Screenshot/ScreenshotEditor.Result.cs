@@ -109,7 +109,9 @@ internal sealed partial class ScreenshotEditor
     }
 
     // Recognizes the text in the crop and copies it as text.
-    async void CopyText()
+    void CopyText() => CopyTextAsync().OnFailure("Copying the text of a screenshot", () => ShowNotice(UiText.Common.TextRecognitionUnavailable));
+
+    async Task CopyTextAsync()
     {
         CommitText();
         var image = new CroppedBitmap(capture.FullScreen, CropInPixels());
@@ -126,7 +128,9 @@ internal sealed partial class ScreenshotEditor
         if (IsVisible) ShowNotice(copied ? UiText.Editor.TextCopied(TextRecognition.Summary(result.Text)) : UiText.Common.CopyFailed);
     }
 
-    async void CopyNow()
+    void CopyNow() => CopyNowAsync().OnFailure("Copying an edited screenshot", () => ShowNotice(UiText.Common.CopyFailed));
+
+    async Task CopyNowAsync()
     {
         CommitText();
         var image = Render();

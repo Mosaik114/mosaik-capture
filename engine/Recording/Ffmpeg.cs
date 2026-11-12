@@ -39,6 +39,9 @@ internal static class Ffmpeg
 {
     const int WaitSliceMs = 100;
 
+    /// <summary>Characters kept from the end of ffmpeg's error output (the actual error is printed last).</summary>
+    const int ErrorTail = 8000;
+
     static readonly Lazy<Task<VideoEncoder>> encoderDetection = new(() => Task.Run(DetectEncoder), LazyThreadSafetyMode.ExecutionAndPublication);
     static readonly object jobGate = new();
     static IntPtr job;
@@ -186,12 +189,12 @@ internal static class Ffmpeg
     {
         cancellation.ThrowIfCancellationRequested();
         var outputText = new StringBuilder();
-        var errorText = new StringBuilder();
+        var errorText = new TailBuffer(ErrorTail);
         using var process = Start(exe, args, line =>
         {
             lock (outputText) outputText.AppendLine(line);
             if (progress != null && FfmpegOutput.ProgressSeconds(line) is double seconds) progress(seconds);
-        }, line => { lock (errorText) if (errorText.Length < 8000) errorText.AppendLine(line); });
+        }, errorText.Add);
         var waited = Stopwatch.StartNew();
         while (!process.WaitForExit(WaitSliceMs))
         {
@@ -208,7 +211,7 @@ internal static class Ffmpeg
         }
         process.WaitForExit();   // has exited: this only waits for the last redirected output lines
         lock (outputText) output = outputText.ToString();
-        lock (errorText) error = errorText.ToString().Trim();
+        error = errorText.ToString().Trim();
         return process.ExitCode;
     }
 

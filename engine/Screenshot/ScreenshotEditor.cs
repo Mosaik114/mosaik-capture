@@ -215,10 +215,10 @@ internal sealed partial class ScreenshotEditor : Window
     {
         for (int i = 0; i < resizeHandles.Length; i++)
         {
-            var dot = new Shapes.Ellipse { Width = 11, Height = 11, StrokeThickness = 2 };
+            var dot = new Shapes.Ellipse { Width = Metrics.HandleSize, Height = Metrics.HandleSize, StrokeThickness = Metrics.HandleStroke };
             dot.SetResourceReference(Shapes.Shape.FillProperty, Palette.Text);
             dot.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Accent);
-            var handle = new Border { Width = 19, Height = 19, Background = Brushes.Transparent, Child = dot, Cursor = HandleCursors[i] };   // larger hit area
+            var handle = new Border { Width = Metrics.HandleHitSize, Height = Metrics.HandleHitSize, Background = Brushes.Transparent, Child = dot, Cursor = HandleCursors[i] };   // larger hit area
             int index = i;
             handle.MouseLeftButtonDown += (_, e) =>
             {
@@ -268,12 +268,12 @@ internal sealed partial class ScreenshotEditor : Window
         toolbarRow.Children.Add(IconButton(IconGlyphs.Accept, UiText.Editor.Done, delegate { Finish(pin: false); }, true));
         var bar = new Border
         {
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(6),
+            CornerRadius = new CornerRadius(Metrics.ToolbarRadius),
+            Padding = new Thickness(Metrics.ToolbarPadding),
             BorderThickness = new Thickness(1),
             Child = toolbarRow,
             Cursor = Cursors.Arrow,
-            Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Direction = 270, Opacity = 0.5 }
+            Effect = Metrics.ToolbarShadow()
         };
         bar.SetResourceReference(Border.BackgroundProperty, Palette.Background);
         bar.SetResourceReference(Border.BorderBrushProperty, Palette.Line);
@@ -285,11 +285,11 @@ internal sealed partial class ScreenshotEditor : Window
     {
         for (int i = 0; i < InkColors.Length; i++)
         {
-            var button = new Grid { Width = 26, Height = 36, Background = Brushes.Transparent, Cursor = Cursors.Hand };
-            var ring = new Shapes.Ellipse { Width = 24, Height = 24, StrokeThickness = 1.5, Visibility = Visibility.Hidden };
+            var button = new Grid { Width = Metrics.ColorButtonWidth, Height = Metrics.ButtonSize, Background = Brushes.Transparent, Cursor = Cursors.Hand };
+            var ring = new Shapes.Ellipse { Width = Metrics.ColorRingSize, Height = Metrics.ColorRingSize, StrokeThickness = Metrics.ColorRingThickness, Visibility = Visibility.Hidden };
             ring.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Text);
             button.Children.Add(ring);
-            button.Children.Add(new Shapes.Ellipse { Width = 16, Height = 16, Fill = new SolidColorBrush(InkColors[i]) });
+            button.Children.Add(new Shapes.Ellipse { Width = Metrics.ColorDotSize, Height = Metrics.ColorDotSize, Fill = new SolidColorBrush(InkColors[i]) });
             colorRings.Add(ring);
             int index = i;
             button.MouseLeftButtonUp += delegate { SetColor(index); };
@@ -302,12 +302,11 @@ internal sealed partial class ScreenshotEditor : Window
     void AddWidthButtons()
     {
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 0, 2, 0), VerticalAlignment = VerticalAlignment.Center };
-        double[] dotSizes = { 4, 6, 8, 10, 12 };   // even sizes so they sit exactly centered in the 24 px box
-        for (int i = 0; i < dotSizes.Length; i++)
+        for (int i = 0; i < Metrics.WidthDots.Length; i++)
         {
-            var dot = new Shapes.Ellipse { Width = dotSizes[i], Height = dotSizes[i] };
+            var dot = new Shapes.Ellipse { Width = Metrics.WidthDots[i], Height = Metrics.WidthDots[i] };
             dot.SetResourceReference(Shapes.Shape.FillProperty, Palette.Text);
-            var button = new Border { Width = 24, Height = 24, CornerRadius = new CornerRadius(6), Child = dot, Background = Brushes.Transparent, Cursor = Cursors.Hand };
+            var button = new Border { Width = Metrics.WidthButtonSize, Height = Metrics.WidthButtonSize, CornerRadius = new CornerRadius(Metrics.WidthButtonRadius), Child = dot, Background = Brushes.Transparent, Cursor = Cursors.Hand };
             int index = i;
             button.MouseLeftButtonUp += delegate { SetWidth(index); };
             button.MouseEnter += delegate { Paint(button, true); ShowTooltip(button, UiText.Editor.WidthNames[index] + UiText.Editor.WidthHint); };
@@ -322,14 +321,14 @@ internal sealed partial class ScreenshotEditor : Window
     {
         var menu = new Border
         {
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(4),
+            CornerRadius = new CornerRadius(Metrics.MenuRadius),
+            Padding = new Thickness(Metrics.MenuPadding),
             BorderThickness = new Thickness(1),
             Child = menuItems,
             Cursor = Cursors.Arrow,
-            MinWidth = 196,
+            MinWidth = Metrics.MenuMinWidth,
             Visibility = Visibility.Hidden,
-            Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 16, ShadowDepth = 3, Direction = 270, Opacity = 0.4 }
+            Effect = Metrics.MenuShadow()
         };
         menu.SetResourceReference(Border.BackgroundProperty, Palette.Background);
         menu.SetResourceReference(Border.BorderBrushProperty, Palette.Line);
@@ -343,7 +342,7 @@ internal sealed partial class ScreenshotEditor : Window
         var chip = ToolWindows.Chip(tooltipText);
         chip.IsHitTestVisible = false;
         chip.Visibility = Visibility.Hidden;
-        chip.Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Direction = 270, Opacity = 0.4 };
+        chip.Effect = Metrics.ChipShadow();
         return chip;
     }
 
@@ -352,11 +351,11 @@ internal sealed partial class ScreenshotEditor : Window
     {
         noticeText.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
         var chip = ToolWindows.Chip(noticeText);
-        chip.CornerRadius = new CornerRadius(10);
-        chip.Padding = new Thickness(14, 8, 14, 8);
+        chip.CornerRadius = new CornerRadius(Metrics.NoticeRadius);
+        chip.Padding = Metrics.NoticePadding;
         chip.IsHitTestVisible = false;
         chip.Visibility = Visibility.Hidden;
-        chip.Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Direction = 270, Opacity = 0.4 };
+        chip.Effect = Metrics.ChipShadow();
         return chip;
     }
 
@@ -365,7 +364,7 @@ internal sealed partial class ScreenshotEditor : Window
     static TextBlock Glyph(string glyph, Brush? foreground) => new()
     {
         Text = glyph,
-        FontSize = 16,
+        FontSize = Metrics.IconSize,
         FontFamily = Palette.IconFont,
         Foreground = foreground,
         HorizontalAlignment = HorizontalAlignment.Center,
@@ -374,7 +373,7 @@ internal sealed partial class ScreenshotEditor : Window
 
     void AddSeparator()
     {
-        var line = new Shapes.Rectangle { Width = 1, Height = 22, Margin = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+        var line = new Shapes.Rectangle { Width = 1, Height = Metrics.SeparatorHeight, Margin = new Thickness(Metrics.SeparatorGap, 0, Metrics.SeparatorGap, 0), VerticalAlignment = VerticalAlignment.Center };
         line.SetResourceReference(Shapes.Shape.FillProperty, Palette.Line);
         toolbarRow.Children.Add(line);
     }
@@ -390,9 +389,9 @@ internal sealed partial class ScreenshotEditor : Window
     {
         var button = new Border
         {
-            Width = 36,
-            Height = 36,
-            CornerRadius = new CornerRadius(8),
+            Width = Metrics.ButtonSize,
+            Height = Metrics.ButtonSize,
+            CornerRadius = new CornerRadius(Metrics.ButtonRadius),
             Margin = new Thickness(1, 0, 1, 0),
             Child = content,
             Background = Brushes.Transparent,
@@ -414,7 +413,7 @@ internal sealed partial class ScreenshotEditor : Window
         if (tools.Length > 1)
         {
             // small triangle bottom right: there is more
-            var withMarker = new Grid { Width = 36, Height = 36 };
+            var withMarker = new Grid { Width = Metrics.ButtonSize, Height = Metrics.ButtonSize };
             withMarker.Children.Add(group.IconHost);
             var triangle = new Shapes.Path
             {

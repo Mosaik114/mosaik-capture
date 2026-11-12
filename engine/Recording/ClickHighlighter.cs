@@ -23,6 +23,9 @@ internal sealed class ClickHighlighter
     /// <summary>Unhooking takes milliseconds; a hook thread that hangs longer is left behind (it is a background thread).</summary>
     static readonly TimeSpan HookStopTimeout = TimeSpan.FromSeconds(2);
 
+    /// <summary>Installing the hook takes milliseconds; after this the recording goes on without click highlights.</summary>
+    static readonly TimeSpan HookStartTimeout = TimeSpan.FromSeconds(1);
+
     public ClickHighlighter() => hookProc = OnMouseEvent;   // kept in a field so the delegate is not collected
 
     public bool Enabled { get => enabled; set => enabled = value; }
@@ -33,10 +36,14 @@ internal sealed class ClickHighlighter
         toolbar = toolbarWindow;
         if (hookThread != null) return;
         dispatcher = Dispatcher.CurrentDispatcher;
-        using var ready = new ManualResetEventSlim();
-        hookThread = new Thread(() => RunHook(ready)) { IsBackground = true, Name = "Mosaik Capture click hook" };
-        hookThread.Start();
-        ready.Wait();   // installing the hook takes milliseconds
+        var installed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() => RunHook(installed)) { IsBackground = true, Name = "Mosaik Capture click hook" };
+        hookThread = thread;
+        thread.Start();
+        // Installing the hook takes milliseconds; the recording must not wait for a hook that never comes.
+        if (installed.Task.Wait(HookStartTimeout) && installed.Task.Result) return;
+        ErrorLog.Write("The mouse hook for click highlights is not available; recording without them", null);
+        Stop();
     }
 
     public void Stop()
@@ -48,17 +55,18 @@ internal sealed class ClickHighlighter
         thread.Join(HookStopTimeout);
     }
 
-    void RunHook(ManualResetEventSlim ready)
+    void RunHook(TaskCompletionSource<bool> installed)
     {
         hookThreadId = NativeMethods.GetCurrentThreadId();
         NativeMethods.PeekMessage(out _, IntPtr.Zero, 0, 0, 0);   // creates the message queue before Stop can post to it
         IntPtr hook = NativeMethods.SetWindowsHookEx(NativeMethods.WH_MOUSE_LL, hookProc, NativeMethods.GetModuleHandle(null), 0);
-        ready.Set();
         if (hook == IntPtr.Zero)
         {
             ErrorLog.Write("Installing the mouse hook for click highlights", new Win32Exception(Marshal.GetLastWin32Error()));
+            installed.TrySetResult(false);
             return;
         }
+        installed.TrySetResult(true);
         try
         {
             while (NativeMethods.GetMessage(out var message, IntPtr.Zero, 0, 0) > 0)

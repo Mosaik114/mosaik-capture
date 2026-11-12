@@ -130,7 +130,7 @@ internal sealed class PinnedScreenshot : Window
             BorderThickness = new Thickness(1),
             Child = items,
             Margin = new Thickness(0, 0, 12, 12),
-            Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 16, ShadowDepth = 3, Direction = 270, Opacity = 0.4 }
+            Effect = Metrics.MenuShadow()
         };
         box.SetResourceReference(Border.BackgroundProperty, Palette.Background);
         box.SetResourceReference(Border.BorderBrushProperty, Palette.Line);
@@ -281,7 +281,9 @@ internal sealed class PinnedScreenshot : Window
         chipTimer.Start();
     }
 
-    async void Copy()
+    void Copy() => CopyAsync().OnFailure("Copying a pinned screenshot", () => ShowFeedback(UiText.Common.CopyFailed));
+
+    async Task CopyAsync()
     {
         bool copied = await ClipboardWriter.SetImageAsync(image, Screenshots.Encode(image, false));
         ShowFeedback(copied ? UiText.Pin.Copied : UiText.Common.CopyFailed);

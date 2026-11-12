@@ -8,7 +8,7 @@ public sealed class ShapeRecognitionTests
 
     static ShapeKind Recognize(List<Point> stroke) => WpfThread.Run(() =>
     {
-        ScreenshotEditor.Recognize(stroke, 3, out ShapeKind kind);
+        ShapeRecognizer.Recognize(stroke, 3, out ShapeKind kind);
         return kind;
     });
 
@@ -31,7 +31,7 @@ public sealed class ShapeRecognitionTests
     [Fact]
     public void NearlyRoundEllipseBecomesAPerfectCircle() => WpfThread.Run(() =>
     {
-        var geometry = ScreenshotEditor.Recognize(Strokes.Wobble(Strokes.Ellipse(new Point(200, 200), 62, 56, 0.05), 1.5, 4), 3, out ShapeKind kind);
+        var geometry = ShapeRecognizer.Recognize(Strokes.Wobble(Strokes.Ellipse(new Point(200, 200), 62, 56, 0.05), 1.5, 4), 3, out ShapeKind kind);
 
         Assert.Equal(ShapeKind.Ellipse, kind);
         var ellipse = Assert.IsType<EllipseGeometry>(geometry);
@@ -48,7 +48,7 @@ public sealed class ShapeRecognitionTests
     [Fact]
     public void RectangleLiesWhereItWasDrawn() => WpfThread.Run(() =>
     {
-        var geometry = ScreenshotEditor.Recognize(Strokes.Wobble(Strokes.Polygon(0.1, new Point(200, 300), new Point(420, 300), new Point(420, 420), new Point(200, 420)), 2, 3), 3, out ShapeKind kind);
+        var geometry = ShapeRecognizer.Recognize(Strokes.Wobble(Strokes.Polygon(0.1, new Point(200, 300), new Point(420, 300), new Point(420, 420), new Point(200, 420)), 2, 3), 3, out ShapeKind kind);
 
         Assert.Equal(ShapeKind.Rectangle, kind);
         Rect bounds = geometry!.Bounds;
@@ -77,10 +77,10 @@ public sealed class ShapeRecognitionTests
 
         WpfThread.Run(() =>
         {
-            var nearlyFlat = (LineGeometry)ScreenshotEditor.Recognize(Strokes.Wobble(Strokes.Line(new Point(10, 60), new Point(170, 66), 60), 2, 1), 3, out _)!;
+            var nearlyFlat = (LineGeometry)ShapeRecognizer.Recognize(Strokes.Wobble(Strokes.Line(new Point(10, 60), new Point(170, 66), 60), 2, 1), 3, out _)!;
             Assert.Equal(nearlyFlat.StartPoint.Y, nearlyFlat.EndPoint.Y);
 
-            var slanted = (LineGeometry)ScreenshotEditor.Recognize(Strokes.Line(new Point(0, 0), new Point(173, 100), 60), 3, out _)!;
+            var slanted = (LineGeometry)ShapeRecognizer.Recognize(Strokes.Line(new Point(0, 0), new Point(173, 100), 60), 3, out _)!;
             double angle = Math.Atan2(slanted.EndPoint.Y - slanted.StartPoint.Y, slanted.EndPoint.X - slanted.StartPoint.X) * 180 / Math.PI;
             Assert.InRange(angle, 29.5, 30.5);
         });
@@ -89,7 +89,7 @@ public sealed class ShapeRecognitionTests
     [Fact]
     public void NearlyVerticalLineSnapsToTheAxis() => WpfThread.Run(() =>
     {
-        var line = Assert.IsType<LineGeometry>(ScreenshotEditor.Recognize(Strokes.Line(new Point(50, 10), new Point(55, 170), 60), 3, out _));
+        var line = Assert.IsType<LineGeometry>(ShapeRecognizer.Recognize(Strokes.Line(new Point(50, 10), new Point(55, 170), 60), 3, out _));
 
         Assert.Equal(line.StartPoint.X, line.EndPoint.X);
     });
@@ -119,7 +119,7 @@ public sealed class ShapeRecognitionTests
         var p = Strokes.Line(new Point(10, 80), new Point(160, 80), 50);
         p.AddRange(Strokes.Line(new Point(160, 80), new Point(135, 60), 8));
 
-        var arrow = Assert.IsType<PathGeometry>(ScreenshotEditor.Recognize(p, 3, out ShapeKind kind));
+        var arrow = Assert.IsType<PathGeometry>(ShapeRecognizer.Recognize(p, 3, out ShapeKind kind));
         Assert.Equal(ShapeKind.Arrow, kind);
         Assert.Equal(2, arrow.Figures.Count);   // shaft and filled head
         Assert.Equal(new Point(10, 80), arrow.Figures[0].StartPoint);

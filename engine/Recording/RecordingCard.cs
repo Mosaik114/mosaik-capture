@@ -89,7 +89,7 @@ internal sealed class RecordingCard : Window
             Child = layout,
             Opacity = 0,
             RenderTransform = slide,
-            Effect = ToolWindows.Shadow(28, 8, 0.35)
+            Effect = Metrics.CardShadow()
         };
         border.SetResourceReference(Border.BackgroundProperty, Palette.Background);
         border.SetResourceReference(Border.BorderBrushProperty, Palette.Line);

@@ -57,7 +57,9 @@ public sealed class FfmpegIntegrationTests : IClassFixture<ProbeVideoFixture>, I
 
     static void Assemble(List<string> segments, List<string> tracks, string target)
     {
-        var args = RecordingSession.Assemble(Path.GetDirectoryName(segments[0])!, segments, tracks, new List<double> { 1.0, 5.5 }, new List<double> { 2.0, 3.0 }, target);
+        string list = Path.Combine(Path.GetDirectoryName(segments[0])!, RecordingSession.ConcatListName);
+        File.WriteAllLines(list, RecordingSession.ConcatList(segments));
+        var args = RecordingSession.Assemble(list, tracks, new List<double> { 1.0, 5.5 }, new List<double> { 2.0, 3.0 }, target);
         Assert.True(Ffmpeg.Run(Ffmpeg.Exe, args, FfmpegTimeouts.Quick, out _, out string error) == 0, "ffmpeg: " + error);
     }
 

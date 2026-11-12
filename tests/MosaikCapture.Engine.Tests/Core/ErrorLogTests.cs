@@ -5,7 +5,7 @@ namespace MosaikCapture.Engine.Tests.Core;
 // Crash protection from Core: error log, background threads, restart guard, Shell.Open.
 public sealed class ErrorLogTests : IDisposable
 {
-    static string LogDirectory => AppDomain.CurrentDomain.BaseDirectory;
+    static string LogDirectory => ErrorLog.Directory;
     static string LogFile => Path.Combine(LogDirectory, ErrorLog.FileName);
     static string OldFile => Path.Combine(LogDirectory, ErrorLog.OldFileName);
 
@@ -20,6 +20,29 @@ public sealed class ErrorLogTests : IDisposable
     }
 
     static string Log() => File.Exists(LogFile) ? File.ReadAllText(LogFile) : "";
+
+    [Fact]
+    public void LivesInLocalAppDataNotNextToTheExe() =>
+        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MosaikCapture", "logs"), TestLogFolder.Default);
+
+    [Fact]
+    public void TestsLogIntoATemporaryFolder() => Assert.StartsWith(Path.GetTempPath(), ErrorLog.Directory, StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public void CreatesTheFolderOnTheFirstWrite()
+    {
+        string previous = ErrorLog.Directory;
+        using var temp = new TempDirectory();
+        string folder = Path.Combine(temp.Path, "not", "there", "yet");
+        try
+        {
+            ErrorLog.Directory = folder;
+            ErrorLog.Write("first", null);
+
+            Assert.Contains("first", File.ReadAllText(Path.Combine(folder, ErrorLog.FileName)));
+        }
+        finally { ErrorLog.Directory = previous; }
+    }
 
     [Fact]
     public void WritesPlaceAndException()

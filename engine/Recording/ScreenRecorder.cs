@@ -62,7 +62,10 @@ internal static class ScreenRecorder
     }
 
     /// <summary>A trimmed video or GIF is done: copy it and show it on the card.</summary>
-    public static async void Exported(RecordedVideo video, bool gif, RECT work)
+    public static void Exported(RecordedVideo video, bool gif, RECT work) =>
+        ExportedAsync(video, gif, work).OnFailure("Showing an export", () => ui.Card.Problem(UiText.Recording.Failed, UiText.Common.UnknownError, work));
+
+    static async Task ExportedAsync(RecordedVideo video, bool gif, RECT work)
     {
         bool copied = await ui.CopyFileToClipboardAsync(video.Path);
         string heading = gif
