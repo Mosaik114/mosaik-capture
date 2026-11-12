@@ -28,8 +28,10 @@ Mosaik Capture is two cooperating Windows processes:
 
 ## Inter-process contract
 
-The host keeps the contract in `src/ipc.rs` (its own messages) and `src/engine.rs` (the engine's), the engine in `engine/Core/CaptureBridge.cs`; both sides
-pin it with tests, so a change on one side fails that side's suite. Note that WM_APP+1…+4\nmean different things on each side: they are addressed to different windows.
+The host keeps the contract in `src/ipc.rs` (its own messages) and `src/engine.rs`
+(the engine's), the engine in `engine/Core/CaptureBridge.cs`; both sides pin it with tests,
+so a change on one side fails that side's suite. Note that `WM_APP+1…+4` mean different
+things on each side: they are addressed to different windows.
 
 | Direction | Mechanism | Meaning |
 |---|---|---|
@@ -85,6 +87,8 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
   `// SAFETY:` justification (enforced by `clippy::undocumented_unsafe_blocks`), and all
   logic — hotkey parsing, settings normalisation, INI layout, migration, argument parsing,
   DPI scaling — is pure Rust that the unit tests reach without a window.
+  The roughly 140 `unsafe` blocks are almost all single Win32 calls; there is no `unsafe` data
+  structure or pointer arithmetic beyond reading buffers that Windows hands back.
 - **Per-monitor DPI.** Layout is a table of controls in 96-DPI units; on `WM_DPICHANGED`
   fonts are rebuilt and every child is moved to the scaled rectangle.
 - **Saving is transactional.** New hotkeys are registered before anything is written; if
@@ -194,7 +198,8 @@ out of ffmpeg: it records system sound and microphone itself via WASAPI onto con
 tracks positioned by the device's own timestamps (`AudioTrack` pads gaps and trims overlaps).
 Each video segment records its start on both the wall clock and the audio clock; when
 saving, the real segment durations are measured with `ffprobe` and the audio is cut to
-exactly those windows. A real-ffmpeg test pauses, resumes and asserts the offset.
+exactly those windows. A real-ffmpeg test pauses, resumes and asserts the offset
+([`SystemSoundAndMicrophoneStayInSyncAfterAPause`](../tests/MosaikCapture.Engine.Tests/Recording/FfmpegIntegrationTests.cs)).
 
 **No black flash on very large screens.** A transparent, layered WPF window showing the
 frozen screen is too slow at 5120 × 1440 and can show a black frame before WPF has rendered.
@@ -204,4 +209,5 @@ first frame while invisible and is uncloaked only then; only the dimming animate
 **Joining segments that use different encoders.** Encoder detection (NVENC or x264) used to
 run lazily with a timeout on the UI thread. If it timed out, the first segment used x264 and
 later ones NVENC, and the stream-copy concatenation produced a broken file. Detection now runs
-once in the background, and each recording session fixes its encoder for all its segments.
+once in the background, and each recording session fixes its encoder for all its segments
+([`RecordingSessionTests`](../tests/MosaikCapture.Engine.Tests/Recording/RecordingSessionTests.cs)).
