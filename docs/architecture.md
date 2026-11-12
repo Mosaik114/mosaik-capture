@@ -17,8 +17,12 @@ Mosaik Capture is two cooperating Windows processes:
   of that; doing it in raw Win32/GDI from Rust would multiply the code for no user benefit.
 - **Fault isolation.** A crash in the editor or in an ffmpeg pipeline cannot take down
   hotkey handling. The engine logs the error to `error.log` next to the executable and
-  restarts itself (but not within its first minute, to avoid a crash loop); the host simply
-  spawns it again on the next capture.
+  restarts itself (but not within its first minute, to avoid a crash loop) with
+  `--idle --after <pid>`, so the new process waits for the old one to exit before taking the
+  single-instance mutex; the host simply spawns it again on the next capture. Inside the
+  engine, both controllers guard their entry points: an unexpected error closes the open
+  windows and returns to a consistent state (a running recording is still saved) instead of
+  leaving a half-open UI.
 - **Runtime requirements.** .NET Framework 4.8 ships with Windows, so neither process needs
   an installed runtime.
 
@@ -79,9 +83,9 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
 
 | Folder | Contents |
 |---|---|
-| `Core/` | `Program` (entry point, crash handling), `CaptureBridge` (CLI + IPC), `CaptureSettings`, `ErrorLog`, `NativeMethods` (every P/Invoke and Win32 constant), `UiText` (every German UI string), `Palette`, `ToolWindows` |
-| `Screenshot/` | `Screenshots` (facade), `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`), `PinnedScreenshot`, `TextRecognition` |
-| `Recording/` | `ScreenRecorder` (facade) → `RecordingController` (state machine) → `IRecordingUi` / `IRecordingBackend` / `IRecordingSession`; `RecordingSession`, `Ffmpeg`, `FfmpegArgs`, `AudioRecorder`/`AudioTrack` (WASAPI), `Dxgi`, toolbar, frame, countdown, card, `TrimWindow`, `VideoExport` |
+| `Core/` | `Program` (entry point, crash handling), `CaptureBridge` (CLI + IPC), `CaptureSettings`, `ErrorLog`, `NativeMethods` (every P/Invoke and Win32 constant), `UiText` (every German UI string), `ClipboardWriter` (the single clipboard path), `Motion` (shared timing), `Palette`, `ToolWindows` |
+| `Screenshot/` | `Screenshots` (facade) → `ScreenshotController` → `IScreenshotUi` / `IScreenshotStore`; `ScreenGrabber`, `SelectionOverlay`, `ScreenshotCard`, `ScreenshotEditor` (+ `.Shapes`, `.Markup`, `.Mouse`, `.Result`), `PinnedScreenshot`, `TextRecognition` |
+| `Recording/` | `ScreenRecorder` (facade) → `RecordingController` (state machine) → `IRecordingUi` / `IRecordingBackend` / `IRecordingSession`; `RecordingSession`, `Ffmpeg` (every call bounded by `FfmpegTimeouts`, cancellable), `FfmpegArgs`, `AudioRecorder`/`AudioTrack` (WASAPI), `Dxgi`, toolbar, frame, countdown, card, `TrimWindow`, `VideoExport` |
 | `Diagnostics/` | `--self-test` and `--live-test` |
 
 ### Screenshot

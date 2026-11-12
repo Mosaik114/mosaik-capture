@@ -20,7 +20,7 @@ First public release as a standalone project.
   lock files, nullable reference types and .NET analyzers.
 - `RecordingController` state machine behind small interfaces, `FfmpegArgs` command-line
   builder, `NativeMethods` and `UiText` as single homes for interop and UI strings.
-- xUnit test project with 251 cases, including the recording state machine, WASAPI track
+- xUnit test project with 298 cases, including both state machines, ffmpeg timeouts, WASAPI track
   logic, real ffmpeg runs and pixel comparisons of 13 UI states.
 - `build.ps1`, GitHub Actions CI (fmt, clippy, tests, format, packaging, release upload),
   secret scanning, Dependabot; English README, architecture notes, security policy,
