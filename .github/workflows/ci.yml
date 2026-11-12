@@ -38,11 +38,12 @@ jobs:
         run: cargo fmt --check
       - name: cargo clippy (pedantic, warnings are errors)
         run: cargo clippy --all-targets --locked -- -D warnings
-      - name: cargo test
+      # MOSAIK_UI_TESTS=1 also runs the end-to-end test of the real settings window
+      # (own window class, temp settings, unusual hotkeys)
+      - name: cargo test (unit tests + settings-window end-to-end test)
+        env:
+          MOSAIK_UI_TESTS: "1"
         run: cargo test --locked
-      # Creates the real settings window in-process (own class, temp settings, unusual hotkeys)
-      - name: End-to-end test of the settings window
-        run: cargo test --locked -- --ignored
       - name: Self-test of the release build
         shell: pwsh
         run: |
