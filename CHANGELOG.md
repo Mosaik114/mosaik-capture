@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-11-13
+
 ### Changed
 - The stop button in the recording bar is turquoise (#0B7F74, darker #096A61 while hovered)
   instead of salmon; its light square keeps 4.6:1 (6.1:1 hovered).
@@ -126,6 +128,7 @@ First public release as a standalone project.
   repository on 2026-11-12 (tag [`original-import`](https://github.com/Mosaik114/mosaik-capture/tree/original-import)),
   so the whole 1.0.0 restructuring can be read as a before/after diff.
 
+[1.1.2]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.1.2
 [1.1.1]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.0.0
