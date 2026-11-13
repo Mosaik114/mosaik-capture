@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-13
+
 ### Changed
 - The brand colour is now turquoise instead of terracotta: settings window, cards, editor,
   selection overlay, recording frame, countdown, click highlights, trim window, the first ink
@@ -114,5 +116,6 @@ First public release as a standalone project.
   repository on 2026-11-12 (tag [`original-import`](https://github.com/Mosaik114/mosaik-capture/tree/original-import)),
   so the whole 1.0.0 restructuring can be read as a before/after diff.
 
+[1.1.1]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Mosaik114/mosaik-capture/releases/tag/v1.0.0
