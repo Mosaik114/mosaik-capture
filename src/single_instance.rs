@@ -19,13 +19,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::cli::Action;
-use crate::ipc;
 use crate::process::window_runs;
 use crate::wide::to_wide;
 
 /// Session-local mutex that marks the primary instance.
-const MUTEX_NAME: &str = r"Local\MosaikCapture.Host";
-/// The instance mutex; held for the lifetime of the process.
+pub const MUTEX_NAME: &str = r"Local\MosaikCapture.Host";
+
 #[derive(Debug)]
 pub struct InstanceLock {
     handle: HANDLE,
@@ -34,9 +33,9 @@ pub struct InstanceLock {
 }
 
 impl InstanceLock {
-    /// Creates (or opens) the instance mutex.
-    pub fn acquire() -> io::Result<Self> {
-        let name = to_wide(MUTEX_NAME);
+    /// Creates (or opens) the mutex `name`.
+    pub fn acquire(name: &str) -> io::Result<Self> {
+        let name = to_wide(name);
         // SAFETY: `name` is NUL-terminated; default security attributes are allowed.
         let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
         // SAFETY: reads the calling thread's last-error value, set by CreateMutexW.
@@ -55,7 +54,6 @@ impl Drop for InstanceLock {
     }
 }
 
-/// Outcome of forwarding an action to the primary instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Forwarded {
     /// The primary's window never appeared.
@@ -69,25 +67,24 @@ pub enum Forwarded {
 /// Where and how patiently to forward an action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
-    /// Window class of the receiving window.
     pub class: String,
     /// How often to look for the window while the primary may still be starting.
     pub attempts: u32,
-    /// Pause between two lookups.
     pub interval: Duration,
     /// How long the receiver may take to handle the message.
     pub timeout: Duration,
-    /// The executable the receiving process must run (compared as a file, see
-    /// [`same_file`]); `None` accepts any process. A window of the right class from
-    /// another program — or another copy of this app elsewhere — is not trusted.
+    /// The executable the receiving process must run; `None` accepts any process. A
+    /// window of the right class from another program — or another copy of this app
+    /// elsewhere — is not trusted.
     pub image: Option<PathBuf>,
 }
 
 impl Target {
-    /// The primary instance: up to 2 s for its window to appear, 2 s to answer.
-    pub fn primary() -> Self {
+    /// The primary instance with window class `class`: up to 2 s for its window to
+    /// appear, 2 s to answer.
+    pub fn primary(class: &str) -> Self {
         Self {
-            class: ipc::WINDOW_CLASS.to_owned(),
+            class: class.to_owned(),
             attempts: 200,
             interval: Duration::from_millis(10),
             timeout: Duration::from_secs(2),
@@ -131,9 +128,9 @@ fn is_trusted(window: HWND, expected: Option<&Path>) -> bool {
     expected.is_none_or(|expected| window_runs(window, expected))
 }
 
-/// Waits for the primary instance's window and sends it `action`.
-pub fn forward(action: Action) -> Forwarded {
-    forward_to(&Target::primary(), action)
+/// Waits for the primary instance's window (of class `class`) and sends it `action`.
+pub fn forward(class: &str, action: Action) -> Forwarded {
+    forward_to(&Target::primary(class), action)
 }
 
 /// Waits for `target`'s window and sends it `action`.
@@ -166,6 +163,7 @@ pub fn forward_to(target: &Target, action: Action) -> Forwarded {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc;
     use std::sync::mpsc;
     use std::time::Instant;
     use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -282,7 +280,7 @@ mod tests {
 
     #[test]
     fn primary_target_waits_two_seconds_at_most() {
-        let target = Target::primary();
+        let target = Target::primary(ipc::WINDOW_CLASS);
         assert_eq!(target.class, "MosaikCapture.Host");
         assert_eq!(target.interval * target.attempts, Duration::from_secs(2));
         assert_eq!(target.timeout, Duration::from_secs(2));
@@ -333,7 +331,7 @@ mod tests {
         assert!(!is_trusted(window, Some(&std::env::temp_dir())), "another file");
         assert!(is_trusted(window, None), "no expectation, no check");
         assert!(!is_trusted(ptr::null_mut(), Some(&exe)), "no window, no process");
-        assert!(Target::primary().image.is_some());
+        assert!(Target::primary(ipc::WINDOW_CLASS).image.is_some());
     }
 
     #[test]

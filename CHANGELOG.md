@@ -19,6 +19,31 @@ All notable changes to this project are documented here. The format follows
 - The dashed frame of pixelate, blur and spotlight stays visible on white content in the
   dark theme; editor notices are centered correctly the first time.
 - A flood of rejected capture commands writes at most one log line per second.
+- If Windows cannot report the Pictures or Videos folder, the default output folder is below
+  the profile folder instead of the root of the drive.
+- An audio toggle in the recording bar no longer overwrites unsaved check-box edits in the
+  open settings window.
+- Folder paths longer than the Windows limit (32,767 characters) are rejected when saving.
+
+### Changed
+- `--preview <ini>` is replaced by test isolation through the environment
+  (`MOSAIK_CAPTURE_TEST_INSTANCE`, `MOSAIK_CAPTURE_TEST_CONFIG`): an isolated host and engine
+  use their own mutexes, window names and data folder and never reach the installed app.
+- Exit codes: failures that scripts cannot act on now share code 1; 3 (self-test), 5
+  (`--probe` unhealthy, now also when the running instance does not answer) and 11 (`--quit`
+  refused) are unchanged.
+- The host reads numbers in the settings file like the engine does: anything that is not a
+  number means the default (before, `system_audio=yes` read as off on one side and on on the
+  other).
+
+### Internal
+- `contract/contract.json` is the single source of the host–engine contract; both test
+  suites check against it, and a cross-process test runs the quit protocol against the
+  built engine.
+- The engine's identity is checked by its image path instead of file IDs; the settings
+  window code is smaller (shared control creation, no policy tables), and doc comments that
+  only repeated a name are gone (`missing_docs` is off).
+
 ## [1.0.0] - 2026-11-12
 
 First public release as a standalone project.
@@ -58,11 +83,11 @@ First public release as a standalone project.
 
 ### Internal
 - Rust host rewritten from a `no_std` single file into an idiomatic Cargo project
-  (`windows-sys`, `clippy::pedantic`, documented `unsafe`), 117 unit tests and a
-  window end-to-end test.
+  (`windows-sys`, `clippy::pedantic`, documented `unsafe`), unit tests and a window
+  end-to-end test.
 - C# engine moved to an SDK-style project with nullable types and analyzers; recording and
   screenshot flows extracted into tested state machines; one home each for P/Invoke, UI
-  strings, metrics and timing; 443 tests including real ffmpeg runs and pixel comparisons.
+  strings, metrics and timing; tests including real ffmpeg runs and pixel comparisons.
 - `build.ps1`, GitHub Actions CI with packaging and release upload, secret scanning,
   Dependabot.
 

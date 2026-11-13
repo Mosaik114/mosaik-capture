@@ -12,85 +12,103 @@ use std::ptr;
 
 use windows_sys::Win32::Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::HFONT;
-use windows_sys::Win32::UI::Controls::{BST_CHECKED, DRAWITEMSTRUCT, EM_LIMITTEXT};
+use windows_sys::Win32::UI::Controls::{BST_CHECKED, DRAWITEMSTRUCT, EM_LIMITTEXT, SetWindowTheme};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BM_GETCHECK, BM_SETCHECK, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CreateWindowExW,
-    GetDlgItem, GetWindowTextLengthW, GetWindowTextW, HMENU, SWP_NOACTIVATE, SWP_NOZORDER,
-    SendMessageW, SetWindowPos, SetWindowTextW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETFONT,
-    WS_CHILD, WS_VISIBLE,
+    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_OWNERDRAW, CB_ADDSTRING, CB_GETCURSEL,
+    CB_SETCURSEL, CBS_DROPDOWNLIST, CreateWindowExW, ES_AUTOHSCROLL, GetDlgItem,
+    GetWindowTextLengthW, GetWindowTextW, HMENU, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
+    SetWindowPos, SetWindowTextW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETFONT, WS_CHILD,
+    WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use windows_sys::core::PCWSTR;
+use windows_sys::w;
 
+use super::layout::{ControlKind, ControlSpec, Dpi, EDIT_LIMIT};
 use crate::wide::{from_wide, to_wide};
 
 /// A child control of the settings window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Control(HWND);
 
-/// What [`Control::create`] needs to know.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Creation<'a> {
-    /// The settings window.
-    pub parent: HWND,
-    /// Our module.
-    pub instance: HINSTANCE,
-    /// Window class, e.g. `w!("BUTTON")`.
-    pub class: PCWSTR,
-    /// Initial text.
-    pub text: &'a str,
-    /// Extended window style.
-    pub ex_style: WINDOW_EX_STYLE,
-    /// Window style (`WS_CHILD | WS_VISIBLE` are added).
-    pub style: WINDOW_STYLE,
-    /// `[x, y, width, height]` in pixels.
-    pub rect: [i32; 4],
-    /// Control id (0 for labels).
-    pub id: i32,
+/// Window class, extended style and style (without `WS_CHILD | WS_VISIBLE`) of a kind.
+const fn window_class(kind: ControlKind) -> (PCWSTR, WINDOW_EX_STYLE, WINDOW_STYLE) {
+    match kind {
+        ControlKind::Label(_) => (w!("STATIC"), 0, 0),
+        ControlKind::Edit => {
+            (w!("EDIT"), WS_EX_CLIENTEDGE, WS_TABSTOP | ES_AUTOHSCROLL.cast_unsigned())
+        }
+        ControlKind::Button => (w!("BUTTON"), 0, WS_TABSTOP | BS_OWNERDRAW.cast_unsigned()),
+        ControlKind::Checkbox => (w!("BUTTON"), 0, WS_TABSTOP | BS_AUTOCHECKBOX.cast_unsigned()),
+        ControlKind::Combo(_) => {
+            (w!("COMBOBOX"), 0, WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST.cast_unsigned())
+        }
+    }
 }
 
 impl Control {
-    /// Creates a child control; on failure, the Windows error code.
-    pub(super) fn create(creation: &Creation<'_>) -> Result<Self, u32> {
-        let text = to_wide(creation.text);
-        let [x, y, width, height] = creation.rect;
+    /// Creates the control described by `spec` on `parent`, laid out for `dpi`; on
+    /// failure, the Windows error code.
+    pub(super) fn create(
+        parent: HWND,
+        instance: HINSTANCE,
+        spec: &ControlSpec,
+        dpi: Dpi,
+    ) -> Result<Self, u32> {
+        let (class, ex_style, style) = window_class(spec.kind);
+        let text = to_wide(spec.text);
+        let [x, y, width, height] = dpi.scale_rect(spec.rect);
         // SAFETY: class and text are NUL-terminated and outlive the call; the control
         // id is passed in the HMENU slot as child windows require.
-        let control = unsafe {
+        let handle = unsafe {
             CreateWindowExW(
-                creation.ex_style,
-                creation.class,
+                ex_style,
+                class,
                 text.as_ptr(),
-                WS_CHILD | WS_VISIBLE | creation.style,
+                WS_CHILD | WS_VISIBLE | style,
                 x,
                 y,
                 width,
                 height,
-                creation.parent,
-                creation.id as HMENU,
-                creation.instance,
+                parent,
+                spec.id as HMENU,
+                instance,
                 ptr::null(),
             )
         };
-        if control.is_null() {
+        if handle.is_null() {
             // SAFETY: reads the calling thread's last-error value, set by CreateWindowExW.
             return Err(unsafe { GetLastError() });
         }
-        Ok(Self(control))
+        let control = Self(handle);
+        match spec.kind {
+            ControlKind::Edit => control.limit_text(EDIT_LIMIT),
+            ControlKind::Checkbox => {
+                // Without visual styles the check box honours WM_CTLCOLORSTATIC, so its
+                // label is readable on the dark background.
+                // SAFETY: both literals are NUL-terminated.
+                unsafe { SetWindowTheme(handle, w!(""), w!("")) };
+            }
+            ControlKind::Combo(entries) => {
+                for entry in entries {
+                    control.add_entry(entry);
+                }
+            }
+            ControlKind::Label(_) | ControlKind::Button => {}
+        }
+        Ok(control)
     }
 
-    /// The control with `id` on our window `parent`.
     pub(super) fn child(parent: HWND, id: i32) -> Self {
         // SAFETY: no pointer arguments.
         Self(unsafe { GetDlgItem(parent, id) })
     }
 
     /// The owner-drawn button described by a `WM_DRAWITEM` sent to our window.
-    pub(super) fn of_draw_item(item: &DRAWITEMSTRUCT) -> Self {
+    pub(super) const fn of_draw_item(item: &DRAWITEMSTRUCT) -> Self {
         Self(item.hwndItem)
     }
 
-    /// The raw handle, e.g. to compare with a message parameter.
-    pub(super) fn handle(self) -> HWND {
+    pub(super) const fn handle(self) -> HWND {
         self.0
     }
 
@@ -105,7 +123,7 @@ impl Control {
         unsafe { SendMessageW(self.0, message, wparam, lparam) }
     }
 
-    /// Moves and resizes the control (`[x, y, width, height]` in pixels).
+    /// `[x, y, width, height]` in pixels.
     pub(super) fn move_to(self, [x, y, width, height]: [i32; 4]) {
         let flags = SWP_NOZORDER | SWP_NOACTIVATE;
         // SAFETY: no pointer arguments.
@@ -142,33 +160,28 @@ impl Control {
         unsafe { self.send(WM_SETFONT, font as WPARAM, 1) };
     }
 
-    /// Limits the number of characters an edit control accepts.
-    pub(super) fn limit_text(self, max_chars: usize) {
+    fn limit_text(self, max_chars: usize) {
         // SAFETY: EM_LIMITTEXT takes a plain count.
         unsafe { self.send(EM_LIMITTEXT, max_chars, 0) };
     }
 
-    /// Checks or unchecks a check box.
     pub(super) fn set_checked(self, checked: bool) {
         // SAFETY: BM_SETCHECK takes a plain state value.
         unsafe { self.send(BM_SETCHECK, usize::from(checked), 0) };
     }
 
-    /// Whether a check box is checked.
     pub(super) fn is_checked(self) -> bool {
         // SAFETY: BM_GETCHECK takes no parameters.
         let state = unsafe { self.send(BM_GETCHECK, 0, 0) };
         isize::try_from(BST_CHECKED).is_ok_and(|checked| state == checked)
     }
 
-    /// Appends an entry to a drop-down list.
-    pub(super) fn add_entry(self, text: &str) {
+    fn add_entry(self, text: &str) {
         let text = to_wide(text);
         // SAFETY: CB_ADDSTRING reads the NUL-terminated `text`, which outlives the call.
         unsafe { self.send(CB_ADDSTRING, 0, text.as_ptr() as LPARAM) };
     }
 
-    /// Selects an entry of a drop-down list.
     pub(super) fn select(self, index: usize) {
         // SAFETY: CB_SETCURSEL takes a plain index.
         unsafe { self.send(CB_SETCURSEL, index, 0) };

@@ -49,7 +49,7 @@ impl OwnedIcon {
     }
 
     /// The raw handle; valid as long as `self` lives.
-    pub fn handle(&self) -> HICON {
+    pub const fn handle(&self) -> HICON {
         self.0
     }
 }
@@ -71,7 +71,6 @@ pub struct WindowIcons {
 }
 
 impl WindowIcons {
-    /// Loads both icons for `dpi`.
     pub fn load(instance: HINSTANCE, dpi: Dpi) -> Self {
         Self {
             small: OwnedIcon::load(instance, SM_CXSMICON, dpi),

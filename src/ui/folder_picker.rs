@@ -21,9 +21,7 @@ use windows_sys::core::{GUID, HRESULT, PCWSTR, PWSTR};
 use super::strings;
 use crate::wide::{from_wide_ptr, to_wide};
 
-/// `IID_IFileOpenDialog`.
 const IID_FILE_OPEN_DIALOG: GUID = GUID::from_u128(0xd57c_7288_d4ad_4768_be02_9d96_9532_d960);
-/// `IID_IShellItem`.
 const IID_SHELL_ITEM: GUID = GUID::from_u128(0x4382_6d1e_e718_42ee_bc55_a1e2_61c3_7bfe);
 
 /// An unused vtable slot.
@@ -134,7 +132,7 @@ impl<V: Vtbl> Com<V> {
         NonNull::new(raw).map(|this| Self { this, vtbl: PhantomData })
     }
 
-    fn this(&self) -> This {
+    const fn this(&self) -> This {
         self.this.as_ptr()
     }
 

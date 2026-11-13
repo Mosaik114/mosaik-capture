@@ -2,7 +2,7 @@
 //! API and replacing it atomically.
 //!
 //! The file is UTF-16LE with a BOM. It is shared with the capture engine, which locates
-//! it the same way (or through [`PREVIEW_CONFIG_VAR`] in preview mode).
+//! it the same way (or through the test isolation variables, see [`crate::isolation`]).
 //!
 //! Saving runs on the UI thread. It normally takes a few milliseconds; while another
 //! process holds the file open, each of the two steps (write, replace) is attempted
@@ -24,11 +24,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
-use windows_sys::Win32::System::WindowsProgramming::{
-    GetPrivateProfileIntW, GetPrivateProfileStringW,
-};
+use windows_sys::Win32::System::WindowsProgramming::GetPrivateProfileStringW;
 use windows_sys::Win32::UI::Shell::{
-    FOLDERID_LocalAppData, FOLDERID_Pictures, FOLDERID_Videos, KF_FLAG_DEFAULT,
+    FOLDERID_LocalAppData, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, KF_FLAG_DEFAULT,
     SHGetKnownFolderPath,
 };
 use windows_sys::core::GUID;
@@ -36,24 +34,18 @@ use windows_sys::core::GUID;
 use crate::config::{Config, DefaultFolders, ProfileSource, SECTION};
 use crate::wide::{from_wide, from_wide_ptr, to_wide};
 
-/// Environment variable through which the engine (started by us) finds a preview
-/// settings file.
-pub const PREVIEW_CONFIG_VAR: &str = "MOSAIK_CAPTURE_TEST_CONFIG";
 /// Folder below `%LOCALAPPDATA%` that holds the settings.
-const APP_FOLDER: &str = "MosaikCapture";
+pub const APP_FOLDER: &str = "MosaikCapture";
 /// Folder used by earlier versions; its settings are copied over once.
-const LEGACY_APP_FOLDER: &str = "Mosaiks-Aufnahme";
-/// File name of the settings.
-const FILE_NAME: &str = "settings.ini";
+pub const LEGACY_APP_FOLDER: &str = "Mosaiks-Aufnahme";
+pub const FILE_NAME: &str = "settings.ini";
 /// How often a write is attempted while another process (e.g. the engine reading the
 /// settings) briefly holds the file open.
 const SHARING_ATTEMPTS: u32 = 4;
-/// Pause between two attempts.
 const SHARING_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// Byte-order mark that makes the profile API treat the file as UTF-16LE.
 const UTF16LE_BOM: [u8; 2] = [0xFF, 0xFE];
 
-/// The settings file and the operations on it.
 #[derive(Clone, Debug)]
 pub struct SettingsStore {
     path: PathBuf,
@@ -63,16 +55,19 @@ impl SettingsStore {
     /// Uses `%LOCALAPPDATA%\MosaikCapture\settings.ini`, creating the folder and
     /// migrating the settings of earlier versions if needed.
     pub fn user_default() -> Self {
-        let local_app_data = local_app_data(
-            env::var_os("LOCALAPPDATA"),
-            || known_folder(&FOLDERID_LocalAppData),
-            env::temp_dir,
-        );
+        let local_app_data = first_absolute([
+            env::var_os("LOCALAPPDATA").map(PathBuf::from),
+            known_folder(&FOLDERID_LocalAppData),
+        ]);
         Self::at(prepare_user_folder(&local_app_data))
     }
 
-    /// Uses an explicit file, e.g. for `--preview`.
+    /// Uses an explicit file (test isolation); its folder is created if missing.
     pub fn at(path: PathBuf) -> Self {
+        if let Some(folder) = path.parent() {
+            // A missing folder only makes saving fail later, which the window reports.
+            let _ = fs::create_dir_all(folder);
+        }
         Self { path }
     }
 
@@ -87,19 +82,15 @@ impl SettingsStore {
     }
 }
 
-/// The local application-data folder: `%LOCALAPPDATA%` if it is an absolute path,
-/// else the known folder, else (never expected) the temp folder. The result is always
-/// absolute, so settings never end up relative to the working directory.
-fn local_app_data(
-    variable: Option<OsString>,
-    known: impl FnOnce() -> PathBuf,
-    temp: impl FnOnce() -> PathBuf,
-) -> PathBuf {
-    if let Some(path) = variable.map(PathBuf::from).filter(|path| path.is_absolute()) {
-        return path;
-    }
-    let known = known();
-    if known.is_absolute() { known } else { temp() }
+/// The settings file below a local application-data folder.
+pub fn settings_below(local_app_data: &Path) -> PathBuf {
+    local_app_data.join(APP_FOLDER).join(FILE_NAME)
+}
+
+/// The first absolute candidate, else the temp folder: settings and default folders
+/// must never end up relative to the working directory or at a drive's root.
+fn first_absolute(candidates: impl IntoIterator<Item = Option<PathBuf>>) -> PathBuf {
+    candidates.into_iter().flatten().find(|path| path.is_absolute()).unwrap_or_else(env::temp_dir)
 }
 
 /// Creates `<local_app_data>\MosaikCapture` and, once, copies the settings of
@@ -108,9 +99,8 @@ fn local_app_data(
 /// Errors are ignored on purpose: without the folder, saving fails later and the
 /// window reports it; a failed migration just means starting with defaults.
 fn prepare_user_folder(local_app_data: &Path) -> PathBuf {
-    let folder = local_app_data.join(APP_FOLDER);
-    let file = folder.join(FILE_NAME);
-    let _ = fs::create_dir(&folder);
+    let file = settings_below(local_app_data);
+    let _ = fs::create_dir(local_app_data.join(APP_FOLDER));
     let legacy = local_app_data.join(LEGACY_APP_FOLDER).join(FILE_NAME);
     if let Some(source) = migration_source(&file, &legacy, Path::is_file) {
         // The old file stays where it is, so downgrading keeps working.
@@ -128,31 +118,32 @@ fn migration_source<'a>(
     (!exists(file) && exists(legacy)).then_some(legacy)
 }
 
-/// Default output folders below the user's "Pictures" and "Videos" folders.
+/// Default output folders below the user's "Pictures" and "Videos" folders, or below
+/// the profile folder if those cannot be looked up.
 pub fn known_default_folders() -> DefaultFolders {
-    DefaultFolders::new(&known_folder(&FOLDERID_Pictures), &known_folder(&FOLDERID_Videos))
+    let profile = known_folder(&FOLDERID_Profile);
+    let base = |id, name| {
+        first_absolute([known_folder(id), profile.as_ref().map(|profile| profile.join(name))])
+    };
+    DefaultFolders::new(&base(&FOLDERID_Pictures, "Pictures"), &base(&FOLDERID_Videos, "Videos"))
 }
 
-/// Looks up a known folder (any length); an empty string if that fails.
-fn known_folder(id: &GUID) -> PathBuf {
+fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut path = ptr::null_mut();
     // SAFETY: `id` is a valid GUID; `path` receives a COM-allocated string.
     let result = unsafe {
         SHGetKnownFolderPath(id, KF_FLAG_DEFAULT.cast_unsigned(), ptr::null_mut(), &raw mut path)
     };
-    let folder = if result >= 0 {
-        // SAFETY: on success `path` is a NUL-terminated string.
-        PathBuf::from(unsafe { from_wide_ptr(path) })
-    } else {
-        PathBuf::new()
-    };
+    // SAFETY: on success `path` is a NUL-terminated string.
+    let folder = (result >= 0).then(|| PathBuf::from(unsafe { from_wide_ptr(path) }));
     // SAFETY: the string must be freed with the COM allocator, even on failure.
     unsafe { CoTaskMemFree(path.cast()) };
     folder
 }
 
-/// Read access to one INI file via `GetPrivateProfile*W`, which handles encodings,
-/// case-insensitive names, whitespace and quoting exactly like Windows always has.
+/// Read access to one INI file via `GetPrivateProfileStringW`, which handles
+/// encodings, case-insensitive names, whitespace and quoting exactly like Windows (and
+/// the engine) always has.
 #[derive(Debug)]
 pub struct IniFile {
     path: Vec<u16>,
@@ -160,8 +151,6 @@ pub struct IniFile {
 }
 
 impl IniFile {
-    /// Opens (lazily) the file at `path`.
-    ///
     /// The path must be absolute: the profile API would look for a bare or relative
     /// name in the Windows folder.
     pub fn new(path: &Path) -> Self {
@@ -197,19 +186,13 @@ impl ProfileSource for IniFile {
         }
     }
 
-    fn int(&self, key: &str, default: u32) -> u32 {
-        let key = to_wide(key);
-        // SAFETY: all string pointers are NUL-terminated and outlive the call.
-        unsafe {
-            GetPrivateProfileIntW(
-                self.section.as_ptr(),
-                key.as_ptr(),
-                default.cast_signed(),
-                self.path.as_ptr(),
-            )
-        }
-        // Same bits as the documented UINT result.
-        .cast_unsigned()
+    fn int(&self, key: &str, default: i32) -> i32 {
+        // Not GetPrivateProfileIntW, which reads "12abc" as 12 and "yes" as 0: the
+        // engine falls back to the default for anything that is not a number.
+        self.string(key, OsStr::new(""))
+            .to_str()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(default)
     }
 }
 
@@ -275,17 +258,17 @@ fn is_sharing_violation(error: &io::Error) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::config::{Countdown, FrameRate};
     use std::os::windows::ffi::OsStringExt;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A unique scratch directory under the system temp folder, removed on drop.
-    struct TempDir(PathBuf);
+    pub struct TempDir(pub PathBuf);
 
     impl TempDir {
-        fn new() -> Self {
+        pub fn new() -> Self {
             static NEXT: AtomicU32 = AtomicU32::new(0);
             let name = format!(
                 "mosaik-capture-test-{}-{}",
@@ -297,7 +280,7 @@ mod tests {
             Self(path)
         }
 
-        fn file(&self, name: &str) -> PathBuf {
+        pub fn file(&self, name: &str) -> PathBuf {
             self.0.join(name)
         }
     }
@@ -312,24 +295,29 @@ mod tests {
         DefaultFolders::new(Path::new(r"C:\Bilder"), Path::new(r"C:\Videos"))
     }
 
-    fn write_utf16(path: &Path, text: &str) {
+    pub fn write_utf16(path: &Path, text: &str) {
         let mut bytes = UTF16LE_BOM.to_vec();
         bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
         fs::write(path, bytes).unwrap();
     }
 
     #[test]
-    fn local_app_data_is_always_absolute() {
-        let known = || PathBuf::from(r"C:\Users\Ada\AppData\Local");
-        let temp = || PathBuf::from(r"C:\Temp");
-        let from_env = local_app_data(Some(r"D:\Local".into()), known, temp);
-        assert_eq!(from_env, Path::new(r"D:\Local"));
-        let missing = local_app_data(None, known, temp);
-        assert_eq!(missing, Path::new(r"C:\Users\Ada\AppData\Local"));
-        let relative = local_app_data(Some("relative".into()), known, temp);
-        assert_eq!(relative, Path::new(r"C:\Users\Ada\AppData\Local"));
-        let nothing = local_app_data(Some("".into()), PathBuf::new, temp);
-        assert_eq!(nothing, Path::new(r"C:\Temp"));
+    fn fallbacks_are_always_absolute() {
+        let known = Some(PathBuf::from(r"C:\Users\Ada\AppData\Local"));
+        assert_eq!(
+            first_absolute([Some(r"D:\Local".into()), known.clone()]),
+            Path::new(r"D:\Local")
+        );
+        assert_eq!(first_absolute([None, known.clone()]), Path::new(r"C:\Users\Ada\AppData\Local"));
+        assert_eq!(
+            first_absolute([Some("relative".into()), known]),
+            Path::new(r"C:\Users\Ada\AppData\Local")
+        );
+        assert_eq!(
+            first_absolute([Some(PathBuf::new()), None]),
+            env::temp_dir(),
+            "never a root folder"
+        );
     }
 
     #[test]
@@ -412,6 +400,14 @@ mod tests {
         let file = prepare_user_folder(&dir.0);
         assert!(file.parent().unwrap().is_dir());
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn explicit_files_get_their_folder() {
+        let dir = TempDir::new();
+        let store = SettingsStore::at(dir.0.join("a").join("b").join("settings.ini"));
+        store.save(&Config::defaults(&sample_folders())).unwrap();
+        assert_eq!(store.load().countdown, Countdown::Seconds3);
     }
 
     #[test]
@@ -507,14 +503,15 @@ mod tests {
         write_utf16(
             &path,
             "[Capture]\r\n FPS = 45 \r\ncountdown=7\r\nmicrophone=yes\r\n\
-             system_audio=0\r\nscreenshot_hotkey = \"Alt+1\" \r\n",
+             system_audio=yes\r\nshow_clicks=0\r\nscreenshot_hotkey = \"Alt+1\" \r\n",
         );
         let config = Config::load(&IniFile::new(&path), &sample_folders());
         assert_eq!(config.frame_rate, FrameRate::Fps60);
         assert_eq!(config.countdown, Countdown::Seconds3);
-        assert!(!config.microphone, "non-numeric reads as 0");
-        assert!(!config.system_audio);
-        assert!(config.show_clicks, "missing key keeps its default");
+        assert!(!config.microphone, "not a number: the default (off)");
+        assert!(config.system_audio, "not a number: the default (on)");
+        assert!(!config.show_clicks);
+        assert!(config.autostart, "missing key keeps its default");
         assert_eq!(config.screenshot_hotkey, "Alt+1", "trimmed and unquoted");
     }
 

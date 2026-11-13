@@ -13,63 +13,56 @@ use crate::hotkey::{Hotkey, ParseHotkeyError};
 /// INI section holding all settings.
 pub const SECTION: &str = "capture";
 
-/// INI key names.
 pub mod keys {
-    /// Hotkey that takes a screenshot.
     pub const SCREENSHOT_HOTKEY: &str = "screenshot_hotkey";
-    /// Hotkey that starts or stops a recording.
     pub const RECORDING_HOTKEY: &str = "recording_hotkey";
-    /// Folder for screenshots.
     pub const SCREENSHOT_FOLDER: &str = "screenshot_folder";
-    /// Folder for recordings.
     pub const RECORDING_FOLDER: &str = "recording_folder";
-    /// Record the microphone.
     pub const MICROPHONE: &str = "microphone";
-    /// Record system audio.
     pub const SYSTEM_AUDIO: &str = "system_audio";
     /// Visualise mouse clicks in recordings.
     pub const SHOW_CLICKS: &str = "show_clicks";
     /// Start with Windows.
     pub const AUTOSTART: &str = "autostart";
-    /// Recording frame rate.
     pub const FPS: &str = "fps";
     /// Countdown before a recording starts, in seconds.
     pub const COUNTDOWN: &str = "countdown";
 }
 
-/// Default screenshot hotkey.
 pub const DEFAULT_SCREENSHOT_HOTKEY: &str = "Shift+Alt+4";
-/// Default recording hotkey.
 pub const DEFAULT_RECORDING_HOTKEY: &str = "Shift+Alt+5";
+/// Subfolders of the user's Pictures and Videos folders that hold the captures by default.
+pub const SCREENSHOT_FOLDER_NAME: &str = "Mosaiks-Screenshots";
+pub const RECORDING_FOLDER_NAME: &str = "Mosaiks-Aufnahmen";
 
+/// Longest folder path in UTF-16 units: the Windows limit for long paths, and what
+/// the engine reads back.
+pub const MAX_FOLDER_LEN: usize = 32_767;
 /// Characters that may not appear anywhere in a folder path.
 const FORBIDDEN_PATH_CHARS: &[u8] = b"\n\r\"*<>?|";
 
 /// Recording frame rate. Anything other than 30 is treated as 60.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FrameRate {
-    /// 30 frames per second.
     Fps30,
-    /// 60 frames per second.
     #[default]
     Fps60,
 }
 
 impl FrameRate {
     /// Interprets a stored value.
-    pub const fn from_value(value: u32) -> Self {
+    pub const fn from_value(value: i32) -> Self {
         if value == 30 { Self::Fps30 } else { Self::Fps60 }
     }
 
-    /// The value written to the settings file.
-    pub const fn value(self) -> u32 {
+    pub const fn value(self) -> i32 {
         match self {
             Self::Fps30 => 30,
             Self::Fps60 => 60,
         }
     }
 
-    /// Position in the frame-rate combo box ("30/60 Bilder/s", i.e. frames per second).
+    /// Position in the frame-rate combo box.
     pub const fn index(self) -> usize {
         match self {
             Self::Fps30 => 0,
@@ -89,18 +82,15 @@ impl FrameRate {
 /// Countdown before a recording starts. Unknown values fall back to three seconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Countdown {
-    /// Start immediately.
     Off,
-    /// Three-second countdown.
     #[default]
     Seconds3,
-    /// Five-second countdown.
     Seconds5,
 }
 
 impl Countdown {
     /// Interprets a stored value.
-    pub const fn from_value(value: u32) -> Self {
+    pub const fn from_value(value: i32) -> Self {
         match value {
             0 => Self::Off,
             5 => Self::Seconds5,
@@ -108,8 +98,8 @@ impl Countdown {
         }
     }
 
-    /// The value written to the settings file (the length in seconds).
-    pub const fn value(self) -> u32 {
+    /// The length in seconds, as stored.
+    pub const fn value(self) -> i32 {
         match self {
             Self::Off => 0,
             Self::Seconds3 => 3,
@@ -140,52 +130,39 @@ impl Countdown {
 /// Default output folders, which depend on the user's known folders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefaultFolders {
-    /// Default screenshot folder.
     pub screenshots: PathBuf,
-    /// Default recording folder.
     pub recordings: PathBuf,
 }
 
 impl DefaultFolders {
-    /// Builds the defaults from the user's "Pictures" and "Videos" folders. The
-    /// subfolder is appended textually, so a failed lookup (empty path) yields the
-    /// rooted, invalid `\Mosaiks-Screenshots` instead of a relative path.
+    /// The app's subfolders of the user's "Pictures" and "Videos" folders.
     pub fn new(pictures: &Path, videos: &Path) -> Self {
-        let below = |base: &Path, name: &str| {
-            let mut path = OsString::from(base);
-            path.push("\\");
-            path.push(name);
-            PathBuf::from(path)
-        };
         Self {
-            screenshots: below(pictures, "Mosaiks-Screenshots"),
-            recordings: below(videos, "Mosaiks-Aufnahmen"),
+            screenshots: pictures.join(SCREENSHOT_FOLDER_NAME),
+            recordings: videos.join(RECORDING_FOLDER_NAME),
         }
     }
 }
 
-/// Raw access to stored settings, with the semantics of the Win32 profile API:
-/// a missing key yields the given default.
+/// Raw access to stored settings: a missing key yields the given default.
 pub trait ProfileSource {
     /// Reads a string value exactly as stored (lossless UTF-16).
     fn string(&self, key: &str, default: &OsStr) -> OsString;
-    /// Reads an unsigned integer value.
-    fn int(&self, key: &str, default: u32) -> u32;
+    /// Reads a decimal 32-bit integer; anything else yields `default`, exactly as the
+    /// engine reads numbers.
+    fn int(&self, key: &str, default: i32) -> i32;
 }
 
 /// The two hotkeys of a configuration, both valid and distinct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hotkeys {
-    /// Takes a screenshot.
     pub screenshot: Hotkey,
-    /// Starts or stops a recording.
     pub recording: Hotkey,
 }
 
 /// Why a configuration cannot be applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigError {
-    /// A hotkey could not be parsed.
     InvalidHotkey(ParseHotkeyError),
     /// Both actions use the same hotkey.
     DuplicateHotkey,
@@ -193,32 +170,23 @@ pub enum ConfigError {
     InvalidFolder,
 }
 
-/// All user settings.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "the flags are independent settings that mirror the INI file one to one"
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// Hotkey text for screenshots, as entered by the user.
+    /// As entered by the user.
     pub screenshot_hotkey: String,
-    /// Hotkey text for recordings, as entered by the user.
     pub recording_hotkey: String,
-    /// Folder for screenshots (kept as a path: any valid Windows name round-trips).
+    /// Kept as a path: any valid Windows name round-trips.
     pub screenshot_folder: PathBuf,
-    /// Folder for recordings.
     pub recording_folder: PathBuf,
-    /// Record the microphone.
     pub microphone: bool,
-    /// Record system audio.
     pub system_audio: bool,
-    /// Visualise mouse clicks.
     pub show_clicks: bool,
-    /// Start with Windows.
     pub autostart: bool,
-    /// Recording frame rate.
     pub frame_rate: FrameRate,
-    /// Countdown before recording.
     pub countdown: Countdown,
 }
 
@@ -248,7 +216,7 @@ impl Config {
             source.string(key, OsStr::new(default)).to_string_lossy().into_owned()
         };
         let path = |key, default: &Path| PathBuf::from(source.string(key, default.as_os_str()));
-        let flag = |key, default: bool| source.int(key, u32::from(default)) != 0;
+        let flag = |key, default: bool| source.int(key, i32::from(default)) != 0;
         Self {
             screenshot_hotkey: text(keys::SCREENSHOT_HOTKEY, &defaults.screenshot_hotkey),
             recording_hotkey: text(keys::RECORDING_HOTKEY, &defaults.recording_hotkey),
@@ -336,14 +304,15 @@ fn quote_if_needed(value: OsString) -> OsString {
 }
 
 /// Whether `path` is an absolute drive path (`C:\…`, `C:/…`) or a UNC path (`\\…`)
-/// without characters that Windows forbids in file names.
+/// of at most [`MAX_FOLDER_LEN`] units, without characters that Windows forbids in
+/// file names.
 pub fn is_valid_folder(path: &Path) -> bool {
     let units: Vec<u16> = path.as_os_str().encode_wide().collect();
     let is = |index: usize, c: u8| units.get(index) == Some(&u16::from(c));
     let drive = is(1, b':') && (is(2, b'\\') || is(2, b'/'));
     let unc = is(0, b'\\') && is(1, b'\\');
     let forbidden = |unit: &u16| FORBIDDEN_PATH_CHARS.iter().any(|&c| u16::from(c) == *unit);
-    units.len() >= 3 && (drive || unc) && !units.iter().any(forbidden)
+    (3..=MAX_FOLDER_LEN).contains(&units.len()) && (drive || unc) && !units.iter().any(forbidden)
 }
 
 #[cfg(test)]
@@ -357,10 +326,9 @@ mod tests {
         DefaultFolders::new(Path::new(r"C:\Users\Ada\Pictures"), Path::new(r"C:\Users\Ada\Videos"))
     }
 
-    /// An in-memory profile that behaves like `GetPrivateProfile{String,Int}W`.
     #[derive(Default)]
     struct MapSource {
-        ints: HashMap<&'static str, u32>,
+        ints: HashMap<&'static str, i32>,
         strings: HashMap<&'static str, &'static str>,
     }
 
@@ -368,7 +336,7 @@ mod tests {
         fn string(&self, key: &str, default: &OsStr) -> OsString {
             self.strings.get(key).map_or_else(|| default.to_owned(), OsString::from)
         }
-        fn int(&self, key: &str, default: u32) -> u32 {
+        fn int(&self, key: &str, default: i32) -> i32 {
             self.ints.get(key).copied().unwrap_or(default)
         }
     }
@@ -378,9 +346,6 @@ mod tests {
         let folders = folders();
         assert_eq!(folders.screenshots, Path::new(r"C:\Users\Ada\Pictures\Mosaiks-Screenshots"));
         assert_eq!(folders.recordings, Path::new(r"C:\Users\Ada\Videos\Mosaiks-Aufnahmen"));
-        // A failed known-folder lookup yields an (invalid) rooted path, as before.
-        let empty = DefaultFolders::new(Path::new(""), Path::new(""));
-        assert_eq!(empty.screenshots, Path::new(r"\Mosaiks-Screenshots"));
     }
 
     #[test]
@@ -419,7 +384,7 @@ mod tests {
     #[test]
     fn frame_rate_normalisation() {
         assert_eq!(FrameRate::from_value(30), FrameRate::Fps30);
-        for value in [0, 29, 31, 60, 120, u32::MAX] {
+        for value in [0, 29, 31, 60, 120, -30, i32::MAX] {
             assert_eq!(FrameRate::from_value(value), FrameRate::Fps60, "{value}");
         }
         for rate in [FrameRate::Fps30, FrameRate::Fps60] {
@@ -434,7 +399,7 @@ mod tests {
     fn countdown_normalisation() {
         assert_eq!(Countdown::from_value(0), Countdown::Off);
         assert_eq!(Countdown::from_value(5), Countdown::Seconds5);
-        for value in [1, 3, 4, 6, 10, u32::MAX] {
+        for value in [1, 3, 4, 6, 10, -1, i32::MAX] {
             assert_eq!(Countdown::from_value(value), Countdown::Seconds3, "{value}");
         }
         for countdown in [Countdown::Off, Countdown::Seconds3, Countdown::Seconds5] {
@@ -552,5 +517,12 @@ mod tests {
         let odd_forbidden =
             OsString::from_wide(&[u16::from(b'C'), u16::from(b':'), 0x5C, 0xD800, 0x3F]);
         assert!(!is_valid_folder(Path::new(&odd_forbidden)));
+    }
+
+    #[test]
+    fn folder_length_is_capped_at_the_long_path_limit() {
+        let longest = format!(r"C:\{}", "x".repeat(MAX_FOLDER_LEN - 3));
+        assert!(is_valid_folder(Path::new(&longest)));
+        assert!(!is_valid_folder(Path::new(&format!("{longest}x"))));
     }
 }

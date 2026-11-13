@@ -9,49 +9,33 @@
 //! | `--recording`     | start or stop a recording                               |
 //! | `--quit`          | quit the running instance                               |
 //! | `--probe`         | exit with 0 only if a healthy instance is running       |
-//! | `--preview <ini>` | use another settings file and leave autostart alone     |
 //! | `--self-test`     | run the built-in checks and exit                        |
 //!
 //! When several actions are given, the last one wins. Unknown arguments are ignored.
+//! A separate settings file for tests or previews is chosen through the environment
+//! (see [`crate::isolation`]), never on the command line.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
 
 use crate::ipc;
 
-/// What the process should do.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// Run the built-in self-test and exit.
     SelfTest,
-    /// Run normally (or forward the action to the running instance).
-    Run(Invocation),
+    /// Run normally, or forward the action to the running instance.
+    Run(Action),
 }
 
-/// A normal start: the requested action plus options.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Invocation {
-    /// The requested action.
-    pub action: Action,
-    /// Settings file for preview mode; `None` uses the real settings.
-    pub preview: Option<PathBuf>,
-}
-
-/// The action requested on the command line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Action {
     /// Start without showing anything.
     Background,
-    /// Show the settings window.
     #[default]
     ShowSettings,
     /// Show the settings window with the recording hotkey focused.
     ShowRecordingSettings,
-    /// Take a screenshot.
     TakeScreenshot,
-    /// Start or stop a recording.
     ToggleRecording,
-    /// Quit the running instance.
     Quit,
     /// Check that a healthy instance is running.
     Probe,
@@ -86,24 +70,16 @@ impl Action {
 
 /// Parses the arguments that follow the program name.
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Command {
-    let mut invocation = Invocation { action: Action::default(), preview: None };
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
+    let mut action = Action::default();
+    for arg in args {
         if arg == "--self-test" {
             return Command::SelfTest;
         }
-        if arg == "--preview" {
-            if let Some(path) = args.next() {
-                // Absolute right away: the engine we start gets the same file, and
-                // the profile API would resolve a relative name in the Windows folder.
-                let path = PathBuf::from(path);
-                invocation.preview = Some(std::path::absolute(&path).unwrap_or(path));
-            }
-        } else if let Some(action) = Action::from_arg(&arg) {
-            invocation.action = action;
+        if let Some(parsed) = Action::from_arg(&arg) {
+            action = parsed;
         }
     }
-    Command::Run(invocation)
+    Command::Run(action)
 }
 
 #[cfg(test)]
@@ -116,17 +92,14 @@ mod tests {
 
     fn action(args: &[&str]) -> Action {
         match run(args) {
-            Command::Run(invocation) => invocation.action,
+            Command::Run(action) => action,
             Command::SelfTest => panic!("unexpected self-test for {args:?}"),
         }
     }
 
     #[test]
     fn no_arguments_show_settings() {
-        assert_eq!(
-            run(&[]),
-            Command::Run(Invocation { action: Action::ShowSettings, preview: None })
-        );
+        assert_eq!(run(&[]), Command::Run(Action::ShowSettings));
     }
 
     #[test]
@@ -144,50 +117,13 @@ mod tests {
         assert_eq!(action(&["--screenshot", "--recording"]), Action::ToggleRecording);
         assert_eq!(action(&["--probe", "--whatever", "--background"]), Action::Background);
         assert_eq!(action(&["--Background", "RECORDING"]), Action::ShowSettings);
+        assert_eq!(action(&["--preview", "a.ini"]), Action::ShowSettings, "no longer an option");
     }
 
     #[test]
     fn self_test_wins_anywhere() {
         assert_eq!(run(&["--self-test"]), Command::SelfTest);
         assert_eq!(run(&["--quit", "--self-test"]), Command::SelfTest);
-        assert_eq!(run(&["--preview", "a.ini", "--self-test"]), Command::SelfTest);
-    }
-
-    #[test]
-    fn preview_takes_a_path() {
-        let Command::Run(invocation) = run(&["--preview", r"C:\tmp\qa.ini", "--background"]) else {
-            panic!("expected a normal run");
-        };
-        assert_eq!(invocation.preview, Some(PathBuf::from(r"C:\tmp\qa.ini")));
-        assert_eq!(invocation.action, Action::Background);
-    }
-
-    #[test]
-    fn preview_value_is_not_parsed_as_flag() {
-        let Command::Run(invocation) = run(&["--preview", "recording"]) else {
-            panic!("expected a normal run");
-        };
-        let expected = std::env::current_dir().unwrap().join("recording");
-        assert_eq!(invocation.preview, Some(expected), "made absolute");
-        assert_eq!(invocation.action, Action::ShowSettings);
-    }
-
-    #[test]
-    fn relative_preview_paths_become_absolute() {
-        let Command::Run(invocation) = run(&["--preview", r"qa\settings.ini"]) else {
-            panic!("expected a normal run");
-        };
-        let preview = invocation.preview.unwrap();
-        assert!(preview.is_absolute(), "{}", preview.display());
-        assert!(preview.ends_with(r"qa\settings.ini"));
-    }
-
-    #[test]
-    fn preview_without_path_is_ignored() {
-        assert_eq!(
-            run(&["--preview"]),
-            Command::Run(Invocation { action: Action::ShowSettings, preview: None })
-        );
     }
 
     #[test]

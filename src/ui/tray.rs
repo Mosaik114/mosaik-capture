@@ -82,7 +82,6 @@ pub fn advance(window: HWND, icon: HICON, state: TrayState) -> TrayState {
     }
 }
 
-/// Removes the icon.
 pub fn remove(window: HWND) {
     notify(window, ptr::null_mut(), NIM_DELETE);
 }
@@ -93,12 +92,7 @@ pub enum TrayEvent {
     /// Selected the icon (click, Space or Enter): open the settings.
     Select,
     /// Asked for the context menu, anchored at this screen position.
-    ContextMenu {
-        /// Horizontal screen coordinate.
-        x: i32,
-        /// Vertical screen coordinate.
-        y: i32,
-    },
+    ContextMenu { x: i32, y: i32 },
 }
 
 impl TrayEvent {
@@ -129,16 +123,11 @@ const fn menu_alignment(right_aligned: bool) -> TRACK_POPUP_MENU_FLAGS {
     if right_aligned { TPM_RIGHTALIGN } else { TPM_LEFTALIGN }
 }
 
-/// A choice from the tray menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
-    /// Take a screenshot.
     Screenshot,
-    /// Start or stop a recording.
     Recording,
-    /// Open the settings window.
     Settings,
-    /// Quit the app.
     Quit,
 }
 
