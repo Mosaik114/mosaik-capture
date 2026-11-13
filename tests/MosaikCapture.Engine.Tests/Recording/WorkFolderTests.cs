@@ -29,6 +29,20 @@ public sealed class WorkFolderTests
     }
 
     [Fact]
+    public void RawDataKeptAfterAFailedSaveIsNeverRemoved()
+    {
+        using var root = new TempDirectory();
+        string kept = Directory.CreateDirectory(root.File("20260101-120000-000")).FullName;
+        File.WriteAllText(Path.Combine(kept, "segment-01.mkv"), "x");
+        File.WriteAllText(Path.Combine(kept, RecordingSession.KeptMarkerName), "C:\\Videos\\out.mp4");
+        Directory.SetCreationTime(kept, DateTime.Now.AddDays(-30));
+
+        RecordingBackend.RemoveOldWorkFolders(root.Path);
+
+        Assert.True(File.Exists(Path.Combine(kept, "segment-01.mkv")), "a rescuable recording was deleted");
+    }
+
+    [Fact]
     public void MissingRootIsNoError()
     {
         using var root = new TempDirectory();

@@ -214,7 +214,7 @@ internal sealed class RecordingCard : Window
         button.SetResourceReference(Border.BackgroundProperty, Palette.Hover);
         button.MouseEnter += delegate { button.SetResourceReference(Border.BackgroundProperty, Palette.Selected); text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text); };
         button.MouseLeave += delegate { button.SetResourceReference(Border.BackgroundProperty, Palette.Hover); text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Muted); };
-        button.MouseLeftButtonUp += delegate { if (ready) click(); };
+        button.MouseLeftButtonUp += delegate { if (buttons.Visibility == Visibility.Visible) click(); };
         return button;
     }
 
@@ -233,6 +233,21 @@ internal sealed class RecordingCard : Window
     {
         ShowPlaceholder(work, heading, reason, IconGlyphs.Warning);
         statusChip.Visibility = Visibility.Visible;
+        Place();
+        StartLifetime();
+    }
+
+    /// <summary>Saving failed: the reason, and the kept raw data to open (if any) so the recording can be rescued.</summary>
+    public void SaveFailed(string reason, string? rawDataFolder, RECT work)
+    {
+        ShowPlaceholder(work, UiText.Recording.Failed, reason, IconGlyphs.Warning);
+        statusChip.Visibility = Visibility.Visible;
+        if (rawDataFolder != null)
+        {
+            buttons.Children.Clear();
+            buttons.Children.Add(ActionButton(IconGlyphs.Folder, UiText.Recording.OpenRawData, delegate { Shell.Open(rawDataFolder); }));
+            buttons.Visibility = Visibility.Visible;
+        }
         Place();
         StartLifetime();
     }

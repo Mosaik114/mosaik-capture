@@ -165,8 +165,10 @@ pause/resume: closes the segment, opens a new one on the same clocks            
   loop, so Windows never removes it for timing out.
 - **Robustness.** If ffmpeg exits on its own (driver reset, locked screen) the recording is
   saved up to that point. ffmpeg runs in a kill-on-close job object so it dies with the
-  engine; every step of that setup is checked and logged. Leftovers of aborted recordings
-  are cleaned up on the next start.
+  engine; every step of that setup is checked and logged. Leftovers of crashed recordings
+  are cleaned up with the next recording. When saving fails, the raw segments and sound
+  tracks move next to the target as `<name> (Rohdaten)` and the failure card offers to
+  open them; they are never deleted automatically.
 - **Safe tool resolution and quoting.** `ffmpeg`/`ffprobe` are looked up in well-known install
   locations and on `PATH`, accepting only absolute paths on local drives (no `.`, no UNC
   shares). Every command line is built by `FfmpegArgs`, whose quoting is checked against

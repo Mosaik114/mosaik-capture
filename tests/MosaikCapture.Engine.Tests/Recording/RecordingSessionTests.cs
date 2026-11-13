@@ -392,6 +392,7 @@ public sealed class RecordingSessionTests : IDisposable
         Assert.Null(video);
         Assert.Equal("Could not open the output", session.Reason);
         Assert.DoesNotContain(runner.Runs, r => r.Program == FfmpegProgram.Ffmpeg);
+        Assert.Equal(root.File("out (Rohdaten)"), session.RawDataFolder);   // ffprobe may be wrong: the files stay
     }
 
     [Fact]
@@ -407,7 +408,51 @@ public sealed class RecordingSessionTests : IDisposable
         Assert.Null(video);
         Assert.Equal("Conversion failed!", session.Reason);
         Assert.False(File.Exists(target));
-        Assert.True(Directory.Exists(session.WorkDirectory));
+        string kept = root.File("out (Rohdaten)");
+        Assert.Equal(kept, session.RawDataFolder);
+        Assert.True(File.Exists(Path.Combine(kept, "segment-01.mkv")), "the raw segment must be kept next to the target");
+        Assert.False(Directory.Exists(session.WorkDirectory), "moved, not copied");
+    }
+
+    [Fact]
+    public async Task RawDataNeverOverwritesEarlierRawData()
+    {
+        runner.AssembleExitCode = 1;
+        Directory.CreateDirectory(root.File("out (Rohdaten)"));
+        var session = NewSession();
+        await Within(session.ResumeAsync());
+
+        await session.FinishAsync(root.File("out.mp4"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(root.File("out (Rohdaten) (2)"), session.RawDataFolder);
+    }
+
+    [Fact]
+    public async Task RawDataThatCannotMoveStaysMarkedInTheWorkFolder()
+    {
+        runner.AssembleExitCode = 1;
+        var session = NewSession();
+        await Within(session.ResumeAsync());
+        string target = Path.Combine(root.Path, "gone", "out.mp4");   // its folder vanished, like an unplugged drive
+
+        await session.FinishAsync(target, TestContext.Current.CancellationToken);
+
+        Assert.Equal(session.WorkDirectory, session.RawDataFolder);
+        Assert.True(File.Exists(Path.Combine(session.WorkDirectory, "segment-01.mkv")));
+        Assert.True(File.Exists(Path.Combine(session.WorkDirectory, RecordingSession.KeptMarkerName)));
+    }
+
+    [Fact]
+    public async Task WithoutAnyFrameNothingIsKept()
+    {
+        var session = NewSession();
+
+        var video = await session.FinishAsync(root.File("out.mp4"), TestContext.Current.CancellationToken);
+
+        Assert.Null(video);
+        Assert.Null(session.RawDataFolder);
+        await Within(session.WorkDirectoryRemoved);
+        Assert.False(Directory.Exists(session.WorkDirectory));
     }
 
     [Fact]
@@ -426,6 +471,7 @@ public sealed class RecordingSessionTests : IDisposable
         Assert.Null(video);
         Assert.Equal(UiText.Common.FfmpegTimedOut, session.Reason);
         Assert.False(File.Exists(target));
+        Assert.Equal(root.File("out (Rohdaten)"), session.RawDataFolder);
     }
 
     static async Task<T> WithinResult<T>(Task<T> task)

@@ -266,7 +266,7 @@ public sealed class RecordingControllerTests
 
         await Within(ui.Finished.Task);
         Assert.Contains("StopCountdown", ui.Calls);
-        Assert.Equal("ShowProblem Aufnahme fehlgeschlagen | Device lost", ui.Calls.Last());
+        Assert.Equal("ShowSaveFailed Device lost", ui.Calls.Last());
         Assert.Equal(RecordingPhase.Idle, controller.Phase);
     }
 
@@ -358,10 +358,22 @@ public sealed class RecordingControllerTests
 
         await Within(controller.StopAsync());
 
-        Assert.Equal("ShowProblem Aufnahme fehlgeschlagen | Conversion failed!", ui.Calls.Last());
+        Assert.Equal("ShowSaveFailed Conversion failed!", ui.Calls.Last());
         Assert.Equal(RecordingPhase.Idle, controller.Phase);
     }
 
+    [Fact]
+    public async Task FailedSaveOffersTheKeptRawData()
+    {
+        var session = await StartRunning();
+        session.Video = null;
+        session.Reason = "Conversion failed!";
+        session.RawDataFolder = "C:\\Videos\\out (Rohdaten)";
+
+        await Within(controller.StopAsync());
+
+        Assert.Equal("ShowSaveFailed Conversion failed! | C:\\Videos\\out (Rohdaten)", ui.Calls.Last());
+    }
     [Fact]
     public async Task CrashWhileSavingStillEndsIdleAndTellsTheUser()
     {
@@ -372,7 +384,7 @@ public sealed class RecordingControllerTests
         await Within(controller.StopAsync());
 
         Assert.Equal(RecordingPhase.Idle, controller.Phase);
-        Assert.Equal("ShowProblem Aufnahme fehlgeschlagen | Die Aufnahme wurde unerwartet beendet.", ui.Calls.Last());
+        Assert.Equal("ShowSaveFailed Die Aufnahme wurde unerwartet beendet.", ui.Calls.Last());
     }
 
     [Fact]
@@ -425,7 +437,7 @@ public sealed class RecordingControllerTests
 
         Assert.Equal(RecordingPhase.Idle, controller.Phase);
         Assert.False(controller.Busy);
-        Assert.Equal("ShowProblem Aufnahme fehlgeschlagen | " + UiText.Common.FfmpegTimedOut, ui.Calls.Last());
+        Assert.Equal("ShowSaveFailed " + UiText.Common.FfmpegTimedOut, ui.Calls.Last());
         Assert.True(session.FinishToken.IsCancellationRequested, "the timeout must cancel the save so ffmpeg is killed");
         session.ReleaseFinish();
     }
@@ -584,6 +596,12 @@ public sealed class RecordingControllerTests
             Finished.TrySetResult(true);
         }
 
+        public void ShowSaveFailed(string reason, string? rawDataFolder, RECT work)
+        {
+            Log("ShowSaveFailed " + reason + (rawDataFolder == null ? "" : " | " + rawDataFolder));
+            Finished.TrySetResult(true);
+        }
+
         public void ShowRecording(RecordedVideo video, string heading, RECT work)
         {
             Log("ShowRecording " + heading);
@@ -678,6 +696,7 @@ public sealed class RecordingControllerTests
         public double Elapsed => 0;
         public float MicrophoneLevel => 0.5f;
         public bool AudioLost { get; set; }
+        public string? RawDataFolder { get; set; }
 
         public event Action? Broke;
 

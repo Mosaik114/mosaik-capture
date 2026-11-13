@@ -27,6 +27,9 @@ internal sealed class RecordingController
     /// <summary>Saving after the ffmpeg calls themselves timed out: only a safety net.</summary>
     static readonly TimeSpan SaveTimeoutMargin = TimeSpan.FromMinutes(5);
 
+    /// <summary>After the save timeout killed ffmpeg: how long the session may take to keep the raw data for the card.</summary>
+    static readonly TimeSpan RawDataGrace = TimeSpan.FromSeconds(10);
+
     readonly IRecordingUi ui;
     readonly IRecordingBackend backend;
     readonly Func<double, TimeSpan> saveTimeout;
@@ -192,17 +195,21 @@ internal sealed class RecordingController
             string path = backend.NewRecordingPath(finished.Begun, settings.RecordingFolder);
             using var cancel = new CancellationTokenSource();
             var saving = finished.FinishAsync(path, cancel.Token);
-            if (await Task.WhenAny(saving, Task.Delay(saveTimeout(finished.Elapsed))) == saving)
+            var timeout = saveTimeout(finished.Elapsed);
+            if (await Task.WhenAny(saving, Task.Delay(timeout)) == saving)
             {
                 video = await saving;
                 reason = finished.Reason;
             }
             else
             {
-                cancel.Cancel();   // kills ffmpeg; the session cleans up on its own
-                saving.LogFailures("Saving a recording (after the timeout)");
+                cancel.Cancel();   // kills ffmpeg; the session keeps the raw data on its own
                 ErrorLog.Write("Saving a recording took too long", null);
                 reason = UiText.Common.FfmpegTimedOut;
+                // usually done at once, so the card can offer the raw data; otherwise the card goes without
+                if (await Task.WhenAny(saving, Task.Delay(timeout < RawDataGrace ? timeout : RawDataGrace)) != saving)
+                    saving.LogFailures("Saving a recording (after the timeout)");
+                else video = await saving;   // done just after the timeout after all
             }
         }
         catch (Exception ex)   // must always get back to Idle and tell the user
@@ -215,7 +222,7 @@ internal sealed class RecordingController
         {
             if (video == null)
             {
-                ui.ShowProblem(UiText.Recording.Failed, reason, work);
+                ui.ShowSaveFailed(reason, finished.RawDataFolder, work);
                 return;
             }
             bool copied = await ui.CopyFileToClipboardAsync(video.Path);

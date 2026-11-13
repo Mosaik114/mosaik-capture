@@ -52,6 +52,7 @@ internal sealed class WpfRecordingUi : IRecordingUi
 
     public void ShowSaving(double seconds, RECT work) => Card.Saving(seconds, work);
     public void ShowProblem(string heading, string reason, RECT work) => Card.Problem(heading, reason, work);
+    public void ShowSaveFailed(string reason, string? rawDataFolder, RECT work) => Card.SaveFailed(reason, rawDataFolder, work);
     public void ShowRecording(RecordedVideo video, string heading, RECT work) => Card.Present(video, heading, work);
 
     public Task<bool> CopyFileToClipboardAsync(string path) => ClipboardWriter.SetFileAsync(path);
@@ -105,7 +106,8 @@ internal sealed class RecordingBackend : IRecordingBackend
 
     public void SaveSettings(AudioSettings settings) => CaptureSettings.SaveAudio(settings.Microphone, settings.SystemSound, settings.ShowClicks);
 
-    // Leftovers of aborted recordings (e.g. after a crash), also in the folder older versions used.
+    // Leftovers of crashed recordings, also in the folder older versions used. Raw data kept after a failed
+    // save is the user's to rescue and never removed here (see RecordingSession.RawDataFolder).
     public void RemoveLeftovers()
     {
         RemoveOldWorkFolders(CaptureSettings.RecordingWorkRoot);
@@ -122,7 +124,8 @@ internal sealed class RecordingBackend : IRecordingBackend
             if (!Directory.Exists(root)) return;
             foreach (string folder in Directory.GetDirectories(root))
             {
-                if (DateTime.Now - Directory.GetCreationTime(folder) <= LeftoverAge) continue;
+                if (DateTime.Now - Directory.GetCreationTime(folder) <= LeftoverAge) continue;   // may still be recording
+                if (File.Exists(Path.Combine(folder, RecordingSession.KeptMarkerName))) continue;
                 try { Directory.Delete(folder, true); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }   // still in use: next time
             }
