@@ -63,12 +63,21 @@ if ($Test) {
     Invoke-Step 'Rust tests' { cargo @cargo test --locked }
     Invoke-Step 'C# tests' { dotnet test $solution -c Release }
     # GUI-subsystem executables: wait on the process object to get their exit codes
-    foreach ($exe in 'MosaikCapture.exe', 'MosaikCapture.Engine.exe') {
-        Write-Host "==> Self-test $exe" -ForegroundColor Cyan
-        $report = Join-Path ([IO.Path]::GetTempPath()) 'mosaik-capture-self-test.json'
-        $process = [Diagnostics.Process]::Start((Join-Path $bin $exe), "--self-test `"$report`"")
-        $process.WaitForExit()
-        if ($process.ExitCode -ne 0) { throw "Self-test of $exe failed with exit code $($process.ExitCode)" }
+    # Under test-only names and data folders (see docs/architecture.md), never those of an installed copy.
+    # Set only here: the C# tests above must run unisolated.
+    $isolated = $env:MOSAIK_CAPTURE_TEST_INSTANCE
+    $env:MOSAIK_CAPTURE_TEST_INSTANCE = 'build-self-test'
+    try {
+        foreach ($exe in 'MosaikCapture.exe', 'MosaikCapture.Engine.exe') {
+            Write-Host "==> Self-test $exe" -ForegroundColor Cyan
+            $report = Join-Path ([IO.Path]::GetTempPath()) 'mosaik-capture-self-test.json'
+            $process = [Diagnostics.Process]::Start((Join-Path $bin $exe), "--self-test `"$report`"")
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw "Self-test of $exe failed with exit code $($process.ExitCode)" }
+        }
+    }
+    finally {
+        $env:MOSAIK_CAPTURE_TEST_INSTANCE = $isolated
     }
 }
 

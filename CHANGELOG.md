@@ -39,7 +39,9 @@ All notable changes to this project are documented here. The format follows
 ### Internal
 - `contract/contract.json` is the single source of the host–engine contract; both test
   suites check against it, and a cross-process test runs the quit protocol against the
-  built engine.
+  built engine (its simulated work feeds the engine's own busy check, so the test meets the
+  real refusal).
+- `build.ps1 -Test` runs the self-tests of both programs under test-only names.
 - The engine's identity is checked by its image path instead of file IDs; the settings
   window code is smaller (shared control creation, no policy tables), and doc comments that
   only repeated a name are gone (`missing_docs` is off).
