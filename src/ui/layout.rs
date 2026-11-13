@@ -6,7 +6,6 @@
 
 /// Client-area width in 96-DPI units.
 pub const CLIENT_WIDTH: i32 = 730;
-/// Client-area height in 96-DPI units.
 pub const CLIENT_HEIGHT: i32 = 688;
 /// Corner radius of owner-drawn buttons in 96-DPI units.
 pub const BUTTON_RADIUS: i32 = 10;
@@ -19,82 +18,58 @@ pub const EDIT_LIMIT: usize = 511;
 pub mod id {
     /// Static labels do not need an id.
     pub const NONE: i32 = 0;
-    /// Screenshot hotkey edit.
     pub const SCREENSHOT_HOTKEY: i32 = 10;
-    /// Screenshot folder edit.
     pub const SCREENSHOT_FOLDER: i32 = 11;
     /// "Auswählen" ("Choose…") for the screenshot folder.
     pub const BROWSE_SCREENSHOT_FOLDER: i32 = 12;
-    /// Opens the screenshot folder in Explorer.
     pub const OPEN_SCREENSHOT_FOLDER: i32 = 13;
-    /// Recording hotkey edit.
     pub const RECORDING_HOTKEY: i32 = 20;
-    /// Recording folder edit.
     pub const RECORDING_FOLDER: i32 = 21;
     /// "Auswählen" ("Choose…") for the recording folder.
     pub const BROWSE_RECORDING_FOLDER: i32 = 22;
-    /// Opens the recording folder in Explorer.
     pub const OPEN_RECORDING_FOLDER: i32 = 23;
-    /// Frame-rate combo box.
     pub const FRAME_RATE: i32 = 24;
-    /// Microphone checkbox.
     pub const MICROPHONE: i32 = 25;
-    /// System-audio checkbox.
     pub const SYSTEM_AUDIO: i32 = 26;
-    /// Mouse-clicks checkbox.
     pub const SHOW_CLICKS: i32 = 27;
-    /// Countdown combo box.
     pub const COUNTDOWN: i32 = 29;
-    /// Autostart checkbox.
     pub const AUTOSTART: i32 = 30;
     /// "Speichern" ("Save").
     pub const SAVE: i32 = 90;
-    /// Status line.
     pub const STATUS: i32 = 92;
     /// "Screenshot erstellen" ("Take screenshot"; button and tray menu).
     pub const TAKE_SCREENSHOT: i32 = 100;
     /// "Aufnahme starten / beenden" ("Start / stop recording"; button and tray menu).
     pub const TOGGLE_RECORDING: i32 = 101;
-    /// Tray menu: settings.
     pub const MENU_SETTINGS: i32 = 200;
-    /// Tray menu: quit.
     pub const MENU_QUIT: i32 = 201;
 }
 
 /// Which font a label uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FontRole {
-    /// Regular body text.
     Body,
     /// The large tagline at the top.
     Title,
-    /// Section headings.
     Heading,
 }
 
 /// The kind of a control, with kind-specific data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlKind {
-    /// Static text.
     Label(FontRole),
-    /// Single-line text field.
     Edit,
     /// Owner-drawn push button.
     Button,
-    /// Check box.
     Checkbox,
     /// Drop-down list with the given entries.
     Combo(&'static [&'static str]),
 }
 
-/// One control in the settings window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlSpec {
-    /// What to create.
     pub kind: ControlKind,
-    /// Control id (see [`id`]).
     pub id: i32,
-    /// Initial text.
     pub text: &'static str,
     /// Bounds in 96-DPI units.
     pub rect: [i32; 4],
@@ -223,7 +198,6 @@ impl Dpi {
         (value * self.0 + Self::BASE / 2) / Self::BASE
     }
 
-    /// Scales `[x, y, width, height]`.
     pub const fn scale_rect(self, [x, y, width, height]: [i32; 4]) -> [i32; 4] {
         [self.scale(x), self.scale(y), self.scale(width), self.scale(height)]
     }

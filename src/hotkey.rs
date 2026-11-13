@@ -27,16 +27,11 @@ const MAX_FUNCTION_KEY: u16 = 24;
 pub struct Modifiers(u32);
 
 impl Modifiers {
-    /// No modifier.
     pub const NONE: Self = Self(0);
-    /// The Alt key.
     pub const ALT: Self = Self(MOD_ALT);
-    /// The Ctrl key.
     pub const CONTROL: Self = Self(MOD_CONTROL);
-    /// The Shift key.
     pub const SHIFT: Self = Self(MOD_SHIFT);
 
-    /// The raw `MOD_*` bits.
     pub const fn bits(self) -> u32 {
         self.0
     }
@@ -46,7 +41,6 @@ impl Modifiers {
         self.0 & other.0 == other.0
     }
 
-    /// Whether no modifier is set.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -83,7 +77,6 @@ impl BitOrAssign for Modifiers {
 /// A global hotkey: modifiers plus one virtual-key code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Hotkey {
-    /// Modifier keys that must be held.
     pub modifiers: Modifiers,
     /// The virtual-key code (`VK_*`).
     pub key: u16,
@@ -96,7 +89,6 @@ pub enum ParseHotkeyError {
     EmptyToken,
     /// A token is longer than any valid key name.
     TokenTooLong,
-    /// The same modifier appears twice.
     DuplicateModifier,
     /// More than one non-modifier key was given.
     MultipleKeys,
@@ -165,7 +157,6 @@ impl FromStr for Hotkey {
     }
 }
 
-/// Maps a key token to its virtual-key code.
 fn parse_key(token: &str) -> Option<u16> {
     let mut chars = token.chars();
     if let (Some(c), None) = (chars.next(), chars.next()) {

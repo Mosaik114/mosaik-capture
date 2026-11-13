@@ -22,6 +22,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- JavaScriptSerializer reads contract/contract.json, the IPC and settings contract shared with the Rust host. -->
+    <Reference Include="System.Web.Extensions" />
+    <None Include="..\..\contract\contract.json" Link="contract.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Reference images for the pixel tests (trait Category=Pixel; skipped when the fonts of the references are missing). -->
     <None Include="References\*.png" CopyToOutputDirectory="PreserveNewest" />
     <!-- Lets MOSAIK_UPDATE_REFERENCES=1 write new reference images back into the source tree. -->

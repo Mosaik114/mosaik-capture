@@ -4,19 +4,23 @@
 //! Only one instance runs per session. Starting the executable again forwards the
 //! command-line action (see [`cli`]) to the running instance.
 //!
-//! Tests: `cargo test` runs the unit tests. The end-to-end test of the real settings
-//! window (`ui::tests::settings_window_end_to_end`) creates a window and registers
-//! global hotkeys, so it is `#[ignore]`d by default; CI runs it with
-//! `cargo test -- --include-ignored`.
+//! Tests: `cargo test` runs the unit tests. Two tests are `#[ignore]`d by default and
+//! run in CI with `cargo test -- --include-ignored`: the end-to-end test of the real
+//! settings window (`ui::tests::settings_window_end_to_end`), which creates a window
+//! and registers global hotkeys, and the cross-process test against the built engine
+//! (`engine::tests::quit_protocol_across_processes`), which needs `bin\` built first.
 
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod autostart;
 mod cli;
 mod config;
+#[cfg(test)]
+mod contract;
 mod engine;
 mod hotkey;
 mod ipc;
+mod isolation;
 mod process;
 mod self_test;
 mod single_instance;
@@ -31,35 +35,26 @@ mod rsrc;
 
 use std::process::ExitCode;
 
-use cli::{Action, Command, Invocation};
+use cli::{Action, Command};
+use isolation::{Isolation, isolated};
 use single_instance::{Forwarded, InstanceLock};
 
-/// Process exit codes. Scripts (the build and QA tooling, the launcher) rely on these
-/// values. 1 and 2 are never used. A panic aborts (release profile `panic = "abort"`),
-/// which Windows reports as `0xC0000409` (`STATUS_STACK_BUFFER_OVERRUN`).
+/// Process exit codes, for scripts and CI. Only outcomes a caller acts on have their
+/// own code; every other failure is [`Exit::Failed`]. A panic aborts (release profile
+/// `panic = "abort"`), which Windows reports as `0xC0000409`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 enum Exit {
     /// Done; for a forwarded action: the running instance accepted it.
     Success = 0,
-    /// `--self-test` found a failing check.
+    /// The app could not start (mutex, window, message loop) or the running instance
+    /// did not take the forwarded action.
+    Failed = 1,
     SelfTestFailed = 3,
-    /// The single-instance mutex could not be created.
-    MutexUnavailable = 4,
-    /// `--probe` found no healthy instance (none running, or a hotkey not registered).
+    /// `--probe`: no running instance, or one with a hotkey not registered or not answering.
     ProbeFailed = 5,
-    /// Another instance holds the mutex but its window never appeared.
-    PrimaryWithoutWindow = 6,
-    /// The window class could not be registered.
-    WindowClassFailed = 7,
-    /// The window or one of its controls could not be created.
-    WindowCreationFailed = 8,
-    /// The running instance did not answer the forwarded action (hung or exiting).
-    ForwardFailed = 9,
-    /// The message loop failed (`GetMessageW` returned -1).
-    MessageLoopFailed = 10,
-    /// `--quit` was refused: the engine is recording or selecting a region, a dialog
-    /// of the running instance is open, or it is still starting.
+    /// `--quit` was refused: the engine is busy, a dialog of the running instance is
+    /// open, or it is still starting.
     QuitRefused = 11,
 }
 
@@ -78,61 +73,45 @@ fn main() -> ExitCode {
                 Exit::SelfTestFailed
             }
         }
-        Command::Run(invocation) => run(&invocation),
+        Command::Run(action) => run(action, Isolation::from_env().as_ref()),
     }
     .into()
 }
 
-fn run(invocation: &Invocation) -> Exit {
-    let Ok(lock) = InstanceLock::acquire() else {
-        return Exit::MutexUnavailable;
+fn run(action: Action, isolation: Option<&Isolation>) -> Exit {
+    let mutex = isolated(single_instance::MUTEX_NAME, isolation);
+    let Ok(lock) = InstanceLock::acquire(&mutex) else {
+        return Exit::Failed;
     };
-    let action = invocation.action;
-
     if lock.already_running {
-        return forwarded_exit(action, single_instance::forward(action));
+        let class = isolated(ipc::WINDOW_CLASS, isolation);
+        return forwarded_exit(action, single_instance::forward(&class, action));
     }
 
     match action {
         // Nothing to quit, nothing healthy to probe.
         Action::Quit => Exit::Success,
         Action::Probe => Exit::ProbeFailed,
-        _ => match ui::run(invocation) {
+        _ => match ui::run(action, isolation) {
             Ok(()) => Exit::Success,
             Err(error) => {
                 // At logon (`--background`) nobody is waiting for a window, so no dialog.
                 if action != Action::Background {
                     ui::report(error);
                 }
-                ui_exit(error.kind)
+                Exit::Failed
             }
         },
     }
 }
 
-/// The exit code for a failed step of the user interface.
-const fn ui_exit(kind: ui::UiErrorKind) -> Exit {
-    match kind {
-        ui::UiErrorKind::RegisterClass => Exit::WindowClassFailed,
-        ui::UiErrorKind::CreateWindow | ui::UiErrorKind::CreateControls => {
-            Exit::WindowCreationFailed
-        }
-        ui::UiErrorKind::MessageLoop => Exit::MessageLoopFailed,
-    }
-}
-
-/// Maps the outcome of forwarding `action` to the running instance to an exit code.
-fn forwarded_exit(action: Action, outcome: Forwarded) -> Exit {
-    match outcome {
-        Forwarded::NoWindow => Exit::PrimaryWithoutWindow,
-        Forwarded::Failed => Exit::ForwardFailed,
-        Forwarded::Delivered(response)
-            if action == Action::Probe && response != ipc::ProbeResponse::HEALTHY =>
-        {
-            Exit::ProbeFailed
-        }
-        Forwarded::Delivered(ipc::QUIT_REFUSED) if action == Action::Quit => Exit::QuitRefused,
-        Forwarded::Delivered(_) => Exit::Success,
+const fn forwarded_exit(action: Action, outcome: Forwarded) -> Exit {
+    match (action, outcome) {
+        (Action::Probe, Forwarded::Delivered(ipc::ProbeResponse::HEALTHY)) => Exit::Success,
+        (Action::Probe, _) => Exit::ProbeFailed,
+        (Action::Quit, Forwarded::Delivered(ipc::QUIT_REFUSED)) => Exit::QuitRefused,
+        (_, Forwarded::Delivered(_)) => Exit::Success,
+        (_, Forwarded::NoWindow | Forwarded::Failed) => Exit::Failed,
     }
 }
 
@@ -141,45 +120,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exit_codes_are_stable() {
-        let codes = [
-            (Exit::Success, 0),
-            (Exit::SelfTestFailed, 3),
-            (Exit::MutexUnavailable, 4),
-            (Exit::ProbeFailed, 5),
-            (Exit::PrimaryWithoutWindow, 6),
-            (Exit::WindowClassFailed, 7),
-            (Exit::WindowCreationFailed, 8),
-            (Exit::ForwardFailed, 9),
-            (Exit::MessageLoopFailed, 10),
-            (Exit::QuitRefused, 11),
-        ];
-        for (exit, code) in codes {
-            assert_eq!(exit as u8, code);
-        }
-    }
-
-    #[test]
-    fn ui_failures_map_to_exit_codes() {
-        use ui::UiErrorKind as Kind;
-        assert_eq!(ui_exit(Kind::RegisterClass), Exit::WindowClassFailed);
-        assert_eq!(ui_exit(Kind::CreateWindow), Exit::WindowCreationFailed);
-        assert_eq!(ui_exit(Kind::CreateControls), Exit::WindowCreationFailed);
-        assert_eq!(ui_exit(Kind::MessageLoop), Exit::MessageLoopFailed);
-        let error = ui::UiError { kind: Kind::CreateWindow, code: 1400 };
-        assert_eq!(
-            error.message(),
-            "Das Einstellungsfenster konnte nicht erstellt werden (Windows-Fehler 1400)."
-        );
-    }
-
-    #[test]
     fn forwarding_outcomes() {
         use ipc::ProbeResponse;
         let healthy = Forwarded::Delivered(ProbeResponse::HEALTHY);
         assert_eq!(forwarded_exit(Action::Probe, healthy), Exit::Success);
         assert_eq!(forwarded_exit(Action::Probe, Forwarded::Delivered(3)), Exit::ProbeFailed);
-        assert_eq!(forwarded_exit(Action::Probe, Forwarded::Failed), Exit::ForwardFailed);
+        assert_eq!(forwarded_exit(Action::Probe, Forwarded::Failed), Exit::ProbeFailed);
+        assert_eq!(forwarded_exit(Action::Probe, Forwarded::NoWindow), Exit::ProbeFailed);
         assert_eq!(forwarded_exit(Action::Quit, Forwarded::Delivered(1)), Exit::Success);
         assert_eq!(forwarded_exit(Action::Quit, Forwarded::Delivered(0)), Exit::QuitRefused);
         assert_eq!(
@@ -187,11 +134,8 @@ mod tests {
             Exit::Success,
             "only quit has a refusal answer"
         );
-        assert_eq!(forwarded_exit(Action::Quit, Forwarded::Failed), Exit::ForwardFailed);
+        assert_eq!(forwarded_exit(Action::Quit, Forwarded::Failed), Exit::Failed);
         assert_eq!(forwarded_exit(Action::Background, Forwarded::Delivered(0)), Exit::Success);
-        assert_eq!(
-            forwarded_exit(Action::TakeScreenshot, Forwarded::NoWindow),
-            Exit::PrimaryWithoutWindow
-        );
+        assert_eq!(forwarded_exit(Action::TakeScreenshot, Forwarded::NoWindow), Exit::Failed);
     }
 }

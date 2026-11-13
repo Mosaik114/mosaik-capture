@@ -3,14 +3,14 @@
 //!
 //! A running engine owns a hidden window titled [`WINDOW_TITLE`] and accepts
 //! `WM_APP`-based commands. Window titles are not unique, so a window only counts as
-//! the engine if its process runs `MosaikCapture.Engine.exe` from this app's folder —
-//! compared as the same file on disk, not as path text.
+//! the engine if its process runs `MosaikCapture.Engine.exe` from this app's folder.
 //! If no engine is running, it is started with the capture mode on its command line.
 //!
 //! All calls run on the UI thread; the only wait is the state query in
 //! [`Engine::is_busy`], capped at [`QUERY_TIMEOUT_MS`].
 
 use std::cell::RefCell;
+use std::ffi::OsString;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -23,35 +23,33 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_APP,
 };
 
+use crate::isolation::{Isolation, isolated};
 use crate::process::window_runs;
-use crate::store::PREVIEW_CONFIG_VAR;
 use crate::wide::to_wide;
 
 /// Title of the engine's message window.
-const WINDOW_TITLE: &str = "MosaikCapture.Engine";
+pub const WINDOW_TITLE: &str = "MosaikCapture.Engine";
 /// File name of the engine, expected next to this executable.
 pub const EXE_NAME: &str = "MosaikCapture.Engine.exe";
 
-/// Engine command: take a screenshot.
-const MSG_SCREENSHOT: u32 = WM_APP + 1;
-/// Engine command: start or stop a recording.
-const MSG_RECORDING: u32 = WM_APP + 2;
-/// Engine command: shut down (ignored while busy).
-const MSG_QUIT: u32 = WM_APP + 3;
-/// Engine query: returns state bits, see [`STATE_BUSY`].
-const MSG_QUERY_STATE: u32 = WM_APP + 10;
-/// State bit: a recording or region selection is in progress.
-const STATE_BUSY: usize = 1;
+pub const MSG_SCREENSHOT: u32 = WM_APP + 1;
+/// Start or stop a recording.
+pub const MSG_RECORDING: u32 = WM_APP + 2;
+/// Shut down; ignored while the engine is busy.
+pub const MSG_QUIT: u32 = WM_APP + 3;
+/// Answered with state bits, see [`STATE_BUSY`].
+pub const MSG_QUERY_STATE: u32 = WM_APP + 10;
+/// State bit: something is in progress that quitting would lose (a selection,
+/// countdown, recording, open editor or export).
+pub const STATE_BUSY: usize = 1;
 /// Longest the UI thread waits for the state query.
 const QUERY_TIMEOUT_MS: u32 = 400;
 /// How long a started engine may take to show its window before it is considered
 /// stuck, killed and started again.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// What to capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureMode {
-    /// A single screenshot.
     Screenshot,
     /// Start or stop a screen recording.
     Recording,
@@ -98,7 +96,6 @@ impl Delivery {
 /// The next step for a capture request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
-    /// Post the request to the engine's window.
     Post(HWND),
     /// An engine we started is still coming up.
     Wait,
@@ -124,22 +121,43 @@ const fn busy_from_reply(reply: Option<usize>) -> bool {
     }
 }
 
+/// Sends `message` and waits at most [`QUERY_TIMEOUT_MS`] for the reply.
+fn send(window: HWND, message: u32, wparam: usize) -> Option<usize> {
+    let mut reply = 0usize;
+    // SAFETY: `reply` outlives the call; a stale handle just makes the call fail.
+    let answered = unsafe {
+        SendMessageTimeoutW(
+            window,
+            message,
+            wparam,
+            0,
+            SMTO_ABORTIFHUNG,
+            QUERY_TIMEOUT_MS,
+            &raw mut reply,
+        )
+    } != 0;
+    answered.then_some(reply)
+}
+
 /// The engine as seen from the host: finding, querying, commanding and starting it.
 #[derive(Debug)]
 pub struct Engine {
     exe_dir: PathBuf,
-    preview_settings: Option<PathBuf>,
+    title: String,
+    /// Test isolation passed on to a started engine.
+    env: Vec<(&'static str, OsString)>,
     /// The engine process we started last and when, until it has a window or exited.
     launched: RefCell<Option<(Child, Instant)>>,
 }
 
 impl Engine {
-    /// Works with engines in `exe_dir`. In preview mode, `preview_settings` is handed
-    /// to a started engine through [`PREVIEW_CONFIG_VAR`] so both use the same file.
-    pub fn new(exe_dir: &Path, preview_settings: Option<&Path>) -> Self {
+    /// Works with engines in `exe_dir`; an isolated host only ever sees and starts an
+    /// isolated engine.
+    pub fn new(exe_dir: &Path, isolation: Option<&Isolation>) -> Self {
         Self {
             exe_dir: exe_dir.to_path_buf(),
-            preview_settings: preview_settings.map(Path::to_path_buf),
+            title: isolated(WINDOW_TITLE, isolation),
+            env: isolation.map(|isolation| isolation.engine_env().to_vec()).unwrap_or_default(),
             launched: RefCell::new(None),
         }
     }
@@ -148,10 +166,10 @@ impl Engine {
         self.exe_dir.join(EXE_NAME)
     }
 
-    /// The engine's window: the first window with the engine's title whose process
-    /// runs our engine executable. Look-alikes from other programs are skipped.
+    /// The first window with the engine's title whose process runs our engine
+    /// executable. Look-alikes from other programs are skipped.
     fn find_window(&self) -> Option<HWND> {
-        let title = to_wide(WINDOW_TITLE);
+        let title = to_wide(&self.title);
         let expected = self.expected_image();
         let mut after: HWND = ptr::null_mut();
         loop {
@@ -167,29 +185,13 @@ impl Engine {
         }
     }
 
-    /// Whether the engine is recording or selecting a region right now.
+    /// Whether quitting the engine now would lose work.
     ///
     /// An engine that does not answer within [`QUERY_TIMEOUT_MS`] (hung, or blocked by
     /// a modal dialog) also counts as busy: quitting must never pull the rug from under
     /// a running recording.
     pub fn is_busy(&self) -> bool {
-        let Some(window) = self.find_window() else {
-            return false;
-        };
-        let mut state = 0usize;
-        // SAFETY: `state` outlives the call; a stale handle just makes the call fail.
-        let answered = unsafe {
-            SendMessageTimeoutW(
-                window,
-                MSG_QUERY_STATE,
-                0,
-                0,
-                SMTO_ABORTIFHUNG,
-                QUERY_TIMEOUT_MS,
-                &raw mut state,
-            )
-        } != 0;
-        busy_from_reply(answered.then_some(state))
+        self.find_window().is_some_and(|window| busy_from_reply(send(window, MSG_QUERY_STATE, 0)))
     }
 
     /// Asks a running engine to shut down. Does nothing if none is running.
@@ -231,7 +233,8 @@ impl Engine {
                     let _ = stuck.kill();
                     let _ = stuck.wait();
                 }
-                launched = self.command(mode).spawn().ok().map(|child| (child, Instant::now()));
+                launched =
+                    self.command(mode.flag()).spawn().ok().map(|child| (child, Instant::now()));
                 if launched.is_some() { Delivery::Started } else { Delivery::Failed }
             }
         };
@@ -239,13 +242,11 @@ impl Engine {
         delivery
     }
 
-    /// `<exe_dir>\MosaikCapture.Engine.exe <flag>`, without a console window.
-    fn command(&self, mode: CaptureMode) -> Command {
+    /// `<exe_dir>\MosaikCapture.Engine.exe <argument>`, without a console window.
+    fn command(&self, argument: &str) -> Command {
         let mut command = Command::new(self.expected_image());
-        command.arg(mode.flag()).current_dir(&self.exe_dir).creation_flags(CREATE_NO_WINDOW);
-        if let Some(settings) = &self.preview_settings {
-            command.env(PREVIEW_CONFIG_VAR, settings);
-        }
+        command.arg(argument).current_dir(&self.exe_dir).creation_flags(CREATE_NO_WINDOW);
+        command.envs(self.env.iter().map(|(name, value)| (name, value)));
         command
     }
 }
@@ -253,14 +254,9 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn engine_protocol_is_stable() {
-        assert_eq!(MSG_SCREENSHOT, 0x8001);
-        assert_eq!(MSG_RECORDING, 0x8002);
-        assert_eq!(MSG_QUIT, 0x8003);
-        assert_eq!(MSG_QUERY_STATE, 0x800A);
-    }
+    use crate::contract;
+    use crate::store::SettingsStore;
+    use std::{env, fs, thread};
 
     #[test]
     fn capture_modes_map_to_flags_and_messages() {
@@ -298,20 +294,21 @@ mod tests {
     #[test]
     fn engine_command_line() {
         let engine = Engine::new(Path::new(r"C:\Apps\Mosaik"), None);
-        let command = engine.command(CaptureMode::Recording);
+        let command = engine.command(CaptureMode::Recording.flag());
         assert_eq!(command.get_program(), Path::new(r"C:\Apps\Mosaik\MosaikCapture.Engine.exe"));
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["--recording"]);
         assert_eq!(command.get_current_dir(), Some(Path::new(r"C:\Apps\Mosaik")));
         assert_eq!(command.get_envs().count(), 0, "real settings: no override");
+        assert_eq!(engine.title, WINDOW_TITLE);
     }
 
     #[test]
-    fn preview_settings_are_passed_to_the_engine() {
-        let ini = Path::new(r"C:\Temp\qa.ini");
-        let engine = Engine::new(Path::new(r"C:\Apps"), Some(ini));
-        let command = engine.command(CaptureMode::Screenshot);
-        let envs: Vec<_> = command.get_envs().collect();
-        assert_eq!(envs, [(PREVIEW_CONFIG_VAR.as_ref(), Some(ini.as_os_str()))]);
+    fn an_isolated_engine_gets_the_isolation_variables() {
+        let isolation = Isolation::for_test("unit", &env::temp_dir());
+        let engine = Engine::new(Path::new(r"C:\Apps"), Some(&isolation));
+        assert_eq!(engine.title, "MosaikCapture.Engine.Test.unit");
+        let envs: Vec<_> = engine.command("--idle").get_envs().map(|(k, _)| k.to_owned()).collect();
+        assert_eq!(envs, ["MOSAIK_CAPTURE_TEST_CONFIG", "MOSAIK_CAPTURE_TEST_INSTANCE"]);
     }
 
     #[test]
@@ -328,9 +325,96 @@ mod tests {
 
     #[test]
     fn missing_engine_is_a_failed_delivery() {
-        let missing = std::env::temp_dir().join("mosaik-capture-no-engine-here");
+        let missing = env::temp_dir().join("mosaik-capture-no-engine-here");
         let engine = Engine::new(&missing, None);
         assert_eq!(engine.start_capture(CaptureMode::Screenshot), Delivery::Failed);
         assert!(!engine.is_busy(), "no engine in that folder");
+    }
+
+    /// Kills the engine (if still running) and removes its isolated data folder.
+    struct Running(Child, PathBuf);
+
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+            let _ = fs::remove_dir_all(&self.1);
+        }
+    }
+
+    fn wait_for<T>(timeout: Duration, mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+        let started = Instant::now();
+        loop {
+            if let Some(value) = probe() {
+                return Some(value);
+            }
+            if started.elapsed() > timeout {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The quit protocol between two real processes: this host code against the
+    /// built engine (`bin\MosaikCapture.Engine.exe`, or `MOSAIK_CAPTURE_ENGINE_DIR`),
+    /// started `--idle` under test-only names, with settings and data in a temp folder.
+    /// The engine reports idle and quits; told to simulate work (the contract's
+    /// test-only message) it reports busy and refuses to quit.
+    ///
+    /// Ignored by default because it needs the engine built and starts a process; CI
+    /// builds `bin\` and runs it with `--include-ignored`.
+    #[test]
+    #[ignore = "starts the built engine from bin\\; CI runs it with --include-ignored"]
+    fn quit_protocol_across_processes() {
+        let contract = contract::load();
+        let dir = env::var_os("MOSAIK_CAPTURE_ENGINE_DIR")
+            .map_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("bin"), PathBuf::from);
+        let exe = dir.join(EXE_NAME);
+        assert!(
+            exe.is_file(),
+            "{} is missing: build it first (dotnet build engine/MosaikCapture.Engine.csproj -c Release -o bin)",
+            exe.display()
+        );
+
+        // The process id keeps parallel runs (and leftovers of a crashed run) apart.
+        let instance = format!("rust-{}", std::process::id());
+        let isolation = Isolation::for_test(&instance, &env::temp_dir());
+        let folders = crate::store::known_default_folders();
+        SettingsStore::at(isolation.settings.clone())
+            .save(&crate::config::Config::defaults(&folders))
+            .unwrap();
+        let engine = Engine::new(&dir, Some(&isolation));
+        let child = engine.command(contract.str(&["engine", "arguments", "idle"])).spawn().unwrap();
+        let mut running = Running(child, isolation.local_app_data);
+
+        let window = wait_for(Duration::from_secs(30), || engine.find_window())
+            .expect("the isolated engine's window appears");
+        assert_ne!(
+            Engine::new(&dir, None).find_window(),
+            Some(window),
+            "the real engine's name never finds a test engine"
+        );
+        let busy_bit = usize::try_from(contract.int(&["engine", "state_bits", "busy"])).unwrap();
+        let simulate = WM_APP
+            + u32::try_from(contract.int(&["test_isolation", "simulate_busy_message"])).unwrap();
+
+        assert_eq!(send(window, MSG_QUERY_STATE, 0), Some(0), "idle after --idle");
+        assert!(!engine.is_busy());
+
+        assert_eq!(send(window, simulate, 1), Some(1));
+        assert_eq!(send(window, MSG_QUERY_STATE, 0).map(|state| state & busy_bit), Some(busy_bit));
+        assert!(engine.is_busy());
+        engine.request_quit();
+        thread::sleep(Duration::from_millis(1500));
+        assert!(running.0.try_wait().unwrap().is_none(), "a busy engine refuses to quit");
+        assert!(engine.is_busy(), "and still answers");
+
+        assert_eq!(send(window, simulate, 0), Some(1));
+        assert!(!engine.is_busy());
+        engine.request_quit();
+        let status = wait_for(Duration::from_secs(15), || running.0.try_wait().unwrap())
+            .expect("an idle engine quits");
+        assert!(status.success(), "{status:?}");
+        assert!(engine.find_window().is_none());
     }
 }

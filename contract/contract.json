@@ -1,0 +1,95 @@
+{
+  "$comment": [
+    "The contract between the Rust host (MosaikCapture.exe) and the C# engine (MosaikCapture.Engine.exe).",
+    "Both test suites load this file and check their constants, defaults and normalisation against it",
+    "(src/contract.rs, tests/MosaikCapture.Engine.Tests/Core/ContractTests.cs), so a change on one side",
+    "fails a test until the file and the other side agree. Message numbers are offsets from WM_APP."
+  ],
+
+  "settings": {
+    "$comment": "UTF-16LE with BOM, read and written through the Win32 profile API; the host owns writes, the engine only reads.",
+    "app_folder": "MosaikCapture",
+    "legacy_app_folder": "Mosaiks-Aufnahme",
+    "file_name": "settings.ini",
+    "section": "capture",
+    "max_folder_length": 32767,
+    "default_folders": {
+      "screenshot_folder": { "known_folder": "Pictures", "name": "Mosaiks-Screenshots" },
+      "recording_folder": { "known_folder": "Videos", "name": "Mosaiks-Aufnahmen" }
+    },
+    "keys": {
+      "screenshot_hotkey": { "kind": "text", "default": "Shift+Alt+4", "engine_reads": false },
+      "recording_hotkey": { "kind": "text", "default": "Shift+Alt+5", "engine_reads": false },
+      "screenshot_folder": { "kind": "folder", "engine_reads": true },
+      "recording_folder": { "kind": "folder", "engine_reads": true },
+      "microphone": { "kind": "flag", "default": 0, "engine_reads": true },
+      "system_audio": { "kind": "flag", "default": 1, "engine_reads": true },
+      "show_clicks": { "kind": "flag", "default": 1, "engine_reads": true },
+      "autostart": { "kind": "flag", "default": 1, "engine_reads": false },
+      "fps": { "kind": "choice", "default": 60, "allowed": [30, 60], "otherwise": 60, "engine_reads": true },
+      "countdown": { "kind": "choice", "default": 3, "allowed": [0, 3, 5], "otherwise": 3, "engine_reads": true }
+    },
+    "numbers": {
+      "$comment": "How a stored number is read: a decimal 32-bit integer; anything else means the key's default (null). A flag is on for any non-zero number.",
+      "cases": [
+        ["0", 0], ["1", 1], ["2", 2], ["-1", -1], ["+5", 5], ["05", 5], ["30", 30], ["45", 45],
+        ["", null], ["yes", null], ["12abc", null], ["5.0", null], ["2147483648", null]
+      ]
+    }
+  },
+
+  "host": {
+    "executable": "MosaikCapture.exe",
+    "mutex": "Local\\MosaikCapture.Host",
+    "window_class": "MosaikCapture.Host",
+    "messages": {
+      "show_settings": 1,
+      "show_recording_settings": 2,
+      "take_screenshot": 3,
+      "toggle_recording": 4,
+      "quit": 9,
+      "probe": 10,
+      "audio_settings": 20
+    },
+    "quit_replies": { "refused": 0, "accepted": 1 },
+    "probe_bits": { "alive": 1, "screenshot_hotkey": 2, "recording_hotkey": 4 },
+    "audio_bits": { "microphone": 1, "system_audio": 2, "show_clicks": 4 },
+    "exit_codes": {
+      "$comment": "Only what scripts and CI distinguish; every other failure is 1.",
+      "success": 0,
+      "failed": 1,
+      "self_test_failed": 3,
+      "probe_failed": 5,
+      "quit_refused": 11
+    }
+  },
+
+  "engine": {
+    "executable": "MosaikCapture.Engine.exe",
+    "mutex": "Local\\MosaikCapture.Engine",
+    "window_title": "MosaikCapture.Engine",
+    "arguments": { "screenshot": "--screenshot", "recording": "--recording", "idle": "--idle" },
+    "messages": { "screenshot": 1, "recording": 2, "quit": 3, "query_state": 10 },
+    "state_bits": { "busy": 1, "live": 2 }
+  },
+
+  "test_isolation": {
+    "$comment": [
+      "Test only. With instance_variable set, both programs append \".Test.<instance>\" to every name above",
+      "(mutexes, window class and title), use <temp>\\MosaikCapture.Test.<instance> instead of %LOCALAPPDATA%,",
+      "and the host never touches autostart. Characters other than A-Z a-z 0-9 _ - become _. The host also",
+      "isolates itself (as instance \"preview\") when only config_variable is set, and passes both variables",
+      "to the engine it starts. simulate_busy_message (wParam 1 = busy, 0 = idle) exists only in an isolated engine."
+    ],
+    "instance_variable": "MOSAIK_CAPTURE_TEST_INSTANCE",
+    "config_variable": "MOSAIK_CAPTURE_TEST_CONFIG",
+    "default_instance": "preview",
+    "infix": ".Test.",
+    "local_app_data_prefix": "MosaikCapture.Test.",
+    "simulate_busy_message": 64,
+    "examples": [
+      { "instance": "ci-42", "engine_mutex": "Local\\MosaikCapture.Engine.Test.ci-42", "engine_window_title": "MosaikCapture.Engine.Test.ci-42", "host_window_class": "MosaikCapture.Host.Test.ci-42" },
+      { "instance": "a\\b c:ä", "engine_mutex": "Local\\MosaikCapture.Engine.Test.a_b_c__", "engine_window_title": "MosaikCapture.Engine.Test.a_b_c__", "host_window_class": "MosaikCapture.Host.Test.a_b_c__" }
+    ]
+  }
+}

@@ -35,8 +35,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use windows_sys::core::PCWSTR;
 
-use crate::cli::Invocation;
+use crate::cli::Action;
 use crate::ipc;
+use crate::isolation::{Isolation, isolated};
 use crate::store::SettingsStore;
 use crate::wide::to_wide;
 use app::App;
@@ -50,13 +51,9 @@ const WINDOW_EX_STYLE: WINDOW_EX_STYLE = WS_EX_APPWINDOW;
 /// Which step of running the user interface failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiErrorKind {
-    /// `RegisterClassW` failed.
     RegisterClass,
-    /// `CreateWindowExW` failed for the settings window.
     CreateWindow,
-    /// `CreateWindowExW` failed for one of the window's controls.
     CreateControls,
-    /// `GetMessageW` reported an error.
     MessageLoop,
 }
 
@@ -64,9 +61,7 @@ pub enum UiErrorKind {
 /// code (`GetLastError`) at that moment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UiError {
-    /// The failed step.
     pub kind: UiErrorKind,
-    /// The Windows error code.
     pub code: u32,
 }
 
@@ -100,19 +95,17 @@ pub fn report(error: UiError) {
 }
 
 /// Runs the primary instance until the user quits.
-pub fn run(invocation: &Invocation) -> Result<(), UiError> {
+pub fn run(action: Action, isolation: Option<&Isolation>) -> Result<(), UiError> {
     // SAFETY: a process-wide setting without pointer arguments, set before any window.
     // The manifest requests the same; this covers hosts that ignore it.
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     let _com = ComApartment::enter();
 
-    let preview = invocation.preview.as_deref();
-    let store = match preview {
-        Some(path) => SettingsStore::at(path.to_path_buf()),
-        None => SettingsStore::user_default(),
-    };
+    let store = isolation.map_or_else(SettingsStore::user_default, |isolation| {
+        SettingsStore::at(isolation.settings.clone())
+    });
     let mut config = store.load();
-    if preview.is_some() {
+    if isolation.is_some() {
         config.autostart = false;
     }
 
@@ -122,13 +115,13 @@ pub fn run(invocation: &Invocation) -> Result<(), UiError> {
     let monitor = Monitor::under_cursor();
     let exe = env::current_exe().ok();
     // Boxed: the window procedure keeps the address, so it must never move.
-    let app = Box::new(App::new(instance, monitor.dpi, store, config, exe, preview));
+    let app = Box::new(App::new(instance, monitor.dpi, store, config, exe, isolation));
 
     // Unregistered when this guard drops, after the window is gone.
-    let class = register_class(&app, ipc::WINDOW_CLASS)?;
+    let class = register_class(&app, &isolated(ipc::WINDOW_CLASS, isolation))?;
     let window = create_window(&app, &class, &monitor)?;
 
-    let result = app.start(invocation.action).and_then(|()| run_message_loop(window));
+    let result = app.start(action).and_then(|()| run_message_loop(window));
     // Normally the window is gone already. If not (an error), destroy it while `app`
     // is alive; WM_NCDESTROY then detaches `app` from the window.
     // SAFETY: no pointer arguments; `window` is our window or already invalid.
@@ -173,7 +166,7 @@ struct WindowClass {
 }
 
 impl WindowClass {
-    fn name(&self) -> PCWSTR {
+    const fn name(&self) -> PCWSTR {
         self.name.as_ptr()
     }
 }
@@ -400,7 +393,6 @@ unsafe extern "system" fn window_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::Action;
     use crate::config::{Config, DefaultFolders, ProfileSource};
     use crate::store::IniFile;
     use controls::Control;
@@ -440,6 +432,15 @@ mod tests {
         unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) }
     }
 
+    #[test]
+    fn ui_errors_have_messages() {
+        let error = UiError { kind: UiErrorKind::CreateWindow, code: 1400 };
+        assert_eq!(
+            error.message(),
+            "Das Einstellungsfenster konnte nicht erstellt werden (Windows-Fehler 1400)."
+        );
+    }
+
     /// The window procedure's plumbing, without anything visible or global: the App
     /// is attached on `WM_NCCREATE` and detached on `WM_NCDESTROY`, a window created
     /// without an App stays unattached, and requests before start-up are refused.
@@ -447,6 +448,7 @@ mod tests {
     fn window_procedure_attaches_and_detaches_the_app() {
         let dir = env::temp_dir();
         let ini = dir.join(format!("mosaik-capture-msgonly-{}.ini", std::process::id()));
+        let isolation = Isolation::for_test("msgonly", &dir);
         let folders = DefaultFolders::new(Path::new(r"C:\Bilder"), Path::new(r"C:\Videos"));
         // SAFETY: a null name returns the handle of the executable itself.
         let instance = unsafe { GetModuleHandleW(ptr::null()) };
@@ -456,7 +458,7 @@ mod tests {
             SettingsStore::at(ini.clone()),
             Config::defaults(&folders),
             None,
-            Some(&ini),
+            Some(&isolation),
         ));
         let class_name = format!("MosaikCapture.Host.MessageOnly.{}", std::process::id());
         let class = register_class(&app, &class_name).unwrap();
@@ -532,8 +534,8 @@ mod tests {
     /// saving, keyboard commands, unsaved edits, a DPI change, icons and the engine's
     /// audio message.
     ///
-    /// It only touches this process (a private window class, a temp settings file in
-    /// preview mode, no engine, no registry), but it creates a window and registers
+    /// It only touches this process (a private window class, test isolation with a
+    /// temp settings file, no engine, no registry), but it creates a window and registers
     /// two unusual global hotkeys, so it is ignored by default and reported as such.
     /// CI runs it with `cargo test -- --include-ignored`; locally use
     /// `cargo test -- --ignored settings_window` (on a spare desktop if you like).
@@ -551,17 +553,18 @@ mod tests {
 
         // SAFETY: a null name returns the handle of the executable itself.
         let instance = unsafe { GetModuleHandleW(ptr::null()) };
+        let isolation = Isolation::for_test(&format!("e2e-{}", std::process::id()), &dir);
         let app = Box::new(App::new(
             instance,
             Dpi::new(96),
             SettingsStore::at(ini.clone()),
             config.clone(),
             env::current_exe().ok(),
-            Some(&ini),
+            Some(&isolation),
         ));
         let class = register_class(&app, "MosaikCapture.Host.Test").unwrap();
         let window = create_window(&app, &class, &Monitor::under_cursor()).unwrap();
-        let _cleanup = Cleanup { window, dir: dir.clone() };
+        let _cleanup = Cleanup { window, dir };
         // Whatever monitor the window landed on, lay it out for 96 DPI first.
         app.apply_dpi(Dpi::new(96), None);
 
@@ -615,6 +618,14 @@ mod tests {
         assert_eq!(source.int("microphone", 0), 1);
         assert_eq!(source.int("system_audio", 1), 0);
         assert!(Control::child(window, id::MICROPHONE).is_checked());
+        // An unsaved edit of a check box survives the next change from the engine;
+        // untouched boxes follow it.
+        Control::child(window, id::MICROPHONE).set_checked(false);
+        assert_eq!(send(window, ipc::AUDIO_SETTINGS, 1 | 2 | 4), 1);
+        assert_eq!((source.int("microphone", 0), source.int("show_clicks", 0)), (1, 1));
+        assert!(!Control::child(window, id::MICROPHONE).is_checked(), "unsaved edit kept");
+        assert!(Control::child(window, id::SYSTEM_AUDIO).is_checked());
+        assert!(Control::child(window, id::SHOW_CLICKS).is_checked());
 
         let status_control = Control::child(window, id::STATUS);
         let width_at_96 = client_width(status_control.handle());

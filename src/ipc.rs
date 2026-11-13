@@ -13,9 +13,7 @@ pub const WINDOW_CLASS: &str = "MosaikCapture.Host";
 pub const SHOW_SETTINGS: u32 = WM_APP + 1;
 /// Show the settings window, focusing the recording hotkey.
 pub const SHOW_RECORDING_SETTINGS: u32 = WM_APP + 2;
-/// Take a screenshot.
 pub const TAKE_SCREENSHOT: u32 = WM_APP + 3;
-/// Start or stop a recording.
 pub const TOGGLE_RECORDING: u32 = WM_APP + 4;
 /// Quit the app. Answered with [`QUIT_ACCEPTED`], or [`QUIT_REFUSED`] while the
 /// engine is busy, a dialog is open or start-up is not finished.
@@ -28,7 +26,6 @@ pub const QUIT_REFUSED: isize = 0;
 pub const PROBE: u32 = WM_APP + 10;
 /// Sent by the engine: new audio settings in `wParam` (see [`AudioSettings`]).
 pub const AUDIO_SETTINGS: u32 = WM_APP + 20;
-/// Notification-area icon callback.
 pub const TRAY_CALLBACK: u32 = WM_APP + 30;
 
 /// Whether `message` is a request from outside (another instance, the engine or the
@@ -54,9 +51,7 @@ pub const fn needs_startup(message: u32) -> bool {
 /// Reply to [`PROBE`]: which parts of the app are working.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProbeResponse {
-    /// The screenshot hotkey is registered.
     pub screenshot_hotkey: bool,
-    /// The recording hotkey is registered.
     pub recording_hotkey: bool,
 }
 
@@ -67,7 +62,6 @@ impl ProbeResponse {
     /// The answer of a fully working instance.
     pub const HEALTHY: isize = Self::ALIVE | Self::SCREENSHOT_HOTKEY | Self::RECORDING_HOTKEY;
 
-    /// Encodes the reply as the message result.
     pub const fn to_lresult(self) -> isize {
         let mut bits = Self::ALIVE;
         if self.screenshot_hotkey {
@@ -83,9 +77,7 @@ impl ProbeResponse {
 /// Audio options carried in the `wParam` of [`AUDIO_SETTINGS`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioSettings {
-    /// Record the microphone.
     pub microphone: bool,
-    /// Record system audio.
     pub system_audio: bool,
     /// Visualise mouse clicks.
     pub show_clicks: bool,
@@ -96,7 +88,6 @@ impl AudioSettings {
     const SYSTEM_AUDIO: usize = 2;
     const SHOW_CLICKS: usize = 4;
 
-    /// Decodes the message parameter.
     pub const fn from_wparam(wparam: usize) -> Self {
         Self {
             microphone: wparam & Self::MICROPHONE != 0,

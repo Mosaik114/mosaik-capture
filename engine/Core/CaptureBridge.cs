@@ -29,8 +29,9 @@ namespace MosaikCapture.Engine.Core;
 /// </remarks>
 internal static class CaptureBridge
 {
-    internal const string Title = "MosaikCapture.Engine";
-    internal const string MutexName = "Local\\MosaikCapture.Engine";
+    // Suffixed only under test isolation (see TestIsolation), so a test engine never meets a real one.
+    internal static readonly string Title = TestIsolation.Isolate("MosaikCapture.Engine");
+    internal static readonly string MutexName = TestIsolation.Isolate("Local\\MosaikCapture.Engine");
     internal const int CommandBase = 0x8000;
     internal const int ScreenshotMessage = 0x8001, RecordingMessage = 0x8002, QuitMessage = 0x8003, StateMessage = 0x800A;
     internal const string AfterArgument = "--after";
@@ -132,6 +133,7 @@ internal static class CaptureBridge
         var parameters = new HwndSourceParameters(Title) { Width = 0, Height = 0, WindowStyle = unchecked((int)NativeMethods.WS_POPUP) };   // never shown
         using var window = new HwndSource(parameters);
         window.AddHook(OnMessage);
+        TestIsolation.Hook(window);
         app.Dispatcher.BeginInvoke(new Action(() => Execute(command)), DispatcherPriority.ApplicationIdle);
         app.Run();
     }

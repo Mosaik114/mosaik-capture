@@ -20,7 +20,6 @@ pub const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
     red as u32 | (green as u32) << 8 | (blue as u32) << 16
 }
 
-/// Window background.
 pub const BACKGROUND: COLORREF = rgb(0x26, 0x26, 0x24);
 /// Background of edits and secondary buttons.
 pub const FIELD: COLORREF = rgb(0x35, 0x34, 0x2F);
@@ -28,7 +27,6 @@ pub const FIELD: COLORREF = rgb(0x35, 0x34, 0x2F);
 pub const FIELD_PRESSED: COLORREF = rgb(0x2A, 0x29, 0x25);
 /// Regular text.
 pub const INK: COLORREF = rgb(0xFA, 0xF9, 0xF5);
-/// Primary buttons.
 pub const ACCENT: COLORREF = rgb(0xD9, 0x77, 0x57);
 /// Primary button while pressed.
 pub const ACCENT_PRESSED: COLORREF = rgb(0xB8, 0x5F, 0x42);
@@ -51,7 +49,7 @@ pub struct GdiObject(HGDIOBJ);
 
 impl GdiObject {
     /// The raw handle; valid as long as `self` lives.
-    pub fn handle(&self) -> HGDIOBJ {
+    pub const fn handle(&self) -> HGDIOBJ {
         self.0
     }
 }
@@ -66,13 +64,11 @@ impl Drop for GdiObject {
     }
 }
 
-/// Creates a solid brush.
 fn solid_brush(color: COLORREF) -> GdiObject {
     // SAFETY: plain GDI object creation without pointer arguments.
     GdiObject(unsafe { CreateSolidBrush(color) })
 }
 
-/// Creates a solid pen.
 fn solid_pen(width: i32, color: COLORREF) -> GdiObject {
     // SAFETY: plain GDI object creation without pointer arguments.
     GdiObject(unsafe { CreatePen(PS_SOLID, width, color) })
@@ -110,18 +106,15 @@ pub struct Brushes {
 }
 
 impl Brushes {
-    /// Creates the brushes.
     pub fn new() -> Self {
         Self { background: solid_brush(BACKGROUND), field: solid_brush(FIELD) }
     }
 
-    /// Brush of the window background.
-    pub fn background(&self) -> HBRUSH {
+    pub const fn background(&self) -> HBRUSH {
         self.background.handle()
     }
 
-    /// Brush of edit fields.
-    pub fn field(&self) -> HBRUSH {
+    pub const fn field(&self) -> HBRUSH {
         self.field.handle()
     }
 }
@@ -139,7 +132,6 @@ pub struct Scaled {
 }
 
 impl Scaled {
-    /// Creates all fonts, brushes and pens for `dpi`.
     pub fn new(dpi: Dpi) -> Self {
         let outline_width = dpi.scale(1).max(1);
         Self {
@@ -154,8 +146,7 @@ impl Scaled {
         }
     }
 
-    /// The font for a text role.
-    pub fn font(&self, role: FontRole) -> HFONT {
+    pub const fn font(&self, role: FontRole) -> HFONT {
         match role {
             FontRole::Body => self.body.handle(),
             FontRole::Title => self.title.handle(),
@@ -183,11 +174,8 @@ impl Scaled {
 /// Colours of an owner-drawn button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ButtonStyle {
-    /// Background.
     pub fill: COLORREF,
-    /// Outline.
     pub outline: COLORREF,
-    /// Label.
     pub text: COLORREF,
 }
 

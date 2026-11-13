@@ -18,22 +18,27 @@ internal sealed class CaptureSettingsSnapshot
 /// <summary>
 /// Settings shared with the host: a Unicode INI file, section [capture], written by the host. Each flow
 /// reads it once (<see cref="Load()"/>) and works with that snapshot. <c>MOSAIK_CAPTURE_TEST_CONFIG</c>
-/// points to a different file; the host sets it in preview mode, and it is read once at startup.
+/// points to a different file; an isolated host (see <see cref="TestIsolation"/>) sets it, and it is read once
+/// at startup. The keys, defaults and normalisation follow contract/contract.json, as on the host.
 /// </summary>
 internal static class CaptureSettings
 {
     internal const string TestConfigVariable = "MOSAIK_CAPTURE_TEST_CONFIG";
-    internal const string HostWindowClass = "MosaikCapture.Host";
+    internal static readonly string HostWindowClass = TestIsolation.Isolate("MosaikCapture.Host");
     internal const int SaveAudioMessage = 0x8014;
+    internal const string AppFolderName = "MosaikCapture";
+
+    /// <summary>%LOCALAPPDATA%, or its stand-in under test isolation.</summary>
+    static readonly string LocalAppData = TestIsolation.LocalAppData ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
     /// <summary>%LOCALAPPDATA%\MosaikCapture: settings and temporary recording files.</summary>
-    public static readonly string Home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MosaikCapture");
+    public static readonly string Home = Path.Combine(LocalAppData, AppFolderName);
 
     /// <summary>Work folders of running recordings (video segments and audio tracks).</summary>
     public static readonly string RecordingWorkRoot = Path.Combine(Home, "recording");
 
     /// <summary>Where versions before 0.2 kept their work folders; cleaned up once.</summary>
-    public static readonly string LegacyRecordingWorkRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), LegacyHomeName, LegacyWorkFolderName);
+    public static readonly string LegacyRecordingWorkRoot = Path.Combine(LocalAppData, LegacyHomeName, LegacyWorkFolderName);
 
     // Folder names of older versions (which used German names); only read to clean up their leftovers.
     const string LegacyHomeName = "Mosaiks-Aufnahme", LegacyWorkFolderName = "Aufnahme";

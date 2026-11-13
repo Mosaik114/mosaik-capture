@@ -103,10 +103,8 @@ impl Resources {
     }
 }
 
-/// Inputs of the version resource.
 #[derive(Debug)]
 pub struct VersionInfo<'a> {
-    /// Major, minor and patch version.
     pub version: [u16; 3],
     /// Shown as "File description" in Explorer.
     pub file_description: &'a str,
@@ -217,11 +215,8 @@ fn version_node(key: &str, value: NodeValue<'_>, children: &[Vec<u8>]) -> Vec<u8
 /// Target machine of the object file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Machine {
-    /// 32-bit x86.
     X86,
-    /// x86-64.
     X64,
-    /// 64-bit ARM.
     Arm64,
 }
 
@@ -236,7 +231,7 @@ impl Machine {
         }
     }
 
-    fn id(self) -> u16 {
+    const fn id(self) -> u16 {
         match self {
             Self::X86 => 0x014C,
             Self::X64 => 0x8664,
@@ -245,7 +240,7 @@ impl Machine {
     }
 
     /// Relocation type for a 32-bit image-relative address (`ADDR32NB`/`DIR32NB`).
-    fn rva_relocation(self) -> u16 {
+    const fn rva_relocation(self) -> u16 {
         match self {
             Self::X86 => 0x0007,
             Self::X64 => 0x0003,
@@ -341,7 +336,6 @@ const SCN_INITIALIZED_DATA: u32 = 0x0000_0040;
 const SCN_ALIGN_8BYTES: u32 = 0x0040_0000;
 /// `IMAGE_SCN_MEM_READ`.
 const SCN_MEM_READ: u32 = 0x4000_0000;
-/// Flags of the `.rsrc` section.
 const SECTION_FLAGS: u32 = SCN_INITIALIZED_DATA | SCN_ALIGN_8BYTES | SCN_MEM_READ;
 
 /// Wraps the `.rsrc` section into a relocatable COFF object with one section symbol.
@@ -418,11 +412,11 @@ fn to_usize(value: u32) -> usize {
     usize::try_from(value).expect("u32 fits usize on Windows targets")
 }
 
-fn read_u16(bytes: &[u8], at: usize) -> u16 {
+const fn read_u16(bytes: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([bytes[at], bytes[at + 1]])
 }
 
-fn read_u32(bytes: &[u8], at: usize) -> u32 {
+const fn read_u32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
