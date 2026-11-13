@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The stop button in the recording bar is turquoise (#0B7F74, darker #096A61 while hovered)
+  instead of salmon; its light square keeps 4.6:1 (6.1:1 hovered).
+- The recording red is a clear red instead of an orange-looking salmon (#F0806A): #FF5A60 in
+  the dark theme and #D42A37 in the light theme for the recording dot, "off" icons, the trim
+  window's export error and the failure cards' status chip (at least 4.5:1 against the
+  background in both themes; before, the light theme had only 2.5:1). The discard button
+  waiting for confirmation is filled with #D42A37 (4.8:1 with its light icon). The settings
+  window's error text uses #FF5A60 (5.0:1) instead of #F09080.
+
 ## [1.1.1] - 2026-11-13
 
 ### Changed

@@ -52,7 +52,7 @@ internal sealed partial class TrimWindow
     void ShowExportError(string error)
     {
         progressText.Text = UiText.Trim.NotSaved(error);
-        progressText.Foreground = Palette.RecordingRed;
+        progressText.SetResourceReference(TextBlock.ForegroundProperty, Palette.RecordingRed);
         ShowProgressRow(true);
         var timer = new DispatcherTimer { Interval = Motion.ErrorShown };
         timer.Tick += delegate { timer.Stop(); ShowProgressRow(false); };

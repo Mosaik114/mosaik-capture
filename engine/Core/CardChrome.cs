@@ -77,7 +77,7 @@ internal static class CardChrome
         glyph.Text = symbol;
         if (warning)
         {
-            glyph.Foreground = Palette.RecordingRed;
+            glyph.SetResourceReference(TextBlock.ForegroundProperty, Palette.RecordingRed);
             chip.SetResourceReference(Border.BackgroundProperty, Palette.WarningSoft);
         }
         else

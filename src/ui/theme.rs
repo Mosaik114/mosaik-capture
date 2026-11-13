@@ -35,8 +35,8 @@ pub const ACCENT_PRESSED: COLORREF = rgb(0x09, 0x6A, 0x61);
 pub const ON_ACCENT: COLORREF = INK;
 /// Outline of secondary buttons.
 pub const BORDER: COLORREF = rgb(0x47, 0x47, 0x45);
-/// Status text for errors.
-pub const ERROR: COLORREF = rgb(0xF0, 0x90, 0x80);
+/// Status text for errors: the engine's dark-theme recording red, 5.0:1 against [`BACKGROUND`].
+pub const ERROR: COLORREF = rgb(0xFF, 0x5A, 0x60);
 
 const FONT_FACE: &str = "Segoe UI";
 
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(ACCENT_PRESSED, 0x0061_6A09);
         assert_eq!(ON_ACCENT, INK);
         assert_eq!(BORDER, 0x0045_4747);
-        assert_eq!(ERROR, 0x0080_90F0);
+        assert_eq!(ERROR, 0x0060_5AFF);
     }
 
     /// WCAG 2 contrast ratio of two colours.
@@ -316,6 +316,11 @@ mod tests {
         assert!(contrast(ON_ACCENT, ACCENT) >= 4.5);
         assert!(contrast(ON_ACCENT, ACCENT_PRESSED) >= 4.5);
         assert!(contrast(ACCENT, BACKGROUND) >= 3.0, "button stands out from the window");
+    }
+
+    #[test]
+    fn error_text_is_readable() {
+        assert!(contrast(ERROR, BACKGROUND) >= 4.5);
     }
 
     #[test]

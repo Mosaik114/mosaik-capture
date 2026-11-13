@@ -31,7 +31,7 @@ internal sealed class RecordingToolbar : Window
         ToolWindows.Setup(this, UiText.Titles.Toolbar);
         SizeToContent = SizeToContent.WidthAndHeight;
 
-        dot = new Shapes.Ellipse { Width = 10, Height = 10, Fill = Palette.RecordingRed, Margin = new Thickness(0, 0, 9, 0), VerticalAlignment = VerticalAlignment.Center };
+        dot = new Shapes.Ellipse { Width = 10, Height = 10, Margin = new Thickness(0, 0, 9, 0), VerticalAlignment = VerticalAlignment.Center };
         TimeText = ToolWindows.Text(14, Palette.Text);
         grip = BuildGrip();
 
@@ -47,7 +47,6 @@ internal sealed class RecordingToolbar : Window
         pauseGlyph = ToolWindows.Glyph("", 16);
         pauseButton = AddButton(pauseGlyph, () => ScreenRecorder.Paused ? UiText.Toolbar.Resume : UiText.Toolbar.Pause, ScreenRecorder.TogglePause);
         stopButton = AddButton(BuildStopSquare(), () => UiText.Toolbar.Stop, ScreenRecorder.Stop);
-        stopButton.Background = Palette.RecordingRed;
         discardGlyph = ToolWindows.Glyph(IconGlyphs.Delete, 16);
         DiscardButton = AddButton(discardGlyph, () => ConfirmingDiscard ? UiText.Toolbar.ConfirmDiscard : UiText.Toolbar.Discard, Discard);
 
@@ -65,7 +64,7 @@ internal sealed class RecordingToolbar : Window
         confirmTimer.Tick += delegate { confirmTimer.Stop(); ConfirmingDiscard = false; Refresh(); };
     }
 
-    /// <summary>The white square on the red stop button.</summary>
+    /// <summary>The light square on the turquoise stop button (4.6:1, 6.1:1 while hovered).</summary>
     static Shapes.Rectangle BuildStopSquare() => new()
     {
         Width = 12,
@@ -243,10 +242,10 @@ internal sealed class RecordingToolbar : Window
         PaintGlyph(pauseGlyph, Palette.Text);
         foreach (var button in new[] { microphoneButton, SoundButton, clickButton, pauseButton })
             PaintHover(button);
-        stopButton.Opacity = hovered == stopButton ? 0.86 : 1;
+        stopButton.SetResourceReference(Border.BackgroundProperty, hovered == stopButton ? Palette.AccentFillHover : Palette.AccentFill);
         if (ConfirmingDiscard)
         {
-            DiscardButton.Background = Palette.RecordingRed;
+            DiscardButton.SetResourceReference(Border.BackgroundProperty, Palette.RecordingRedFill);
             discardGlyph.Foreground = Palette.Light;
         }
         else
@@ -275,7 +274,7 @@ internal sealed class RecordingToolbar : Window
             TimeText.SetResourceReference(TextBlock.ForegroundProperty, Palette.Muted);
             return;
         }
-        dot.Fill = Palette.RecordingRed;
+        dot.SetResourceReference(Shapes.Shape.FillProperty, Palette.RecordingRed);
         TimeText.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
         if (IsVisible && !dot.HasAnimatedProperties)
             dot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0.3, Motion.RecordingPulse)
@@ -289,8 +288,7 @@ internal sealed class RecordingToolbar : Window
     // null = "off" in recording red
     static void PaintGlyph(TextBlock glyph, string? brushKey)
     {
-        if (brushKey == null) glyph.Foreground = Palette.RecordingRed;
-        else glyph.SetResourceReference(TextBlock.ForegroundProperty, brushKey);
+        glyph.SetResourceReference(TextBlock.ForegroundProperty, brushKey ?? Palette.RecordingRed);
     }
 
     void UpdateTimeAndLevel()

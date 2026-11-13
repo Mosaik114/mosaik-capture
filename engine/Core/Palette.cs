@@ -27,6 +27,13 @@ static class Palette
     public const string AccentFill = "AccentFill";
     /// <summary><see cref="AccentFill"/> while hovered or pressed: darker, so the text stays readable.</summary>
     public const string AccentFillHover = "AccentFillHover";
+    /// <summary>
+    /// Recording red for the toolbar dot, "off" icons and error text: a clear red (hue 355-358°),
+    /// at least 4.5:1 against the background in both themes.
+    /// </summary>
+    public const string RecordingRed = "RecordingRed";
+    /// <summary>Red surface under light icons (the discard button while it waits for confirmation).</summary>
+    public const string RecordingRedFill = "RecordingRedFill";
     /// <summary><see cref="RecordingRed"/> as a subtle fill (background of the failure cards' status chip).</summary>
     public const string WarningSoft = "WarningSoft";
 
@@ -39,8 +46,6 @@ static class Palette
 
     // ---------- Fixed brushes (same in light and dark) ----------
 
-    /// <summary>Recording red: the toolbar dot, the stop button and "off" icons.</summary>
-    public static readonly SolidColorBrush RecordingRed = Frozen(0xFF, 0xF0, 0x80, 0x6A);
     /// <summary>Light foreground on dark or accent surfaces.</summary>
     public static readonly SolidColorBrush Light = Frozen(0xFF, 0xFA, 0xF9, 0xF5);
     /// <summary>Dimming outside the selected area.</summary>
@@ -52,9 +57,9 @@ static class Palette
 
     internal static bool? Force;   // tests only: light/dark regardless of the Windows setting
 
-    static readonly string[] Keys = { Background, Selected, Hover, Line, Text, Muted, Accent, Chip, AccentFill, AccentFillHover };
-    static readonly string[] LightColors = { "#FAF9F5", "#EEECE3", "#F4F2EA", "#E3E1D7", "#141413", "#7A786F", "#0E8C80", "#E6E3D8", "#0B7F74", "#096A61" };
-    static readonly string[] DarkColors = { "#262624", "#35342F", "#2E2D2A", "#3A3935", "#FAF9F5", "#A3A197", "#2AC8A6", "#42413C", "#0B7F74", "#096A61" };
+    static readonly string[] Keys = { Background, Selected, Hover, Line, Text, Muted, Accent, Chip, AccentFill, AccentFillHover, RecordingRed, RecordingRedFill };
+    static readonly string[] LightColors = { "#FAF9F5", "#EEECE3", "#F4F2EA", "#E3E1D7", "#141413", "#7A786F", "#0E8C80", "#E6E3D8", "#0B7F74", "#096A61", "#D42A37", "#D42A37" };
+    static readonly string[] DarkColors = { "#262624", "#35342F", "#2E2D2A", "#3A3935", "#FAF9F5", "#A3A197", "#2AC8A6", "#42413C", "#0B7F74", "#096A61", "#FF5A60", "#D42A37" };
 
     public static SolidColorBrush Frozen(byte alpha, byte red, byte green, byte blue)
     {
@@ -78,7 +83,7 @@ static class Palette
         // accent as a subtle fill (background of the muted microphone icon)
         var accent = ((SolidColorBrush)resources[Accent]).Color;
         resources[AccentSoft] = Frozen(light ? (byte)0x26 : (byte)0x2E, accent.R, accent.G, accent.B);
-        var red = RecordingRed.Color;
+        var red = ((SolidColorBrush)resources[RecordingRed]).Color;
         resources[WarningSoft] = Frozen(light ? (byte)0x26 : (byte)0x2E, red.R, red.G, red.B);
     }
 

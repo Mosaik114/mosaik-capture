@@ -67,7 +67,7 @@ internal sealed partial class TrimWindow
         bigPlayButton.Visibility = playing ? Visibility.Hidden : Visibility.Visible;
         soundGlyph.Text = withSound ? IconGlyphs.Volume : IconGlyphs.Mute;
         if (withSound) soundGlyph.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
-        else soundGlyph.Foreground = Palette.RecordingRed;
+        else soundGlyph.SetResourceReference(TextBlock.ForegroundProperty, Palette.RecordingRed);
     }
 
     void TrackDown(double x)
