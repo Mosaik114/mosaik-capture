@@ -12,7 +12,9 @@ built as a small Rust tray app driving a C#/WPF capture engine.**
 ![Platform](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078d4?logo=windows)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-<img src="docs/images/editor-toolbar.png" alt="Annotation toolbar: select, arrow, shapes, pen, highlighter, text, numbered steps, pixelate, colours, stroke sizes, undo/redo, save, copy, text recognition, pin, close, done" width="900">
+<img src="docs/images/demo.gif" alt="Demo: Shift+Alt+4 freezes the screen and an area is dragged; in the editor a rough pen stroke held still becomes an arrow, the highlighter snaps to a text line, an e-mail address is pixelated, numbered steps are placed and the result is copied" width="880">
+
+<sub>The real overlay and editor code, rendered off-screen and driven by a scripted pointer; the app in the screenshot is a mock-up, cursor and key hints are drawn on top.</sub>
 
 </div>
 
@@ -35,6 +37,10 @@ pause/resume, trimming and GIF export.
 | **Screen recording** | Desktop Duplication through ffmpeg's `ddagrab` on the GPU, NVENC with automatic x264 fallback, 30 or 60 fps. System sound (WASAPI loopback) and microphone are recorded as separate tracks and stay in sync across pauses. |
 | **Trim & GIF** | A film-strip trimmer (`Space` play, `I`/`O` in/out, arrow keys step) exports MP4 or GIF. |
 | **Tiny footprint** | A ~280 KB tray app with no runtime dependencies (CI prints the size of every release build); the engine starts on the first capture and stays resident. No network access, no telemetry, no elevation. |
+
+<p align="center">
+  <img src="docs/images/editor-toolbar.png" alt="Annotation toolbar: select, arrow, shapes, pen, highlighter, text, numbered steps, pixelate, colours, stroke sizes, undo/redo, save, copy, text recognition, pin, close, done" width="900">
+</p>
 
 <p align="center">
   <img src="docs/images/editor-annotations.png" alt="Annotations: highlighter on text, labelled plates, snapped circles, arrows, the pixelate tool applied to part of an e-mail address" width="640">
