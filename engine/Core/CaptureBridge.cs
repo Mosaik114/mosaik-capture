@@ -39,6 +39,7 @@ internal static class CaptureBridge
     internal const int CommandsPerSecond = 10;
 
     static readonly CommandRateLimit commandLimit = new(CommandsPerSecond, TimeSpan.FromSeconds(1));
+    static readonly LogThrottle rejectionLog = new(TimeSpan.FromSeconds(1));
     const int ForwardAttempts = 100, ForwardDelayMs = 50;
 
     /// <summary>How long a restarted engine waits for the crashed one to exit.</summary>
@@ -158,6 +159,9 @@ internal static class CaptureBridge
     /// <summary>Reply to <see cref="StateMessage"/>.</summary>
     internal static int StateFlags(bool busy, bool live) => (busy ? 1 : 0) | (live ? 2 : 0);
 
+    internal static string RejectionMessage(int skipped) =>
+        "Ignored a capture command: too many per second" + (skipped > 0 ? " (" + skipped + " more since the last entry)" : "");
+
     /// <summary>The engine's state as replied to <see cref="StateMessage"/>.</summary>
     internal static int State() => StateFlags(EngineActivity.Busy, ScreenRecorder.Live);
 
@@ -182,8 +186,9 @@ internal static class CaptureBridge
             case ScreenshotMessage:
             case RecordingMessage:
                 handled = true;
-                if (commandLimit.Allow(Stopwatch.GetTimestamp())) Execute(message - CommandBase);
-                else ErrorLog.Write("Ignored a capture command: too many per second", null);
+                long now = Stopwatch.GetTimestamp();
+                if (commandLimit.Allow(now)) Execute(message - CommandBase);
+                else if (rejectionLog.Allow(now, out int skipped)) ErrorLog.Write(RejectionMessage(skipped), null);
                 break;
             case QuitMessage:
                 handled = true;
