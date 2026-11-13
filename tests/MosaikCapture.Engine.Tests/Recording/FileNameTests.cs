@@ -48,6 +48,23 @@ public sealed class FileNameTests : IDisposable
         Assert.Equal("Mosaiks-Screenshot 2026-09-26 14-03-12 (3).png", Path.GetFileName(Screenshots.NewPath(directory.Path, When)));
     }
 
+    [Theory]
+    [InlineData("th-TH")]   // Buddhist calendar: the year would be 2569
+    [InlineData("ar-SA")]   // Hijri calendar
+    [InlineData("fa-IR")]   // Persian calendar
+    public void FileNamesUseTheGregorianDateWhateverTheSystemLanguage(string culture)
+    {
+        var previous = Thread.CurrentThread.CurrentCulture;
+        try
+        {
+            Thread.CurrentThread.CurrentCulture = CultureInfo.GetCultureInfo(culture);
+
+            Assert.Equal("Mosaiks-Aufnahme 2026-09-26 14-03-12.mp4", RecordingBackend.FileName(When));
+            Assert.Equal("Mosaiks-Screenshot 2026-09-26 14-03-12.png", Path.GetFileName(Screenshots.NewPath(directory.Path, When)));
+        }
+        finally { Thread.CurrentThread.CurrentCulture = previous; }
+    }
+
     [Fact]
     public void ExportTargetsLieNextToTheSource()
     {

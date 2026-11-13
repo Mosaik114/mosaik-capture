@@ -70,5 +70,5 @@ internal static class Screenshots
     /// numbered " (2)", " (3)", ... if the name is taken.
     /// </summary>
     internal static string NewPath(string folder, DateTime when) =>
-        UniqueFile.Next(Path.Combine(folder, UiText.Files.ScreenshotPrefix + when.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.CurrentCulture) + ".png"));
+        UniqueFile.Next(Path.Combine(folder, UiText.Files.ScreenshotPrefix + when.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture) + ".png"));
 }

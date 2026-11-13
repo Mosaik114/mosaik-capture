@@ -99,7 +99,7 @@ internal sealed class RecordingBackend : IRecordingBackend
 
     /// <summary><see cref="UiText.Files.RecordingPrefix"/> plus the start time, e.g. "&lt;prefix&gt;2026-09-26 14-03-12.mp4".</summary>
     internal static string FileName(DateTime begun) =>
-        UiText.Files.RecordingPrefix + begun.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.CurrentCulture) + ".mp4";
+        UiText.Files.RecordingPrefix + begun.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture) + ".mp4";
 
     public CaptureSettingsSnapshot LoadSettings() => CaptureSettings.Load();
 
