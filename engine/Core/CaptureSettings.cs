@@ -85,11 +85,18 @@ internal static class CaptureSettings
     /// <summary>1 = microphone, 2 = system sound, 4 = show clicks.</summary>
     internal static int AudioFlags(bool microphone, bool sound, bool clicks) => (microphone ? 1 : 0) | (sound ? 2 : 0) | (clicks ? 4 : 0);
 
+    /// <summary>Longest value read (UTF-16 units), as on the host side; anything longer is cut off.</summary>
+    internal const int MaxValueLength = 64 * 1024;
+
+    // The host allows long paths, so the buffer grows until the value fits (a cut value comes back as size - 1).
     static string Read(string file, string key, string fallback)
     {
-        var value = new StringBuilder(2048);
-        _ = NativeMethods.GetPrivateProfileString("capture", key, fallback, value, value.Capacity, file);
-        return value.ToString();
+        for (int size = 2048; ; size *= 2)
+        {
+            var value = new StringBuilder(size);
+            uint length = NativeMethods.GetPrivateProfileString("capture", key, fallback, value, size, file);
+            if (length < size - 1 || size >= MaxValueLength) return value.ToString();
+        }
     }
 
     static int Number(string file, string key, int fallback) =>
