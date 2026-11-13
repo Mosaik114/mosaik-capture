@@ -39,8 +39,9 @@ internal static class Program
                 ErrorLog.Write("Unhandled UI exception (recoverable)", e.Exception);
                 return;
             }
-            // a bug: restart if possible, otherwise just end (the host starts the engine again when needed)
-            ErrorLog.Write("Unhandled UI exception: restartStarted", e.Exception);
+            // a bug: restart if possible, otherwise just end (the host starts the engine again when needed);
+            // Restart logs what it decided
+            ErrorLog.Write("Unhandled UI exception", e.Exception);
             if (ResponseTo(e.Exception, Restart) == UiFailureResponse.Shutdown) app.Shutdown();
         };
         TaskScheduler.UnobservedTaskException += (_, e) => { ErrorLog.Write("Unobserved task exception", e.Exception); e.SetObserved(); };
@@ -99,17 +100,20 @@ internal static class Program
 
     /// <summary>
     /// Restarts only if the engine has been running for a while; otherwise a crash at startup would loop.
-    /// Returns whether a new engine was started (then this one should end).
+    /// Returns whether a new engine was started (then this one should end) and logs the outcome.
     /// </summary>
-    internal static bool Restart()
-    {
-        if (Interlocked.Exchange(ref restartAttempted, 1) == 1) return false;
-        if (Uptime < MinimumUptimeForRestart)
-        {
-            ErrorLog.Write("No restart: crashed within the first minute", null);
-            return false;
-        }
+    internal static bool Restart() =>
         // The new engine waits for this process to be gone before it takes the single-instance mutex.
-        return Shell.Open(Assembly.GetEntryAssembly()!.Location, RestartArguments(CurrentProcessId()));
+        Restart(() => Shell.Open(Assembly.GetEntryAssembly()!.Location, RestartArguments(CurrentProcessId())));
+
+    /// <summary><see cref="Restart()"/> with the process start replaced (tests).</summary>
+    internal static bool Restart(Func<bool> startNewEngine)
+    {
+        string? refusal = Interlocked.Exchange(ref restartAttempted, 1) == 1 ? "a restart was attempted already"
+            : Uptime < MinimumUptimeForRestart ? "crashed within the first minute"
+            : startNewEngine() ? null
+            : "the new engine could not be started";
+        ErrorLog.Write(refusal == null ? "Restart started" : "Restart not started: " + refusal, null);
+        return refusal == null;
     }
 }

@@ -291,7 +291,8 @@ internal sealed class PinnedScreenshot : Window
 
     void SaveAs()
     {
-        string? saved = Screenshots.SaveAs(this, image, fileName);
-        if (saved != null) ShowFeedback(saved.Length > 0 ? UiText.Pin.Saved : UiText.Common.CouldNotSave);
+        var result = Screenshots.SaveAs(this, image, fileName, out _);
+        if (result == SaveAsResult.Saved) ShowFeedback(UiText.Pin.Saved);
+        else if (result == SaveAsResult.Failed) ShowFeedback(UiText.Common.CouldNotSave);
     }
 }

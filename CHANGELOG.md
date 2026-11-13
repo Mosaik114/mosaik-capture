@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Quitting (tray or `--quit`) no longer closes the engine while the screenshot editor or
+  the trim window is open, a screenshot is being saved or a trim/GIF export runs; the
+  state query reports the same busy state.
+- A recording that could not be saved is no longer lost: its raw segments and sound tracks
+  move next to the target as `<name> (Rohdaten)`, the failure card offers to open them,
+  and they are never cleaned up automatically.
+- Long screenshot and recording folders (over 2,048 characters) are read whole.
+- File names use the Gregorian date whatever the system language (e.g. Thai).
+- The crash log says whether a restart really started, and why not.
+- The dashed frame of pixelate, blur and spotlight stays visible on white content in the
+  dark theme; editor notices are centered correctly the first time.
+- A flood of rejected capture commands writes at most one log line per second.
 ## [1.0.0] - 2026-11-12
 
 First public release as a standalone project.

@@ -29,6 +29,7 @@ internal sealed partial class TrimWindow : Window
     static readonly SolidColorBrush StripShade = Palette.Frozen(0xB8, 0x14, 0x14, 0x13);
 
     readonly DispatcherTimer playbackTimer = new(DispatcherPriority.Render) { Interval = PlaybackTick };
+    readonly EngineWork shown = new();   // the engine must not quit while the user trims
     RecordedVideo? video;
     RECT workArea;
     double duration = 1, selectionStart, selectionEnd = 1, playhead, grabOffset;
@@ -152,6 +153,7 @@ internal sealed partial class TrimWindow : Window
         LoadFilmStrip(recorded, openedAt);
 
         if (Offscreen) return;
+        shown.Begin();
         Left = -10000;
         Show();
         UpdateLayout();
@@ -163,6 +165,7 @@ internal sealed partial class TrimWindow : Window
 
     void Dismiss()
     {
+        shown.End();
         if (exporting) CancelExport();
         CancelFilmStrip();
         generation++;

@@ -135,6 +135,21 @@ public sealed class RobustnessTests
     }
 
     [Fact]
+    public void AFloodOfRejectedCommandsLogsAtMostOneLineASecond()
+    {
+        var log = new LogThrottle(TimeSpan.FromSeconds(1));
+        long second = Stopwatch.Frequency;
+
+        var logged = Enumerable.Range(0, 300).Select(i => log.Allow(i * second / 100, out _)).ToList();   // 100 per second for 3 s
+
+        Assert.Equal(3, logged.Count(l => l));
+        Assert.True(log.Allow(4 * second, out int skipped));
+        Assert.Equal(99, skipped);
+        Assert.Equal("Ignored a capture command: too many per second (99 more since the last entry)", CaptureBridge.RejectionMessage(skipped));
+        Assert.Equal("Ignored a capture command: too many per second", CaptureBridge.RejectionMessage(0));
+    }
+
+    [Fact]
     public void RateLimitNeverBlocksAPerson()
     {
         var limit = new CommandRateLimit(CaptureBridge.CommandsPerSecond, TimeSpan.FromSeconds(1));

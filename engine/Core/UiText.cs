@@ -36,6 +36,8 @@ static class UiText
         public const string ScreenshotPrefix = "Mosaiks-Screenshot ";
         public const string RecordingPrefix = "Mosaiks-Aufnahme ";
         public const string TrimmedSuffix = " gekürzt";
+        /// <summary>Folder next to a recording that could not be saved: its raw segments and sound tracks.</summary>
+        public const string RawDataSuffix = " (Rohdaten)";
         public const string SaveAsTitle = "Mosaiks-Screenshot speichern unter";
         public const string SaveAsFilter = "PNG-Bild (*.png)|*.png|JPEG-Bild (*.jpg)|*.jpg";
     }
@@ -147,6 +149,7 @@ static class UiText
         public const string TrimmedNotCopied = "Gekürzt gespeichert, nicht kopiert";
         public const string SavedNotCopied = "Aufnahme gespeichert, nicht kopiert";
         public const string Aborted = "Aufnahme abgebrochen";
+        public const string OpenRawData = "Rohdaten öffnen";
         public const string TrimmedAndCopied = "Gekürzt und kopiert";
         public const string Trim = "Kürzen";
         public const string Gif = "GIF";

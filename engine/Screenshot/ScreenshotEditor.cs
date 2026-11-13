@@ -74,6 +74,15 @@ internal sealed partial class ScreenshotEditor : Window
     static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
     /// <summary>How long a notice (copied, saved, ...) stays.</summary>
     static readonly TimeSpan NoticeDuration = TimeSpan.FromMilliseconds(1800);
+    /// <summary>A hard dark copy under the light dashes of the pixelate, blur and spotlight frame: one of the two always shows.</summary>
+    static readonly System.Windows.Media.Effects.DropShadowEffect RegionFrameOutline = DarkOutline();
+
+    static System.Windows.Media.Effects.DropShadowEffect DarkOutline()
+    {
+        var outline = new System.Windows.Media.Effects.DropShadowEffect { Color = Colors.Black, ShadowDepth = 1.5, Direction = 315, BlurRadius = 0, Opacity = 0.85 };
+        outline.Freeze();
+        return outline;
+    }
 
     readonly DispatcherTimer holdTimer = new() { Interval = HoldDelay };           // pen/highlighter held still
     readonly DispatcherTimer noticeTimer = new() { Interval = NoticeDuration };
@@ -85,7 +94,8 @@ internal sealed partial class ScreenshotEditor : Window
     ScreenCapture capture = null!;                // set by Load(), cleared by HideAndReset()
     double scale = 1;                             // device pixels per WPF unit
     readonly EditorInteraction interaction = new();
-    FrameworkElement? numberPreview;              // semi-transparent preview of the next number at the pointer
+    readonly EngineWork shown = new();            // the open editor holds unsaved markup: the engine must not quit
+    FrameworkElement? numberPreview;             // semi-transparent preview of the next number at the pointer
     string? numberPreviewKey;
     Point pointer;
     Shapes.Path? stroke;
@@ -238,6 +248,7 @@ internal sealed partial class ScreenshotEditor : Window
     /// <summary>After an error elsewhere in the screenshot flow: closes without reporting back.</summary>
     internal void Abandon()
     {
+        shown.End();   // also when opening failed before the window was shown
         if (IsVisible) HideAndReset();
     }
 
@@ -665,7 +676,7 @@ internal sealed partial class ScreenshotEditor : Window
     void ShowTooltip(FrameworkElement target, string text)
     {
         tooltipText.Text = text;
-        tooltip.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        MeasureAfterTextChange(tooltip, tooltipText);
         Point position = target.TranslatePoint(new Point(0, 0), root);
         double toolbarTop = Canvas.GetTop(toolbar), toolbarHeight = toolbar.ActualHeight, tooltipHeight = tooltip.DesiredSize.Height;
         Rect monitor = MonitorArea();
@@ -677,7 +688,7 @@ internal sealed partial class ScreenshotEditor : Window
     void ShowNotice(string text)
     {
         noticeText.Text = text;
-        notice.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        MeasureAfterTextChange(notice, noticeText);
         double toolbarTop = Canvas.GetTop(toolbar), noticeHeight = notice.DesiredSize.Height;
         Rect monitor = MonitorArea();
         Canvas.SetLeft(notice, Canvas.GetLeft(toolbar) + (toolbar.ActualWidth - notice.DesiredSize.Width) / 2);
@@ -687,9 +698,21 @@ internal sealed partial class ScreenshotEditor : Window
         noticeTimer.Start();
     }
 
+    // A new text only marks the text block for measuring: Measure on the chip would return its cached size
+    // (the first time after Load the size without any text). So the whole chain is marked first.
+    static void MeasureAfterTextChange(FrameworkElement chip, TextBlock text)
+    {
+        for (DependencyObject? element = text; element != null && element != chip; element = VisualTreeHelper.GetParent(element))
+            (element as UIElement)?.InvalidateMeasure();
+        chip.InvalidateMeasure();
+        chip.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+    }
+
     // ---------- For the pixel tests ----------
 
     internal Canvas Surface => root;
+    internal FrameworkElement Notice => notice;
+    internal void Notify(string text) => ShowNotice(text);
     internal FrameworkElement Toolbar => toolbar;
     internal FrameworkElement ToolMenu => toolMenu;
     internal void OpenGroupMenu(int groupIndex) => OpenMenu(groups[groupIndex]);

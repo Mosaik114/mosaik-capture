@@ -108,8 +108,9 @@ internal sealed partial class ScreenshotEditor
     void SaveAs()
     {
         CommitText();
-        string? saved = Screenshots.SaveAs(this, Render(), capture.Path);
-        if (saved != null) ShowNotice(saved.Length > 0 ? UiText.Editor.Saved(saved) : UiText.Common.CouldNotSave);
+        var result = Screenshots.SaveAs(this, Render(), capture.Path, out string fileName);
+        if (result == SaveAsResult.Saved) ShowNotice(UiText.Editor.Saved(fileName));
+        else if (result == SaveAsResult.Failed) ShowNotice(UiText.Common.CouldNotSave);
     }
 
     // Done: save and copy as usual; with pin, also pin the image in place.
@@ -140,6 +141,7 @@ internal sealed partial class ScreenshotEditor
 
     void HideAndReset()
     {
+        shown.End();
         NativeMethods.Cloak(hwnd, true);
         if (IsMouseCaptured) ReleaseMouseCapture();
         interaction.Reset();

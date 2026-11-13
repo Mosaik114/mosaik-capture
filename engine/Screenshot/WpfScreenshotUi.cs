@@ -45,7 +45,7 @@ internal sealed class WpfScreenshotUi : IScreenshotUi
 /// <summary>Screenshot files below the configured folder and the clipboard.</summary>
 internal sealed class ScreenshotStore : IScreenshotStore
 {
-    public string NewPath(DateTime when) => Screenshots.NewPath(Screenshots.Folder, when);
+    public string NewPath(DateTime when) => Screenshots.NewPath(Screenshots.ReadFolder(), when);
 
     public Task<byte[]> SaveAsync(BitmapSource image, string path) => Task.Run(() =>
     {

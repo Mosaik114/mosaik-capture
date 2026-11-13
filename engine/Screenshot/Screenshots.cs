@@ -11,12 +11,19 @@ namespace MosaikCapture.Engine.Screenshot;
 internal static class Screenshots
 {
     static ScreenshotController? controller;
+    static volatile string? folder;
 
     /// <summary>Called once by <see cref="EngineComposition"/>, which builds the object graph.</summary>
     internal static void Use(ScreenshotController screenshotController) => controller = screenshotController;
 
-    /// <summary>The screenshot folder as the settings say now (read once per use).</summary>
-    public static string Folder => CaptureSettings.Load().ScreenshotFolder;
+    /// <summary>
+    /// The screenshot folder of the latest capture: the settings are read once per capture
+    /// (<see cref="ReadFolder"/>), not on every use by the card, the editor or a pin.
+    /// </summary>
+    public static string Folder => folder ?? ReadFolder();
+
+    /// <summary>Reads the folder from the settings again (a new capture is about to be saved).</summary>
+    internal static string ReadFolder() => folder = CaptureSettings.Load().ScreenshotFolder;
 
     public static void Start() => (controller ?? throw EngineComposition.NotComposed()).Start();
 
@@ -37,8 +44,8 @@ internal static class Screenshots
         return stream.ToArray();
     }
 
-    /// <summary>"Save as" for the editor and pins: null = cancelled, "" = error, otherwise the file name.</summary>
-    public static string? SaveAs(Window owner, BitmapSource image, string? suggestedName)
+    /// <summary>"Save as" for the editor and pins; <paramref name="fileName"/> is the chosen file's name (empty if cancelled).</summary>
+    public static SaveAsResult SaveAs(Window owner, BitmapSource image, string? suggestedName, out string fileName)
     {
         var dialog = new SaveFileDialog
         {
@@ -49,19 +56,27 @@ internal static class Screenshots
             DefaultExt = ".png",
             AddExtension = true
         };
-        if (dialog.ShowDialog(owner) != true) return null;
-        string extension = Path.GetExtension(dialog.FileName);
+        fileName = "";
+        if (dialog.ShowDialog(owner) != true) return SaveAsResult.Cancelled;
+        fileName = Path.GetFileName(dialog.FileName);
+        return Write(image, dialog.FileName);
+    }
+
+    /// <summary>Writes PNG, or JPEG for a .jpg/.jpeg name (without transparency); failures are logged.</summary>
+    internal static SaveAsResult Write(BitmapSource image, string file)
+    {
+        string extension = Path.GetExtension(file);
         bool jpeg = string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase) || string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase);
         if (jpeg) image = new FormatConvertedBitmap(image, PixelFormats.Bgr24, null, 0);   // JPEG has no transparency
         try
         {
-            File.WriteAllBytes(dialog.FileName, Encode(image, jpeg));
-            return Path.GetFileName(dialog.FileName);
+            File.WriteAllBytes(file, Encode(image, jpeg));
+            return SaveAsResult.Saved;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
         {
-            ErrorLog.Write("Saving a screenshot as " + dialog.FileName, ex);
-            return "";
+            ErrorLog.Write("Saving a screenshot as " + file, ex);
+            return SaveAsResult.Failed;
         }
     }
 
@@ -70,5 +85,14 @@ internal static class Screenshots
     /// numbered " (2)", " (3)", ... if the name is taken.
     /// </summary>
     internal static string NewPath(string folder, DateTime when) =>
-        UniqueFile.Next(Path.Combine(folder, UiText.Files.ScreenshotPrefix + when.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.CurrentCulture) + ".png"));
+        UniqueFile.Next(Path.Combine(folder, UiText.Files.ScreenshotPrefix + when.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture) + ".png"));
+}
+
+/// <summary>How "save as" ended.</summary>
+internal enum SaveAsResult
+{
+    Cancelled,
+    Saved,
+    /// <summary>The file could not be written (logged).</summary>
+    Failed,
 }

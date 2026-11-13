@@ -61,6 +61,20 @@ public sealed class CaptureSettingsTests
     }
 
     [Theory]
+    [InlineData(2047)]   // exactly what the first buffer holds
+    [InlineData(2400)]   // a long path the host accepts
+    [InlineData(32000)]  // near the longest Windows path
+    public void LongFoldersAreReadWhole(int length)
+    {
+        string folder = "C:\\" + new string('a', length - 3);
+        using var settings = new TestSettings("[capture]\r\nscreenshot_folder=" + folder + "\r\nrecording_folder=" + folder + "\r\n");
+        var loaded = settings.Load();
+
+        Assert.Equal(folder, loaded.ScreenshotFolder);
+        Assert.Equal(folder, loaded.RecordingFolder);
+    }
+
+    [Theory]
     [InlineData("fps=45", 60, 3)]
     [InlineData("fps=abc", 60, 3)]
     [InlineData("fps=", 60, 3)]

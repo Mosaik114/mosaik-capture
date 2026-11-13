@@ -22,6 +22,8 @@ internal static class VideoExport
         double length = Math.Max(0.1, to - from);
         var dispatcher = Application.Current.Dispatcher;
         var reporter = new MonotonicProgress(p => dispatcher.BeginInvoke(new Action(() => { if (!cancellation.IsCancellationRequested) progress(p); })));
+        var uiThread = TaskScheduler.FromCurrentSynchronizationContext();
+        var work = EngineActivity.Start();   // the engine must not quit under a running ffmpeg (ends once the partial file is gone, too)
         Task.Run(async () =>
         {
             string? target = null;
@@ -40,6 +42,7 @@ internal static class VideoExport
         }, cancellation)
             .ContinueWith(task =>
             {
+                work.End();
                 if (task.IsCanceled || cancellation.IsCancellationRequested) return;
                 if (task.IsFaulted)
                 {
@@ -47,13 +50,9 @@ internal static class VideoExport
                     done(null, task.Exception!.InnerException!.Message);
                 }
                 else done(task.Result, null);
-            }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.FromCurrentSynchronizationContext());
+            }, CancellationToken.None, TaskContinuationOptions.None, uiThread);
     }
 
-    /// <summary>
-    /// Target file next to the source: its name plus <see cref="UiText.Files.TrimmedSuffix"/> as MP4, or its
-    /// name as GIF; numbered instead of overwriting an earlier export.
-    /// </summary>
     /// <summary>
     /// Like <see cref="ExportTarget"/>, but creates the (empty) file at once, so a second export started
     /// meanwhile gets the next number instead of the same name. ffmpeg then overwrites it.
@@ -73,6 +72,10 @@ internal static class VideoExport
         }
     }
 
+    /// <summary>
+    /// Target file next to the source: its name plus <see cref="UiText.Files.TrimmedSuffix"/> as MP4, or its
+    /// name as GIF; numbered instead of overwriting an earlier export.
+    /// </summary>
     internal static string ExportTarget(string source, bool gif) =>
         UniqueFile.Next(Path.Combine(Path.GetDirectoryName(source)!, Path.GetFileNameWithoutExtension(source) + (gif ? ".gif" : UiText.Files.TrimmedSuffix + ".mp4")));
 

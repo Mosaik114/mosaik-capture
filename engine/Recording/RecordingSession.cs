@@ -59,6 +59,12 @@ internal sealed class RecordingSession : IRecordingSession
 
     internal const string ConcatListName = "segments.txt";
 
+    /// <summary>In a work folder kept after a failed save (see <see cref="RawDataFolder"/>): never removed as a leftover.</summary>
+    internal const string KeptMarkerName = "kept-after-failed-save.txt";
+
+    /// <summary>Longest wait for the audio thread to release its tracks before the raw data is moved.</summary>
+    static readonly TimeSpan AudioReleaseTimeout = TimeSpan.FromSeconds(5);
+
     /// <summary>A piece of video between two pauses.</summary>
     sealed class Segment
     {
@@ -346,6 +352,8 @@ internal sealed class RecordingSession : IRecordingSession
             {
                 foreach (var segment in all)
                     if (!segment.Errors.IsEmpty) reason = FfmpegOutput.LastLine(segment.Errors.ToString());
+                if (all.Any(s => File.Exists(s.File) && new FileInfo(s.File).Length > 0)) await KeepRawDataAsync(path).ConfigureAwait(false);
+                else DeleteWorkDirectory();   // not a single frame: nothing worth keeping
                 return null;
             }
 
@@ -357,7 +365,7 @@ internal sealed class RecordingSession : IRecordingSession
             var args = Assemble(list, tracks, parts.Select(p => Math.Max(0, audio.Offset(p.AudioClockStart) + p.ProbedStart)).ToList(),
                 parts.Select(p => p.ProbedDuration).ToList(), path);
             var result = await services.Runner.RunAsync(FfmpegProgram.Ffmpeg, args, FfmpegTimeouts.ForMedia(parts.Sum(p => p.ProbedDuration)), cancellation).ConfigureAwait(false);
-            if (!result.Succeeded || !File.Exists(path)) return Failed(FfmpegOutput.LastLine(result.Error), path);
+            if (!result.Succeeded || !File.Exists(path)) return await FailedAsync(FfmpegOutput.LastLine(result.Error), path).ConfigureAwait(false);
             var video = await services.LoadVideo(path, cancellation).ConfigureAwait(false);
             DeleteWorkDirectory();
             return video;
@@ -365,23 +373,51 @@ internal sealed class RecordingSession : IRecordingSession
         catch (OperationCanceledException ex)
         {
             ErrorLog.Write("Assembling a recording was cancelled (save timeout)", ex);
-            return Failed(UiText.Common.FfmpegTimedOut, path);
+            return await FailedAsync(UiText.Common.FfmpegTimedOut, path).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is TimeoutException or InvalidOperationException or Win32Exception or IOException or UnauthorizedAccessException)
         {
             ErrorLog.Write("Assembling a recording", ex);
-            return Failed(ex.Message, path);
+            return await FailedAsync(ex.Message, path).ConfigureAwait(false);
         }
     }
 
-    // The segments stay in the work folder (removed with a later recording); a partial result goes.
-    RecordedVideo? Failed(string failure, string path)
+    // A partial result goes; the raw segments and tracks are kept for rescue.
+    async Task<RecordedVideo?> FailedAsync(string failure, string path)
     {
         reason = failure;
         try { File.Delete(path); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ErrorLog.Write("Removing a partial recording", ex); }   // still locked: left behind
+        await KeepRawDataAsync(path).ConfigureAwait(false);
         return null;
     }
+
+    /// <summary>
+    /// Saving failed, but the recording may still be rescued: the work folder moves next to the target as
+    /// "&lt;name&gt; (Rohdaten)". If it cannot move (another drive, still locked), it stays in the work folder,
+    /// marked with <see cref="KeptMarkerName"/> so the leftover cleanup never deletes it.
+    /// </summary>
+    async Task KeepRawDataAsync(string path)
+    {
+        await Task.WhenAny(audio.Finished, Task.Delay(AudioReleaseTimeout)).ConfigureAwait(false);   // the audio thread lets go of its tracks
+        string name = Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + UiText.Files.RawDataSuffix), target = name;
+        for (int i = 2; Directory.Exists(target) || File.Exists(target); i++) target = name + " (" + i + ")";
+        try
+        {
+            Directory.Move(WorkDirectory, target);
+            RawDataFolder = target;
+            return;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ErrorLog.Write("Moving the raw data of a failed recording to " + target + " (kept in the work folder)", ex);
+        }
+        RawDataFolder = WorkDirectory;
+        try { File.WriteAllText(Path.Combine(WorkDirectory, KeptMarkerName), path); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ErrorLog.Write("Marking the raw data of a failed recording", ex); }
+    }
+
+    public string? RawDataFolder { get; private set; }
 
     // While the audio thread still holds its track files, the folder is removed once it lets go.
     void DeleteWorkDirectory() =>

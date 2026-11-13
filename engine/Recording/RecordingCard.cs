@@ -4,12 +4,11 @@ using System.Windows.Documents;
 namespace MosaikCapture.Engine.Recording;
 
 /// <summary>
-/// Card in the bottom right after a recording (like the screenshot card): thumbnail, file name and
-/// size, trim / GIF / folder / delete. Also shows "saving…", GIF progress and errors.
+/// Card in the bottom right after a recording (like the screenshot card, see <see cref="CardChrome"/>):
+/// thumbnail, file name and size, trim / GIF / folder / delete. Also shows "saving…", GIF progress and errors.
 /// </summary>
 internal sealed class RecordingCard : Window
 {
-    const double ContentWidth = 314, MaxThumbnailHeight = 176, PlaceholderHeight = 90;
     const int LifetimeMs = 8000;
     readonly IntPtr hwnd;
     readonly Border card, thumbnailBox, lengthChip, playChip, statusChip;
@@ -30,7 +29,7 @@ internal sealed class RecordingCard : Window
         ToolWindows.Setup(this, UiText.Titles.RecordingCard);
         SizeToContent = SizeToContent.WidthAndHeight;
 
-        thumbnail = new Image { Stretch = Stretch.Fill, Cursor = Cursors.Hand, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        thumbnail = CardChrome.Thumbnail();
         playChip = BuildPlayChip();
         lengthText = new TextBlock { FontSize = 11, FontFamily = Palette.UiFont, Foreground = Palette.Light };
         lengthChip = BuildLengthChip(lengthText);
@@ -39,61 +38,26 @@ internal sealed class RecordingCard : Window
         thumbnailBox = BuildThumbnailBox();
 
         statusGlyph = ToolWindows.Glyph(IconGlyphs.Accept, 11);
-        statusChip = BuildStatusChip(statusGlyph);
-        title = BuildTitle();
-        subtitle = BuildSubtitle();
-        buttons = new UniformGrid { Rows = 1, Margin = new Thickness(0, 12, 0, 0) };
-        card = BuildCard();
+        statusChip = CardChrome.StatusChip(statusGlyph);
+        title = CardChrome.Title();
+        subtitle = CardChrome.Subtitle();
+        buttons = CardChrome.ButtonRow();
+        var transforms = new TransformGroup();
+        transforms.Children.Add(barScale);
+        transforms.Children.Add(barMove);
+
+        var layout = new StackPanel();
+        layout.Children.Add(thumbnailBox);
+        layout.Children.Add(CardChrome.Header(statusChip, title, subtitle));
+        layout.Children.Add(buttons);
+        var track = CardChrome.BarTrack(transforms);   // life time countdown, indeterminate "saving" bar or GIF progress
+        track.ClipToBounds = true;                     // the indeterminate bar sweeps beyond both ends
+        layout.Children.Add(track);
+        card = CardChrome.Frame(layout, slide);
         Content = card;
 
         HookUpMouse();
         hwnd = ToolWindows.Handle(this, NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOOLWINDOW);
-    }
-
-    static Border BuildStatusChip(TextBlock glyph)
-    {
-        glyph.SetResourceReference(TextBlock.ForegroundProperty, Palette.Accent);
-        var chip = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Margin = new Thickness(0, 1, 10, 0), VerticalAlignment = VerticalAlignment.Top, Child = glyph };
-        chip.SetResourceReference(Border.BackgroundProperty, Palette.AccentSoft);
-        return chip;
-    }
-
-    static TextBlock BuildTitle()
-    {
-        var text = new TextBlock { FontFamily = Palette.TitleFont, FontSize = 17 };
-        text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
-        return text;
-    }
-
-    static TextBlock BuildSubtitle()
-    {
-        var text = new TextBlock { FontFamily = Palette.UiFont, FontSize = 12, Margin = new Thickness(0, 3, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
-        text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Muted);
-        return text;
-    }
-
-    Border BuildCard()
-    {
-        var layout = new StackPanel();
-        layout.Children.Add(thumbnailBox);
-        layout.Children.Add(BuildHeader());
-        layout.Children.Add(buttons);
-        layout.Children.Add(BuildProgressTrack());
-        var border = new Border
-        {
-            Width = ContentWidth + 26,
-            Margin = new Thickness(24),
-            Padding = new Thickness(12),
-            CornerRadius = new CornerRadius(14),
-            BorderThickness = new Thickness(1),
-            Child = layout,
-            Opacity = 0,
-            RenderTransform = slide,
-            Effect = Metrics.CardShadow()
-        };
-        border.SetResourceReference(Border.BackgroundProperty, Palette.Background);
-        border.SetResourceReference(Border.BorderBrushProperty, Palette.Line);
-        return border;
     }
 
     /// <summary>Tests: build the content but never show the window.</summary>
@@ -142,36 +106,7 @@ internal sealed class RecordingCard : Window
         layers.Children.Add(thumbnail);
         layers.Children.Add(playChip);
         layers.Children.Add(lengthChip);
-        var box = new Border { CornerRadius = new CornerRadius(8), Width = ContentWidth, Child = layers };
-        box.SetResourceReference(Border.BackgroundProperty, Palette.Hover);
-        return box;
-    }
-
-    DockPanel BuildHeader()
-    {
-        var texts = new StackPanel();
-        texts.Children.Add(title);
-        texts.Children.Add(subtitle);
-        var header = new DockPanel { Margin = new Thickness(2, 12, 2, 0) };
-        header.Children.Add(statusChip);
-        header.Children.Add(texts);
-        return header;
-    }
-
-    // Life time countdown, indeterminate "saving" bar or GIF progress.
-    Grid BuildProgressTrack()
-    {
-        var track = new Grid { Height = 3, Margin = new Thickness(3, 12, 3, 0), ClipToBounds = true };
-        var rail = new Border { CornerRadius = new CornerRadius(1.5) };
-        rail.SetResourceReference(Border.BackgroundProperty, Palette.Line);
-        var transforms = new TransformGroup();
-        transforms.Children.Add(barScale);
-        transforms.Children.Add(barMove);
-        var bar = new Border { CornerRadius = new CornerRadius(1.5), RenderTransform = transforms };
-        bar.SetResourceReference(Border.BackgroundProperty, Palette.Accent);
-        track.Children.Add(rail);
-        track.Children.Add(bar);
-        return track;
+        return CardChrome.ThumbnailBox(layers);
     }
 
     void HookUpMouse()
@@ -201,22 +136,9 @@ internal sealed class RecordingCard : Window
         };
     }
 
-    Border ActionButton(string glyph, string label, Action click)
-    {
-        var icon = ToolWindows.Glyph(glyph, 15);
-        icon.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text);
-        var text = new TextBlock { Text = label, FontSize = 11, FontFamily = Palette.UiFont, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 4, 0, 0) };
-        text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Muted);
-        var content = new StackPanel();
-        content.Children.Add(icon);
-        content.Children.Add(text);
-        var button = new Border { CornerRadius = new CornerRadius(8), Margin = new Thickness(3, 0, 3, 0), Padding = new Thickness(0, 7, 0, 6), Child = content, Cursor = Cursors.Hand };
-        button.SetResourceReference(Border.BackgroundProperty, Palette.Hover);
-        button.MouseEnter += delegate { button.SetResourceReference(Border.BackgroundProperty, Palette.Selected); text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Text); };
-        button.MouseLeave += delegate { button.SetResourceReference(Border.BackgroundProperty, Palette.Hover); text.SetResourceReference(TextBlock.ForegroundProperty, Palette.Muted); };
-        button.MouseLeftButtonUp += delegate { if (ready) click(); };
-        return button;
-    }
+    // Only while the buttons are shown (not during a GIF export or after deleting).
+    Border ActionButton(string glyph, string label, Action click) =>
+        CardChrome.ActionButton(glyph, label, delegate { if (buttons.Visibility == Visibility.Visible) click(); });
 
     // ---------- States ----------
 
@@ -237,6 +159,21 @@ internal sealed class RecordingCard : Window
         StartLifetime();
     }
 
+    /// <summary>Saving failed: the reason, and the kept raw data to open (if any) so the recording can be rescued.</summary>
+    public void SaveFailed(string reason, string? rawDataFolder, RECT work)
+    {
+        ShowPlaceholder(work, UiText.Recording.Failed, reason, IconGlyphs.Warning);
+        statusChip.Visibility = Visibility.Visible;
+        if (rawDataFolder != null)
+        {
+            buttons.Children.Clear();
+            buttons.Children.Add(ActionButton(IconGlyphs.Folder, UiText.Recording.OpenRawData, delegate { Shell.Open(rawDataFolder); }));
+            buttons.Visibility = Visibility.Visible;
+        }
+        Place();
+        StartLifetime();
+    }
+
     void ShowPlaceholder(RECT work, string heading, string detail, string status)
     {
         workArea = work;
@@ -247,7 +184,7 @@ internal sealed class RecordingCard : Window
         thumbnail.Source = null;
         thumbnail.Visibility = playChip.Visibility = lengthChip.Visibility = Visibility.Collapsed;
         placeholderGlyph.Visibility = Visibility.Visible;
-        thumbnailBox.Height = PlaceholderHeight;
+        thumbnailBox.Height = CardChrome.MinThumbnailHeight;
         title.Text = heading;
         subtitle.Text = detail;
         statusGlyph.Text = status;
@@ -261,7 +198,9 @@ internal sealed class RecordingCard : Window
         ready = true;
         generation++;
         Palette.Apply(Resources);
-        ShowThumbnail(recorded.Thumbnail);
+        CardChrome.ShowThumbnail(thumbnail, thumbnailBox, recorded.Thumbnail);
+        thumbnail.Visibility = lengthChip.Visibility = playChip.Visibility = Visibility.Visible;
+        placeholderGlyph.Visibility = recorded.Thumbnail == null ? Visibility.Visible : Visibility.Collapsed;
         lengthText.Text = UiText.Recording.Length(recorded.Gif, Formats.Clock(Math.Round(recorded.Duration)));
         title.Text = heading;
         subtitle.Text = UiText.Recording.FileInfo(Path.GetFileName(recorded.Path), Formats.FileSize(recorded.Bytes));
@@ -279,24 +218,6 @@ internal sealed class RecordingCard : Window
         buttons.Visibility = Visibility.Visible;
         Place();
         if (!card.IsMouseOver) StartLifetime(); else counting = true;
-    }
-
-    // Keeps the aspect ratio with rounded corners; tall images get narrower instead of cropped.
-    void ShowThumbnail(BitmapSource? image)
-    {
-        double width = ContentWidth, height = PlaceholderHeight;
-        if (image != null && image.PixelWidth > 0)
-        {
-            height = ContentWidth * image.PixelHeight / image.PixelWidth;
-            if (height > MaxThumbnailHeight) { width = width * MaxThumbnailHeight / height; height = MaxThumbnailHeight; }
-        }
-        thumbnail.Source = image;
-        thumbnail.Width = width;
-        thumbnail.Height = height;
-        thumbnail.Clip = new RectangleGeometry(new Rect(0, 0, width, height), 8, 8);
-        thumbnail.Visibility = lengthChip.Visibility = playChip.Visibility = Visibility.Visible;
-        placeholderGlyph.Visibility = image == null ? Visibility.Visible : Visibility.Collapsed;
-        thumbnailBox.Height = Math.Max(height, PlaceholderHeight);
     }
 
     /// <summary>GIF export in progress: hide the buttons, the bar shows progress.</summary>
@@ -332,27 +253,10 @@ internal sealed class RecordingCard : Window
         barScale.ScaleX = fraction;
     }
 
-    // Bottom right of the work area; slides in softly when first shown.
     void Place()
     {
         if (Offscreen) { card.Opacity = 1; return; }
-        bool appearing = !IsVisible;
-        if (appearing)
-        {
-            Left = -10000;
-            Show();
-        }
-        UpdateLayout();
-        double scale = ToolWindows.Scale(hwnd);
-        int width = (int)Math.Round(ActualWidth * scale), height = (int)Math.Round(ActualHeight * scale);
-        NativeMethods.MoveTopmost(hwnd, workArea.right - width, workArea.bottom - height);
-        var duration = Motion.SlideIn;
-        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-        var fade = new DoubleAnimation(1, duration) { EasingFunction = ease };
-        var rise = new DoubleAnimation(0, duration) { EasingFunction = ease };
-        if (appearing) { fade.From = 0; rise.From = 12; }
-        card.BeginAnimation(OpacityProperty, fade);
-        slide.BeginAnimation(TranslateTransform.YProperty, rise);
+        CardChrome.SlideIn(this, hwnd, card, slide, workArea);
     }
 
     void StartIndeterminateBar()
@@ -360,7 +264,7 @@ internal sealed class RecordingCard : Window
         counting = false;
         barScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         barScale.ScaleX = 0.3;
-        double trackWidth = ContentWidth - 6;
+        double trackWidth = CardChrome.ContentWidth - 6;
         barMove.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(-0.3 * trackWidth, trackWidth, Motion.IndeterminateSweep)
         {
             RepeatBehavior = RepeatBehavior.Forever,
@@ -375,9 +279,7 @@ internal sealed class RecordingCard : Window
         int started = generation;
         barMove.BeginAnimation(TranslateTransform.XProperty, null);
         barMove.X = 0;
-        var run = new DoubleAnimation(1, 0, new Duration(TimeSpan.FromMilliseconds(LifetimeMs)));
-        run.Completed += delegate { if (started == generation && !card.IsMouseOver && barScale.ScaleX <= 0.001) FadeOut(); };
-        barScale.BeginAnimation(ScaleTransform.ScaleXProperty, run);
+        CardChrome.RunDown(barScale, LifetimeMs, delegate { if (started == generation && !card.IsMouseOver && barScale.ScaleX <= 0.001) FadeOut(); });
     }
 
     // Moves the file to the recycle bin so it can be restored.
@@ -400,14 +302,12 @@ internal sealed class RecordingCard : Window
         int fadingAt = ++generation;
         counting = false;
         barScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        var fade = new DoubleAnimation(0, Motion.FadeOut) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } };
-        fade.Completed += delegate
+        CardChrome.FadeOut(card, delegate
         {
             if (fadingAt != generation) return;
             Hide();
             thumbnail.Source = null;
             video = null;
-        };
-        card.BeginAnimation(OpacityProperty, fade);
+        });
     }
 }

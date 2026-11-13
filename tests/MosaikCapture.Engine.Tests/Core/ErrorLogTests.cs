@@ -115,20 +115,41 @@ public sealed class ErrorLogTests : IDisposable
     }
 
     [Fact]
-    public void NoRestartWhenCrashingInTheFirstMinute()
+    public void NoRestartWhenCrashingInTheFirstMinute() => WithRestartState(() =>
+    {
+        Program.StartTimestamp = Stopwatch.GetTimestamp();
+        int starts = 0;
+
+        Assert.False(Program.Restart(() => ++starts > 0));
+        Assert.False(Program.Restart(() => ++starts > 0));   // the guard makes a second crash report a no-op
+
+        Assert.Equal(0, starts);
+        Assert.Single(Regex.Matches(Log(), "Restart not started: crashed within the first minute"));
+        Assert.Single(Regex.Matches(Log(), "Restart not started: a restart was attempted already"));
+        Assert.DoesNotContain("Restart started", Log());
+        Assert.True(Program.RestartAttempted);
+    });
+
+    [Theory]
+    [InlineData(true, "Restart started")]
+    [InlineData(false, "Restart not started: the new engine could not be started")]
+    public void TheLogSaysWhetherTheRestartHappened(bool started, string expected) => WithRestartState(() =>
+    {
+        Program.StartTimestamp = Stopwatch.GetTimestamp() - 90 * Stopwatch.Frequency;
+
+        Assert.Equal(started, Program.Restart(() => started));
+
+        Assert.Single(Regex.Matches(Log(), Regex.Escape(expected)));
+    });
+
+    static void WithRestartState(Action body)
     {
         long started = Program.StartTimestamp;
         bool attempted = Program.RestartAttempted;
         try
         {
-            Program.StartTimestamp = Stopwatch.GetTimestamp();
             Program.RestartAttempted = false;
-
-            Program.Restart();
-            Program.Restart();   // the guard makes a second crash report a no-op
-
-            Assert.Single(Regex.Matches(Log(), "No restart: crashed within the first minute"));
-            Assert.True(Program.RestartAttempted);
+            body();
         }
         finally
         {

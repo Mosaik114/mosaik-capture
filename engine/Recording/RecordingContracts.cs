@@ -27,6 +27,8 @@ internal interface IRecordingSession
     float MicrophoneLevel { get; }
     /// <summary>True if the sound could not be recorded although the video was.</summary>
     bool AudioLost { get; }
+    /// <summary>After a failed save: where the raw segments and sound tracks were kept (null if nothing was).</summary>
+    string? RawDataFolder { get; }
 
     /// <summary>ffmpeg stopped on its own (raised on a background thread).</summary>
     event Action? Broke;
@@ -86,6 +88,8 @@ internal interface IRecordingUi
     void StopClickHighlights();
     void ShowSaving(double seconds, RECT work);
     void ShowProblem(string heading, string reason, RECT work);
+    /// <summary>The recording could not be saved; <paramref name="rawDataFolder"/> (if any) is offered for rescue.</summary>
+    void ShowSaveFailed(string reason, string? rawDataFolder, RECT work);
     void ShowRecording(RecordedVideo video, string heading, RECT work);
     /// <summary>Puts the file on the clipboard; false if another app held the clipboard too long.</summary>
     Task<bool> CopyFileToClipboardAsync(string path);

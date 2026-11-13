@@ -7,6 +7,7 @@ internal sealed partial class ScreenshotEditor
 
     public void Open(ScreenCapture screenshot)
     {
+        shown.Begin();
         Load(screenshot);
         NativeMethods.Cloak(hwnd, true);   // finish rendering first, then reveal
         Width = root.Width;
@@ -160,10 +161,12 @@ internal sealed partial class ScreenshotEditor
         }
         else if (interaction.Tool is Tool.Pixel or Tool.Blur or Tool.Spot)
         {
-            // only a dashed frame; the result is created on release
+            // only a dashed frame; the result is created on release. It lies on the screenshot, not on the
+            // theme: light dashes with a dark outline show on white and on black content alike.
             stroke.StrokeThickness = 1.5;
             stroke.StrokeDashArray = new DoubleCollection(new double[] { 3, 3 });
-            stroke.SetResourceReference(Shapes.Shape.StrokeProperty, Palette.Text);
+            stroke.Stroke = Palette.Light;
+            stroke.Effect = RegionFrameOutline;
         }
         snap.Reset();
         if (interaction.Tool is Tool.Pen or Tool.Marker)
