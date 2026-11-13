@@ -140,6 +140,7 @@ internal sealed partial class ScreenshotEditor
 
     void HideAndReset()
     {
+        shown.End();
         NativeMethods.Cloak(hwnd, true);
         if (IsMouseCaptured) ReleaseMouseCapture();
         interaction.Reset();

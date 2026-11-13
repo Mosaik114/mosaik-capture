@@ -89,6 +89,7 @@ internal sealed class ScreenshotController : IScreenshotFlow
     {
         ui.ShowCard(capture, heading);
         byte[] png;
+        var saving = EngineActivity.Start();   // the engine must not quit before the file is written
         try
         {
             png = await store.SaveAsync(capture.Image, capture.Path);
@@ -99,6 +100,7 @@ internal sealed class ScreenshotController : IScreenshotFlow
             ui.CardFailed();
             return;
         }
+        finally { saving.End(); }
         lastCopied = await store.CopyAsync(capture.Image, png);
         if (lastCopied) ui.CardSaved();
         else ui.CardSavedNotCopied();

@@ -7,6 +7,7 @@ internal sealed partial class ScreenshotEditor
 
     public void Open(ScreenCapture screenshot)
     {
+        shown.Begin();
         Load(screenshot);
         NativeMethods.Cloak(hwnd, true);   // finish rendering first, then reveal
         Width = root.Width;

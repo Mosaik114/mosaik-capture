@@ -40,8 +40,8 @@ things on each side: they are addressed to different windows.
 |---|---|---|
 | host → engine | `CreateProcess` `--screenshot` / `--recording` | first capture: start the engine with a command |
 | host → engine | `PostMessage` `WM_APP+1` / `+2` to the hidden window titled `MosaikCapture.Engine` | screenshot / toggle recording |
-| host → engine | `WM_APP+3` | quit (ignored while the engine is busy: selection, countdown, recording or saving) |
-| host → engine | `SendMessageTimeout` `WM_APP+10` | state query: bit 0 = busy (selection/countdown/recording), bit 1 = recording live |
+| host → engine | `WM_APP+3` | quit (ignored while the engine is busy, the same state as bit 0 below) |
+| host → engine | `SendMessageTimeout` `WM_APP+10` | state query: bit 0 = busy (a recording in any phase from picking the area to saving, the screenshot overlay or editor open, a screenshot being saved, the trim window open or a trim/GIF export running), bit 1 = recording live |
 | engine → host | `PostMessage` `WM_APP+20` to window class `MosaikCapture.Host` | microphone / system sound / click display toggled in the recording bar (bits 0–2), so the host persists them |
 | anyone → host | second start of the host with `--screenshot`, `--recording`, `--quit`, `--probe`, and a bare `recording` (show settings at the recording section) | forwarded to the running instance (`WM_APP+1…+4`, `+9`, `+10`); see the exit codes below |
 
@@ -65,7 +65,7 @@ The host's exit codes are part of the contract for scripts and for the engine:
 | 8 | window or one of its controls could not be created |
 | 9 | forwarded action was not answered (running instance hung) |
 | 10 | message loop failed |
-| 11 | `--quit` refused (recording or selection in progress, a dialog open, or still starting) |
+| 11 | `--quit` refused (the engine is busy, see the state query above; a dialog open; or still starting) |
 
 The engine window is only trusted if its process runs `MosaikCapture.Engine.exe` from the
 host's own folder, so a foreign window with the same title is never messaged.

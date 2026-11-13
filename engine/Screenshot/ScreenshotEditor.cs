@@ -85,7 +85,8 @@ internal sealed partial class ScreenshotEditor : Window
     ScreenCapture capture = null!;                // set by Load(), cleared by HideAndReset()
     double scale = 1;                             // device pixels per WPF unit
     readonly EditorInteraction interaction = new();
-    FrameworkElement? numberPreview;              // semi-transparent preview of the next number at the pointer
+    readonly EngineWork shown = new();            // the open editor holds unsaved markup: the engine must not quit
+    FrameworkElement? numberPreview;             // semi-transparent preview of the next number at the pointer
     string? numberPreviewKey;
     Point pointer;
     Shapes.Path? stroke;
@@ -238,6 +239,7 @@ internal sealed partial class ScreenshotEditor : Window
     /// <summary>After an error elsewhere in the screenshot flow: closes without reporting back.</summary>
     internal void Abandon()
     {
+        shown.End();   // also when opening failed before the window was shown
         if (IsVisible) HideAndReset();
     }
 

@@ -15,8 +15,8 @@ namespace MosaikCapture.Engine.Core;
 /// <list type="table">
 /// <item><term>0x8001</term><description>take a screenshot</description></item>
 /// <item><term>0x8002</term><description>start / stop a screen recording</description></item>
-/// <item><term>0x8003</term><description>quit (ignored while a recording is busy)</description></item>
-/// <item><term>0x800A</term><description>query state: bit 0 = busy, bit 1 = live (counting down or recording)</description></item>
+/// <item><term>0x8003</term><description>quit (ignored while <see cref="EngineActivity.Busy"/>: a recording, the overlay, editor or trim window, a save or an export)</description></item>
+/// <item><term>0x800A</term><description>query state: bit 0 = busy (the same <see cref="EngineActivity.Busy"/>), bit 1 = live (counting down or recording)</description></item>
 /// </list>
 /// <para>
 /// Trust model: the window is found by its title, so any process of the same user in the same session can
@@ -158,6 +158,17 @@ internal static class CaptureBridge
     /// <summary>Reply to <see cref="StateMessage"/>.</summary>
     internal static int StateFlags(bool busy, bool live) => (busy ? 1 : 0) | (live ? 2 : 0);
 
+    /// <summary>The engine's state as replied to <see cref="StateMessage"/>.</summary>
+    internal static int State() => StateFlags(EngineActivity.Busy, ScreenRecorder.Live);
+
+    /// <summary><see cref="QuitMessage"/>: shuts down unless that would lose work; true if it did.</summary>
+    internal static bool Quit(Action shutdown)
+    {
+        if (EngineActivity.Busy) return false;
+        shutdown();
+        return true;
+    }
+
     static void Execute(int command)
     {
         if (command == (int)Command.Screenshot) Screenshots.StartSoon();
@@ -174,13 +185,13 @@ internal static class CaptureBridge
                 if (commandLimit.Allow(Stopwatch.GetTimestamp())) Execute(message - CommandBase);
                 else ErrorLog.Write("Ignored a capture command: too many per second", null);
                 break;
-            case QuitMessage when !ScreenRecorder.Busy:
+            case QuitMessage:
                 handled = true;
-                Application.Current.Shutdown();
+                Quit(() => Application.Current.Shutdown());
                 break;
             case StateMessage:
                 handled = true;
-                return new IntPtr(StateFlags(ScreenRecorder.Busy, ScreenRecorder.Live));
+                return new IntPtr(State());
         }
         return IntPtr.Zero;
     }

@@ -26,6 +26,7 @@ internal sealed class SelectionOverlay : Window
     readonly TextBlock sizeText, colorText, positionText, hintText;
     readonly List<Rect> windows = new();     // visible windows from top to bottom, relative to the virtual screen
     readonly List<RECT> monitors = new(), workAreas = new();
+    readonly EngineWork shown = new();       // counts as busy while open: the engine must not quit under the user
 
     BitmapSource? screen;
     Int32Rect virtualScreen;                 // in device pixels
@@ -240,6 +241,7 @@ internal sealed class SelectionOverlay : Window
     // Show cloaked and let it render, then uncloak: no black flash.
     void RevealWhenRendered()
     {
+        shown.Begin();
         NativeMethods.Cloak(hwnd, true);
         Width = virtualScreen.Width / scale;
         Height = virtualScreen.Height / scale;
@@ -450,6 +452,7 @@ internal sealed class SelectionOverlay : Window
 
     void Dismiss()
     {
+        shown.End();
         NativeMethods.Cloak(hwnd, true);
         pressed = dragging = false;
         if (IsMouseCaptured) ReleaseMouseCapture();
