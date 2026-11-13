@@ -17,12 +17,18 @@ Prerequisites: Rust (stable) and the .NET SDK 10. On Windows:
 ```
 
 This builds both programs into `bin\` and runs the Rust and C# test suites, including the
-pixel comparisons. The Rust end-to-end test creates a real (short-lived) settings window, so
-it is opt-in locally:
+pixel comparisons. Two Rust tests are opt-in locally: the end-to-end test creates a real
+(short-lived) settings window, and the cross-process test starts the engine from `bin\`
+(build it first). Both run under test-only names (`MOSAIK_CAPTURE_TEST_INSTANCE`), so they
+never meet an installed copy:
 
 ```powershell
 cargo test -- --include-ignored
 ```
+
+The host–engine contract (settings keys and defaults, message numbers, names, exit codes)
+lives in `contract/contract.json`. Change it together with both sides; each test suite checks
+its side against the file.
 
 ## What CI expects
 

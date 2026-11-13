@@ -91,8 +91,9 @@ productive way to build rich, high-DPI desktop UI on Windows. The engine is star
 first capture and then stays resident, so later captures open instantly.
 
 The two processes talk only through window messages and session-local mutexes; the
-contract (message numbers, class names, command-line flags) is pinned by tests on both
-sides. Details — the recording pipeline, the testing strategy, what is deliberately not
+contract (settings keys and defaults, message numbers, class names, command-line flags) lives
+in one file, [`contract/contract.json`](contract/contract.json), which both test suites
+check against, and a cross-process test drives the real engine from the host code. Details — the recording pipeline, the testing strategy, what is deliberately not
 tested, and three engineering problems and how they were solved — are in
 [docs/architecture.md](docs/architecture.md).
 
@@ -145,7 +146,7 @@ without external resource tools, so both toolchains produce the same resources.
 
 | Check | Rust host | C# engine |
 |---|---|---|
-| Tests | 117 unit tests (hotkeys, settings, migration, CLI, forwarding, DPI, atomic writes, resource writer) + an end-to-end test that drives the real settings window | 443 xUnit cases: the recording and screenshot state machines with fakes (incl. recovery from UI errors), ffmpeg timeouts and cancellation, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, IPC contract, pixel comparisons of 13 UI states |
+| Tests | Unit tests (hotkeys, settings, migration, CLI, forwarding, DPI, atomic writes, resource writer, the shared contract) + an end-to-end test that drives the real settings window + a cross-process test against the built engine | xUnit tests: the recording and screenshot state machines with fakes (incl. recovery from UI errors), ffmpeg timeouts and cancellation, WASAPI padding/trimming, shape recognition, highlighter snapping, command-line quoting, real-ffmpeg trim/GIF/audio-sync runs, the shared contract, pixel comparisons of the UI |
 | Static analysis | `clippy::pedantic`, warnings as errors, every `unsafe` block carries a `// SAFETY:` note | Nullable reference types, .NET analyzers (`Recommended`), warnings as errors |
 | Formatting | `cargo fmt --check` | `dotnet format --verify-no-changes` |
 | Supply chain | `Cargo.lock`, a single dependency (`windows-sys`) | Central package management, `packages.lock.json`, locked restore |
@@ -182,6 +183,7 @@ NuGet and Actions, and gitleaks scans the full history on every push and weekly.
 src/                 Rust tray app
   main.rs            entry point, exit codes
   cli.rs             command-line parsing
+  isolation.rs       test-only names and folders, so a test instance never meets the real one
   single_instance.rs mutex and forwarding to the running instance
   hotkey.rs          "Shift+Alt+4" → RegisterHotKey (German and English key names)
   config.rs          settings model, defaults, validation (pure, unit-tested)
@@ -190,6 +192,7 @@ src/                 Rust tray app
   engine.rs, ipc.rs  launching and messaging the capture engine
   ui/                settings window, tray icon, theme, DPI-aware layout, folder picker
 build.rs, build/     embeds icon, manifest and version info (tested resource writer)
+contract/            contract.json: the host–engine contract both test suites check against
 engine/              C#/WPF capture engine (net48)
   Core/              entry point, IPC bridge, settings, error log, NativeMethods, UiText
   Screenshot/        grabber, overlay, editor (shapes, markup, mouse, result), card, pin, OCR

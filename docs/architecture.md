@@ -31,10 +31,14 @@ Mosaik Capture is two cooperating Windows processes:
 
 ## Inter-process contract
 
-The host keeps the contract in `src/ipc.rs` (its own messages) and `src/engine.rs`
-(the engine's), the engine in `engine/Core/CaptureBridge.cs`; both sides pin it with tests,
-so a change on one side fails that side's suite. Note that `WM_APP+1…+4` mean different
-things on each side: they are addressed to different windows.
+The contract is written down once, in [`contract/contract.json`](../contract/contract.json):
+settings keys, defaults and normalisation, default folder names, message numbers, window,
+class and mutex names, state bits, exit codes and the test-isolation rules. The host's tests
+(`src/contract.rs`) and the engine's (`ContractTests`) both load that file and check their
+constants and behaviour against it, so a change on one side fails until the file and the
+other side agree. A cross-process test (`engine::tests::quit_protocol_across_processes`)
+starts the built engine and drives the quit protocol from the host code. Note that
+`WM_APP+1…+4` mean different things on each side: they are addressed to different windows.
 
 | Direction | Mechanism | Meaning |
 |---|---|---|
@@ -52,23 +56,29 @@ writes (temporary file, flushed, then `MoveFileExW(REPLACE_EXISTING | WRITE_THRO
 engine only reads. On first start the host copies settings from the pre-1.0 location
 (`%LOCALAPPDATA%\Mosaiks-Aufnahme`) and replaces the old autostart value.
 
-The host's exit codes are part of the contract for scripts and for the engine:
+The host's exit codes are for scripts and CI; only outcomes a caller acts on have their own
+code:
 
 | Code | Meaning |
 |---|---|
 | 0 | success |
+| 1 | the app could not start, or the running instance did not take the forwarded action |
 | 3 | self-test failed |
-| 4 | single-instance mutex unavailable |
-| 5 | `--probe`: no running instance with registered hotkeys |
-| 6 | a running instance exists but its window was not found |
-| 7 | window class could not be registered |
-| 8 | window or one of its controls could not be created |
-| 9 | forwarded action was not answered (running instance hung) |
-| 10 | message loop failed |
+| 5 | `--probe`: no running instance with registered hotkeys (or it did not answer) |
 | 11 | `--quit` refused (recording or selection in progress, a dialog open, or still starting) |
 
 The engine window is only trusted if its process runs `MosaikCapture.Engine.exe` from the
-host's own folder, so a foreign window with the same title is never messaged.
+host's own folder (the image path Windows reports, compared case-insensitively), so a
+foreign window with the same title is never messaged.
+
+**Test isolation.** With `MOSAIK_CAPTURE_TEST_INSTANCE=<name>` set, both programs append
+`.Test.<name>` to every mutex, window class and title, keep their data below
+`%TEMP%\MosaikCapture.Test.<name>` instead of `%LOCALAPPDATA%`, and the host never touches
+autostart; the host passes the variables on to the engine it starts. Such an instance can
+neither reach nor block the real one, which is what the Rust end-to-end and cross-process
+tests use. `MOSAIK_CAPTURE_TEST_CONFIG=<ini>` picks the settings file (and alone isolates the
+host as instance `preview`), so the old `--preview <ini>` option is gone. Only an isolated
+engine accepts the test message that makes it report busy.
 
 ## Host internals (Rust)
 
@@ -90,7 +100,7 @@ main.rs ──► cli.rs (Command) ──► single_instance.rs ──► forwar
   `// SAFETY:` justification (enforced by `clippy::undocumented_unsafe_blocks`), and all
   logic — hotkey parsing, settings normalisation, INI layout, migration, argument parsing,
   DPI scaling — is pure Rust that the unit tests reach without a window.
-  The roughly 150 `unsafe` blocks are almost all single Win32 calls; there is no `unsafe` data
+  The `unsafe` blocks are almost all single Win32 calls; there is no `unsafe` data
   structure or pointer arithmetic beyond reading buffers that Windows hands back.
 - **Per-monitor DPI.** Layout is a table of controls in 96-DPI units; on `WM_DPICHANGED`
   fonts are rebuilt and every child is moved to the scaled rectangle.
@@ -178,15 +188,16 @@ pause/resume: closes the segment, opens a new one on the same clocks            
 
 | Layer | How it is tested |
 |---|---|
-| Pure logic (Rust) | `cargo test`, 117 unit tests: hotkey grammar, settings defaults/normalisation/migration, INI layout and a real round trip through the Win32 profile API on a temp file, CLI parsing, exit codes, forwarding to a fake running instance (incl. timeouts), retrying atomic writes, DPI scaling, COM vtable offsets, the resource writer against golden layouts |
+| Pure logic (Rust) | `cargo test`: hotkey grammar, settings defaults/normalisation/migration, INI layout and a real round trip through the Win32 profile API on a temp file, CLI parsing, exit codes, forwarding to a fake running instance (incl. timeouts), retrying atomic writes, DPI scaling, COM vtable offsets, the resource writer against golden layouts |
 | Host UI (Rust) | `cargo test -- --include-ignored` also creates the real settings window in-process (own window class, temp settings, unusual hotkeys) and drives save, validation, Enter/Escape, IPC and a DPI change; CI always runs it |
+| Contract (both) | `contract/contract.json` is loaded by both suites; the Rust side checks the keys and defaults it writes, how it reads numbers (through the real profile API), message numbers, bits, names and exit codes; the C# side checks the keys it reads and their defaults, number parsing, normalisation, names and messages. `cargo test -- --include-ignored` also starts the built engine (`bin\`) `--idle` under test-only names and checks that it reports idle and quits, and that it refuses to quit while (test-only) busy |
 | Engine logic (C#) | xUnit on a shared STA dispatcher thread: the recording state machine with fakes, WASAPI track padding/trimming with a fake capture client, shape recognition, highlighter snapping, selection geometry (including a randomized check over 5,000 rectangles), command-line quoting (500 random round trips through `CommandLineToArgvW`), settings parsing, error-log rotation |
 | Engine + ffmpeg | real ffmpeg runs: audio stays in sync after a pause, one or zero audio tracks, trim with and without sound, GIF export, broken input files (skipped when ffmpeg is missing) |
-| Visual | 5 pixel tests render 13 states of the real windows off-screen (editor toolbar, menu, scene; recording bar, card, frame, countdown; trim window) and compare them with reference images; on mismatch the actual image and a red diff are written. They skip, naming the font, when a reference font is missing; `MOSAIK_PIXEL_TOLERANCE=lenient` compares slightly blurred images to absorb font-version differences (used in CI) |
+| Visual | pixel tests render the states of the real windows off-screen (editor toolbar, menu, scene; recording bar, card, frame, countdown; trim window) and compare them with reference images; on mismatch the actual image and a red diff are written. They skip, naming the font, when a reference font is missing; `MOSAIK_PIXEL_TOLERANCE=lenient` compares slightly blurred images to absorb font-version differences (used in CI) |
 
-All suites run on every push. Only the settings-window end-to-end test creates a real
-window (briefly, with its own class and temp settings); nothing touches the real
-settings file or autostart entry.
+All suites run on every push. Only the settings-window end-to-end test and the
+cross-process test create real windows (briefly, under test-only names with temp
+settings); nothing touches the real settings file, data folder or autostart entry.
 
 **Not covered automatically:** live screen capture itself (Desktop Duplication needs a real,
 unlocked interactive desktop, which neither CI nor a hidden test desktop provides), real
