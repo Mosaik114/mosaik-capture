@@ -27,11 +27,12 @@ pub const FIELD: COLORREF = rgb(0x35, 0x34, 0x2F);
 pub const FIELD_PRESSED: COLORREF = rgb(0x2A, 0x29, 0x25);
 /// Regular text.
 pub const INK: COLORREF = rgb(0xFA, 0xF9, 0xF5);
-pub const ACCENT: COLORREF = rgb(0xD9, 0x77, 0x57);
-/// Primary button while pressed.
-pub const ACCENT_PRESSED: COLORREF = rgb(0xB8, 0x5F, 0x42);
+/// Turquoise fill of primary buttons: 4.6:1 with [`ON_ACCENT`], 3.1:1 against [`BACKGROUND`].
+pub const ACCENT: COLORREF = rgb(0x0B, 0x7F, 0x74);
+/// Primary button while pressed (darker, 6.1:1 with [`ON_ACCENT`]).
+pub const ACCENT_PRESSED: COLORREF = rgb(0x09, 0x6A, 0x61);
 /// Text on primary buttons.
-pub const ON_ACCENT: COLORREF = rgb(0x14, 0x14, 0x13);
+pub const ON_ACCENT: COLORREF = INK;
 /// Outline of secondary buttons.
 pub const BORDER: COLORREF = rgb(0x47, 0x47, 0x45);
 /// Status text for errors.
@@ -290,10 +291,31 @@ mod tests {
         assert_eq!(BACKGROUND, 0x0024_2626);
         assert_eq!(FIELD, 0x002F_3435);
         assert_eq!(INK, 0x00F5_F9FA);
-        assert_eq!(ACCENT, 0x0057_77D9);
-        assert_eq!(ON_ACCENT, 0x0013_1414);
+        assert_eq!(ACCENT, 0x0074_7F0B);
+        assert_eq!(ACCENT_PRESSED, 0x0061_6A09);
+        assert_eq!(ON_ACCENT, INK);
         assert_eq!(BORDER, 0x0045_4747);
         assert_eq!(ERROR, 0x0080_90F0);
+    }
+
+    /// WCAG 2 contrast ratio of two colours.
+    fn contrast(a: COLORREF, b: COLORREF) -> f64 {
+        fn luminance(color: COLORREF) -> f64 {
+            let channel = |shift: u32| {
+                let c = f64::from((color >> shift) & 0xFF) / 255.0;
+                if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * channel(0) + 0.7152 * channel(8) + 0.0722 * channel(16)
+        }
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn accent_buttons_are_readable() {
+        assert!(contrast(ON_ACCENT, ACCENT) >= 4.5);
+        assert!(contrast(ON_ACCENT, ACCENT_PRESSED) >= 4.5);
+        assert!(contrast(ACCENT, BACKGROUND) >= 3.0, "button stands out from the window");
     }
 
     #[test]
