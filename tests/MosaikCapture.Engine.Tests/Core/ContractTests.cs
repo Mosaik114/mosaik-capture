@@ -106,6 +106,17 @@ public sealed class ContractTests
     }
 
     [Fact]
+    public void TheLongestFolderTheHostWritesIsReadWhole()
+    {
+        int longest = Number("settings", "max_folder_length");
+
+        // The read buffer holds the value plus its terminator.
+        Assert.True(CaptureSettings.MaxValueLength - 1 >= longest, $"read cap {CaptureSettings.MaxValueLength} < {longest} + 1");
+        string folder = "C:\\" + new string('a', longest - 3);
+        Assert.Equal(folder, LoadIni("screenshot_folder=" + folder + "\r\n").ScreenshotFolder);
+    }
+
+    [Fact]
     public void ChoicesAreNormalizedOverTheWholeRange()
     {
         for (int value = -2; value <= 130; value++)
@@ -178,14 +189,26 @@ public sealed class ContractTests
             return (result, handled);
         }
 
+        int busyBit = Number("engine", "state_bits", "busy");
+        int shutdowns = 0;
         try
         {
-            Assert.False(Send(CaptureBridge.QuitMessage).Handled, "idle: quit reaches the bridge");
+            Assert.False(Send(CaptureBridge.QuitMessage).Handled, "quit always reaches the bridge");
+            Assert.False(Send(CaptureBridge.StateMessage).Handled, "so does the state query");
+            Assert.False(EngineActivity.Busy);
+
             Assert.Equal((new IntPtr(1), true), Send(TestIsolation.SimulateBusyMessage, 1));
-            Assert.True(Send(CaptureBridge.QuitMessage).Handled, "busy: quit is swallowed");
-            Assert.Equal((new IntPtr(Number("engine", "state_bits", "busy")), true), Send(CaptureBridge.StateMessage));
+            Assert.True(EngineActivity.Busy, "simulated work counts as the engine's own");
+            Assert.Equal(busyBit, CaptureBridge.State() & busyBit);
+            Assert.False(CaptureBridge.Quit(() => shutdowns++), "the bridge itself refuses");
+            Assert.False(Send(CaptureBridge.QuitMessage).Handled);
+
             Assert.Equal((new IntPtr(1), true), Send(TestIsolation.SimulateBusyMessage, 0));
-            Assert.False(Send(CaptureBridge.StateMessage).Handled);
+            Assert.False(EngineActivity.Busy);
+            Assert.Equal(0, CaptureBridge.State() & busyBit);
+            Assert.Equal(0, shutdowns);
+            Assert.True(CaptureBridge.Quit(() => shutdowns++));
+            Assert.Equal(1, shutdowns);
         }
         finally
         {

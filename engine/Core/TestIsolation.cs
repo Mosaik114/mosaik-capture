@@ -8,8 +8,9 @@ namespace MosaikCapture.Engine.Core;
 /// of %LOCALAPPDATA%. So a test engine can neither reach, block nor clean up after a real one.
 /// </summary>
 /// <remarks>
-/// Only an isolated engine accepts <see cref="SimulateBusyMessage"/> (wParam 1 = busy, 0 = idle): it then reports
-/// busy and ignores quit, which lets the host's cross-process test check the quit protocol without a capture.
+/// Only an isolated engine accepts <see cref="SimulateBusyMessage"/> (wParam 1 = busy, 0 = idle). It only sets
+/// <see cref="SimulatedBusy"/>, which <see cref="EngineActivity.Busy"/> includes: the bridge itself then reports busy
+/// and refuses quit, so the host's cross-process test checks the real quit path without a capture.
 /// </remarks>
 internal static class TestIsolation
 {
@@ -41,22 +42,12 @@ internal static class TestIsolation
         if (Instance != null) window.AddHook(OnMessage);
     }
 
-    /// <summary>Runs before the bridge's own hook (WPF calls the last added hook first).</summary>
+    /// <summary>Handles <see cref="SimulateBusyMessage"/> (replies 1); every other message goes on to the bridge.</summary>
     internal static IntPtr OnMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        switch (message)
-        {
-            case SimulateBusyMessage:
-                Volatile.Write(ref simulatedBusy, wParam != IntPtr.Zero ? 1 : 0);
-                handled = true;
-                return new IntPtr(1);
-            case CaptureBridge.QuitMessage when SimulatedBusy:
-                handled = true;   // refused, as by a busy engine
-                break;
-            case CaptureBridge.StateMessage when SimulatedBusy:
-                handled = true;
-                return new IntPtr(CaptureBridge.StateFlags(true, false));
-        }
-        return IntPtr.Zero;
+        if (message != SimulateBusyMessage) return IntPtr.Zero;
+        Volatile.Write(ref simulatedBusy, wParam != IntPtr.Zero ? 1 : 0);
+        handled = true;
+        return new IntPtr(1);
     }
 }

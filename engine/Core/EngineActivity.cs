@@ -4,7 +4,9 @@ namespace MosaikCapture.Engine.Core;
 /// Whether quitting the engine now would lose the user's work: one answer for the host's quit command
 /// and for its state query. Busy while a recording is in any phase (picking, countdown, recording, saving)
 /// or any <see cref="EngineWork"/> runs: the screenshot overlay or editor is open, a screenshot is being
-/// saved, the trim window is open or an export runs. Thread-safe (exports end on pool threads).
+/// saved, the trim window is open or an export runs. An isolated test engine can also be told to simulate
+/// work (<see cref="TestIsolation.SimulatedBusy"/>), so the host's cross-process test meets the real refusal.
+/// Thread-safe (exports end on pool threads).
 /// </summary>
 internal static class EngineActivity
 {
@@ -13,7 +15,7 @@ internal static class EngineActivity
     /// <summary>Pieces of <see cref="EngineWork"/> running now.</summary>
     public static int Running => Volatile.Read(ref running);
 
-    public static bool Busy => Running > 0 || ScreenRecorder.Busy;
+    public static bool Busy => Running > 0 || ScreenRecorder.Busy || TestIsolation.SimulatedBusy;
 
     /// <summary>Work that runs from now until <see cref="EngineWork.End"/> is called on the result.</summary>
     public static EngineWork Start()

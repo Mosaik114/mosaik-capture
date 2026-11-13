@@ -77,8 +77,8 @@ foreign window with the same title is never messaged.
 autostart; the host passes the variables on to the engine it starts. Such an instance can
 neither reach nor block the real one, which is what the Rust end-to-end and cross-process
 tests use. `MOSAIK_CAPTURE_TEST_CONFIG=<ini>` picks the settings file (and alone isolates the
-host as instance `preview`), so the old `--preview <ini>` option is gone. Only an isolated
-engine accepts the test message that makes it report busy.
+host as instance `preview`). Only an isolated engine accepts the test message that simulates
+work; it feeds the engine's own busy check, so the cross-process test meets the real refusal.
 
 ## Host internals (Rust)
 

@@ -359,7 +359,8 @@ mod tests {
     /// built engine (`bin\MosaikCapture.Engine.exe`, or `MOSAIK_CAPTURE_ENGINE_DIR`),
     /// started `--idle` under test-only names, with settings and data in a temp folder.
     /// The engine reports idle and quits; told to simulate work (the contract's
-    /// test-only message) it reports busy and refuses to quit.
+    /// test-only message, which counts toward the engine's own busy check) it reports
+    /// busy and refuses to quit through its real quit path.
     ///
     /// Ignored by default because it needs the engine built and starts a process; CI
     /// builds `bin\` and runs it with `--include-ignored`.
