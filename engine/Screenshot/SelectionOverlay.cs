@@ -36,7 +36,7 @@ internal sealed class SelectionOverlay : Window
     string color = "";
     bool forRecording;                       // picking an area for a screen recording instead of a screenshot
 
-    static readonly SolidColorBrush GuideBrush = Palette.Frozen(0x66, 0xD9, 0x77, 0x57);
+    static readonly SolidColorBrush GuideBrush = Palette.Frozen(0x66, 0x2A, 0xC8, 0xA6);   // bright turquoise: drawn over the dimmed screen
     static readonly DoubleCollection GuideDashes = Freeze(new DoubleCollection(new double[] { 4, 4 }));
 
     static DoubleCollection Freeze(DoubleCollection dashes)

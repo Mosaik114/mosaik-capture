@@ -61,12 +61,12 @@ internal static class LiveTest
         app.Run();
     }
 
-    // A dark window with a moving orange square, so the video has changing content.
+    // A dark window with a moving turquoise square, so the video has changing content.
     static (Window Window, DispatcherTimer Animation) CreateTestWindow()
     {
         var canvas = new Canvas { Background = new SolidColorBrush(Color.FromRgb(23, 58, 58)) };
         canvas.Children.Add(new TextBlock { Text = "Mosaik Capture · live test", Foreground = Brushes.White, FontSize = 30, Margin = new Thickness(30) });
-        var marker = new Shapes.Rectangle { Width = 100, Height = 100, Fill = new SolidColorBrush(Color.FromRgb(217, 119, 87)) };
+        var marker = new Shapes.Rectangle { Width = 100, Height = 100, Fill = new SolidColorBrush(Color.FromRgb(42, 200, 166)) };
         Canvas.SetTop(marker, 150);
         canvas.Children.Add(marker);
         var window = new Window

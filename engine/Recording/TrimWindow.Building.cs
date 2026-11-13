@@ -163,7 +163,7 @@ internal sealed partial class TrimWindow
         return button;
     }
 
-    // Button with icon and label; the primary button uses the accent color.
+    // Button with icon and label; the primary button uses the accent fill (darker while hovered).
     static Border PillButton(TextBlock glyph, string label, bool primary)
     {
         var text = new TextBlock { Text = label, FontSize = 12.5, FontFamily = Palette.UiFont, Margin = new Thickness(7, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
@@ -181,12 +181,12 @@ internal sealed partial class TrimWindow
         content.Children.Add(glyph);
         content.Children.Add(text);
         var button = new Border { CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 0, 14, 0), Height = 34, Margin = new Thickness(8, 0, 0, 0), Child = content, Cursor = Cursors.Hand };
-        string background = primary ? Palette.Accent : Palette.Hover;
+        string background = primary ? Palette.AccentFill : Palette.Hover;
         button.SetResourceReference(Border.BackgroundProperty, background);
         if (primary)
         {
-            button.MouseEnter += delegate { button.Opacity = 0.88; };
-            button.MouseLeave += delegate { button.Opacity = 1; };
+            button.MouseEnter += delegate { button.SetResourceReference(Border.BackgroundProperty, Palette.AccentFillHover); };
+            button.MouseLeave += delegate { button.SetResourceReference(Border.BackgroundProperty, Palette.AccentFill); };
         }
         else
         {
@@ -199,7 +199,7 @@ internal sealed partial class TrimWindow
     static Border SelectionEdge(double top)
     {
         var edge = new Border { Height = StripTop, IsHitTestVisible = false };
-        edge.SetResourceReference(Border.BackgroundProperty, Palette.Accent);
+        edge.SetResourceReference(Border.BackgroundProperty, Palette.AccentFill);   // same color as the handles
         Canvas.SetTop(edge, top);
         return edge;
     }
@@ -216,7 +216,7 @@ internal sealed partial class TrimWindow
             VerticalAlignment = VerticalAlignment.Center
         };
         var handle = new Border { Width = HandleWidth, Height = TrackHeight, CornerRadius = corners, Child = grip, Cursor = Cursors.SizeWE };
-        handle.SetResourceReference(Border.BackgroundProperty, Palette.Accent);
+        handle.SetResourceReference(Border.BackgroundProperty, Palette.AccentFill);   // carries the light grip
         return handle;
     }
 }

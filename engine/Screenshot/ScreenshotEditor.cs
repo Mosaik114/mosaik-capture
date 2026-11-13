@@ -442,7 +442,7 @@ internal sealed partial class ScreenshotEditor : Window
             Cursor = Cursors.Hand,
             Tag = primary ? PrimaryTag : null
         };
-        if (primary) button.SetResourceReference(Border.BackgroundProperty, Palette.Accent);
+        if (primary) button.SetResourceReference(Border.BackgroundProperty, Palette.AccentFill);
         button.MouseEnter += delegate { Paint(button, true); ShowTooltip(button, label); };
         button.MouseLeave += delegate { Paint(button, false); tooltip.Visibility = Visibility.Hidden; };
         button.MouseLeftButtonUp += delegate { Guarded("Editor button " + label, click); };
@@ -619,7 +619,7 @@ internal sealed partial class ScreenshotEditor : Window
     static void Paint(Border button, bool hovered)
     {
         string? state = button.Tag as string;
-        if (state == PrimaryTag) button.Opacity = hovered ? 0.88 : 1;
+        if (state == PrimaryTag) button.SetResourceReference(Border.BackgroundProperty, hovered ? Palette.AccentFillHover : Palette.AccentFill);
         else if (state == ActiveTag) button.SetResourceReference(Border.BackgroundProperty, Palette.Selected);
         else if (hovered) button.SetResourceReference(Border.BackgroundProperty, Palette.Hover);
         else button.Background = Brushes.Transparent;

@@ -94,7 +94,7 @@ internal sealed class PinnedScreenshot : Window
             Background = new SolidColorBrush(CloseButtonBackground.Color),
             ToolTip = UiText.Pin.CloseTip
         };
-        button.MouseEnter += delegate { button.SetResourceReference(Border.BackgroundProperty, Palette.Accent); };
+        button.MouseEnter += delegate { button.SetResourceReference(Border.BackgroundProperty, Palette.AccentFill); };
         button.MouseLeave += delegate { button.Background = new SolidColorBrush(CloseButtonBackground.Color); };
         button.MouseLeftButtonDown += (_, e) => e.Handled = true;
         button.MouseLeftButtonUp += (_, e) => { e.Handled = true; Close(); };
