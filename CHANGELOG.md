@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The brand colour is now turquoise instead of terracotta: settings window, cards, editor,
+  selection overlay, recording frame, countdown, click highlights, trim window, the first ink
+  colour and the app and tray icon. Lines and icons use #0E8C80 in the light theme and
+  #2AC8A6 in the dark theme; buttons and handles with light text use #0B7F74 (4.6:1), darker
+  #096A61 while hovered or pressed. Hovering a primary button darkens it instead of fading it,
+  so its label keeps its contrast. The recording red and the settings window's error text
+  are unchanged.
+
 ## [1.1.0] - 2026-11-13
 
 ### Fixed
