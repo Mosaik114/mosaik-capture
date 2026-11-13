@@ -195,7 +195,7 @@ public sealed class PixelTests : IDisposable
         var dv = new DrawingVisual();
         using (var dc = dv.RenderOpen())
         {
-            dc.DrawRectangle(new LinearGradientBrush(Color.FromRgb(0x2B, 0x3A, 0x55), Color.FromRgb(0xD9, 0x77, 0x57), 20), null, new Rect(0, 0, 960, 540));
+            dc.DrawRectangle(new LinearGradientBrush(Color.FromRgb(0x2B, 0x3A, 0x55), Color.FromRgb(0x2A, 0xC8, 0xA6), 20), null, new Rect(0, 0, 960, 540));
             dc.DrawRectangle(Brushes.White, null, new Rect(80, 80, 400, 260));
             dc.DrawEllipse(new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)), null, new Point(700, 300), 120, 120);
         }
