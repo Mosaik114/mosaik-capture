@@ -234,6 +234,29 @@ public sealed class PixelTests : IDisposable
         card.Problem("Aufnahme fehlgeschlagen", "Dieser Monitor ist für die Aufnahme nicht erreichbar", WorkArea);
         card.SetBar(1);
         check.Check("recording_card_error", Draw((FrameworkElement)card.Content));
+
+        card = new RecordingCard { Offscreen = true };
+        card.SaveFailed("ffmpeg hat nicht rechtzeitig geantwortet", @"C:\Videos\Mosaiks-Aufnahme 2026-09-26 14-03-12 (Rohdaten)", WorkArea);
+        card.SetBar(1);
+        check.Check("recording_card_raw_data", Draw((FrameworkElement)card.Content));
+        check.AssertAllMatch();
+    });
+
+    [Fact]
+    public void ScreenshotCardSavedAndProblem() => WpfThread.Run(() =>
+    {
+        PixelComparison.RequireFonts();
+        var check = new PixelComparison();
+        var card = new ScreenshotCard(() => { }, () => { }, () => { }) { Offscreen = true };
+        card.Present(new ScreenCapture { Image = Thumbnail(), Path = @"C:\Bilder\Mosaiks-Screenshot 2026-09-26 14-03-12.png", WorkArea = WorkArea }, "In Zwischenablage kopiert");
+        card.Saved();
+        card.SetBar(1);
+        check.Check("screenshot_card", Draw((FrameworkElement)card.Content));
+
+        card = new ScreenshotCard(() => { }, () => { }, () => { }) { Offscreen = true };
+        card.ShowProblem("Screenshot fehlgeschlagen", "Der Bildschirm lässt sich gerade nicht lesen (z. B. gesperrt)", WorkArea);
+        card.SetBar(0.4);
+        check.Check("screenshot_card_error", Draw((FrameworkElement)card.Content));
         check.AssertAllMatch();
     });
 

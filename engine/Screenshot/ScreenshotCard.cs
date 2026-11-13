@@ -66,6 +66,16 @@ internal sealed class ScreenshotCard : Window
         hwnd = ToolWindows.Handle(this, NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOOLWINDOW);
     }
 
+    /// <summary>Tests: build the content but never show the window.</summary>
+    internal bool Offscreen { get; set; }
+
+    /// <summary>Tests: stops the lifetime bar at a fixed width so images do not depend on timing.</summary>
+    internal void SetBar(double fraction)
+    {
+        lifetimeBar.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        lifetimeBar.ScaleX = fraction;
+    }
+
     // ---------- Building ----------
 
     Border BuildThumbnailBox()
@@ -209,6 +219,7 @@ internal sealed class ScreenshotCard : Window
     // Bottom right of the work area; slides in softly when first shown.
     void SlideIn(RECT workArea)
     {
+        if (Offscreen) { card.Opacity = 1; return; }
         bool appearing = !IsVisible;
         if (appearing)
         {
