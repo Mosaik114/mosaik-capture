@@ -14,6 +14,8 @@ All notable changes to this project are documented here. The format follows
   #096A61 while hovered or pressed. Hovering a primary button darkens it instead of fading it,
   so its label keeps its contrast. The recording red and the settings window's error text
   are unchanged.
+- Failure cards (screenshot or recording failed) show their status chip in the recording red
+  instead of the accent, so they read as a warning.
 
 ## [1.1.0] - 2026-11-13
 

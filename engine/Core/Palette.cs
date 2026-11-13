@@ -27,6 +27,8 @@ static class Palette
     public const string AccentFill = "AccentFill";
     /// <summary><see cref="AccentFill"/> while hovered or pressed: darker, so the text stays readable.</summary>
     public const string AccentFillHover = "AccentFillHover";
+    /// <summary><see cref="RecordingRed"/> as a subtle fill (background of the failure cards' status chip).</summary>
+    public const string WarningSoft = "WarningSoft";
 
     // ---------- Fonts ----------
 
@@ -76,6 +78,8 @@ static class Palette
         // accent as a subtle fill (background of the muted microphone icon)
         var accent = ((SolidColorBrush)resources[Accent]).Color;
         resources[AccentSoft] = Frozen(light ? (byte)0x26 : (byte)0x2E, accent.R, accent.G, accent.B);
+        var red = RecordingRed.Color;
+        resources[WarningSoft] = Frozen(light ? (byte)0x26 : (byte)0x2E, red.R, red.G, red.B);
     }
 
     static bool WindowsUsesLightTheme()

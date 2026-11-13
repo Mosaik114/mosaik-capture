@@ -12,7 +12,7 @@ internal sealed class ScreenshotCard : Window
 {
     const int LifetimeMs = 5000;
     readonly IntPtr hwnd;
-    readonly Border card, thumbnailBox;
+    readonly Border card, thumbnailBox, statusChip;
     readonly Image thumbnail;
     readonly TextBlock title, subtitle, sizeText, statusGlyph;
     readonly UniformGrid buttons;
@@ -43,7 +43,8 @@ internal sealed class ScreenshotCard : Window
 
         var layout = new StackPanel();
         layout.Children.Add(thumbnailBox);
-        layout.Children.Add(CardChrome.Header(CardChrome.StatusChip(statusGlyph), title, subtitle));
+        statusChip = CardChrome.StatusChip(statusGlyph);
+        layout.Children.Add(CardChrome.Header(statusChip, title, subtitle));
         layout.Children.Add(buttons);
         layout.Children.Add(CardChrome.BarTrack(lifetimeBar));
         card = CardChrome.Frame(layout, slide);
@@ -138,7 +139,7 @@ internal sealed class ScreenshotCard : Window
         sizeText.Text = UiText.Common.Size(image.PixelWidth, image.PixelHeight);
         title.Text = heading;
         subtitle.Text = Path.GetFileName(capture.Path);
-        statusGlyph.Text = IconGlyphs.Accept;
+        CardChrome.SetStatus(statusChip, statusGlyph, IconGlyphs.Accept, false);
         buttons.Visibility = Visibility.Visible;
         SlideIn(capture.WorkArea);
         if (!card.IsMouseOver) StartLifetime();
@@ -171,7 +172,7 @@ internal sealed class ScreenshotCard : Window
         thumbnailBox.Visibility = Visibility.Collapsed;
         title.Text = heading;
         subtitle.Text = detail;
-        statusGlyph.Text = IconGlyphs.Cancel;
+        CardChrome.SetStatus(statusChip, statusGlyph, IconGlyphs.Cancel, true);
         buttons.Visibility = Visibility.Collapsed;
         SlideIn(workArea);
         if (!card.IsMouseOver) StartLifetime();
@@ -228,7 +229,7 @@ internal sealed class ScreenshotCard : Window
         saved = false;
         title.Text = UiText.Common.Deleted;
         subtitle.Text = UiText.Common.InRecycleBin;
-        statusGlyph.Text = IconGlyphs.Delete;
+        CardChrome.SetStatus(statusChip, statusGlyph, IconGlyphs.Delete, false);
         buttons.Visibility = Visibility.Collapsed;
         generation++;
         var timer = new DispatcherTimer { Interval = Motion.LingerAfterLeave };

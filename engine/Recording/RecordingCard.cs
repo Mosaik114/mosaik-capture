@@ -145,7 +145,7 @@ internal sealed class RecordingCard : Window
     /// <summary>While ffmpeg assembles the video: placeholder and indeterminate bar.</summary>
     public void Saving(double seconds, RECT work)
     {
-        ShowPlaceholder(work, UiText.Common.Saving, UiText.Recording.Recorded(Formats.Clock(seconds)), IconGlyphs.Accept);
+        ShowPlaceholder(work, UiText.Common.Saving, UiText.Recording.Recorded(Formats.Clock(seconds)), IconGlyphs.Accept, false);
         statusChip.Visibility = Visibility.Collapsed;
         StartIndeterminateBar();
         Place();
@@ -153,7 +153,7 @@ internal sealed class RecordingCard : Window
 
     public void Problem(string heading, string reason, RECT work)
     {
-        ShowPlaceholder(work, heading, reason, IconGlyphs.Warning);
+        ShowPlaceholder(work, heading, reason, IconGlyphs.Warning, true);
         statusChip.Visibility = Visibility.Visible;
         Place();
         StartLifetime();
@@ -162,7 +162,7 @@ internal sealed class RecordingCard : Window
     /// <summary>Saving failed: the reason, and the kept raw data to open (if any) so the recording can be rescued.</summary>
     public void SaveFailed(string reason, string? rawDataFolder, RECT work)
     {
-        ShowPlaceholder(work, UiText.Recording.Failed, reason, IconGlyphs.Warning);
+        ShowPlaceholder(work, UiText.Recording.Failed, reason, IconGlyphs.Warning, true);
         statusChip.Visibility = Visibility.Visible;
         if (rawDataFolder != null)
         {
@@ -174,7 +174,7 @@ internal sealed class RecordingCard : Window
         StartLifetime();
     }
 
-    void ShowPlaceholder(RECT work, string heading, string detail, string status)
+    void ShowPlaceholder(RECT work, string heading, string detail, string status, bool warning)
     {
         workArea = work;
         video = null;
@@ -187,7 +187,7 @@ internal sealed class RecordingCard : Window
         thumbnailBox.Height = CardChrome.MinThumbnailHeight;
         title.Text = heading;
         subtitle.Text = detail;
-        statusGlyph.Text = status;
+        CardChrome.SetStatus(statusChip, statusGlyph, status, warning);
         buttons.Visibility = Visibility.Collapsed;
     }
 
@@ -204,7 +204,7 @@ internal sealed class RecordingCard : Window
         lengthText.Text = UiText.Recording.Length(recorded.Gif, Formats.Clock(Math.Round(recorded.Duration)));
         title.Text = heading;
         subtitle.Text = UiText.Recording.FileInfo(Path.GetFileName(recorded.Path), Formats.FileSize(recorded.Bytes));
-        statusGlyph.Text = IconGlyphs.Accept;
+        CardChrome.SetStatus(statusChip, statusGlyph, IconGlyphs.Accept, false);
         statusChip.Visibility = Visibility.Visible;
 
         buttons.Children.Clear();
@@ -289,7 +289,7 @@ internal sealed class RecordingCard : Window
         ready = false;
         title.Text = UiText.Common.Deleted;
         subtitle.Text = UiText.Common.InRecycleBin;
-        statusGlyph.Text = IconGlyphs.Delete;
+        CardChrome.SetStatus(statusChip, statusGlyph, IconGlyphs.Delete, false);
         buttons.Visibility = Visibility.Collapsed;
         int deletedAt = ++generation;
         var timer = new DispatcherTimer { Interval = Motion.LingerAfterLeave };

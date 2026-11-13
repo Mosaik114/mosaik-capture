@@ -2,7 +2,7 @@ namespace MosaikCapture.Engine.Tests.Core;
 
 public sealed class PaletteTests
 {
-    static readonly string[] Keys = { "Bg", "Sel", "Hover", "Line", "Text", "Muted", "Accent", "Chip", "AccentSoft", "AccentFill", "AccentFillHover" };
+    static readonly string[] Keys = { "Bg", "Sel", "Hover", "Line", "Text", "Muted", "Accent", "Chip", "AccentSoft", "AccentFill", "AccentFillHover", "WarningSoft" };
 
     [Theory]
     [InlineData(true)]

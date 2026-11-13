@@ -63,13 +63,28 @@ internal static class CardChrome
         box.Height = Math.Max(height, MinThumbnailHeight);
     }
 
-    /// <summary>The round chip left of the title (done, warning, deleted ...).</summary>
+    /// <summary>The round chip left of the title (done, warning, deleted ...), in the accent color.</summary>
     public static Border StatusChip(TextBlock glyph)
     {
-        glyph.SetResourceReference(TextBlock.ForegroundProperty, Palette.Accent);
         var chip = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Margin = new Thickness(0, 1, 10, 0), VerticalAlignment = VerticalAlignment.Top, Child = glyph };
-        chip.SetResourceReference(Border.BackgroundProperty, Palette.AccentSoft);
+        SetStatus(chip, glyph, glyph.Text, false);
         return chip;
+    }
+
+    /// <summary>Shows <paramref name="symbol"/> in the chip: in red for a failure, otherwise in the accent color.</summary>
+    public static void SetStatus(Border chip, TextBlock glyph, string symbol, bool warning)
+    {
+        glyph.Text = symbol;
+        if (warning)
+        {
+            glyph.Foreground = Palette.RecordingRed;
+            chip.SetResourceReference(Border.BackgroundProperty, Palette.WarningSoft);
+        }
+        else
+        {
+            glyph.SetResourceReference(TextBlock.ForegroundProperty, Palette.Accent);
+            chip.SetResourceReference(Border.BackgroundProperty, Palette.AccentSoft);
+        }
     }
 
     public static TextBlock Title()
