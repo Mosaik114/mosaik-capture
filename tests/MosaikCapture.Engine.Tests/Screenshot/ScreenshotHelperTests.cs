@@ -34,4 +34,41 @@ public sealed class ScreenshotHelperTests
     [InlineData(0.2, -0.1, 0.2)]    // never below 20 %
     [InlineData(0.54, 0.1, 0.6)]    // back onto the 10 % grid
     public void OpacityMovesIn10PercentSteps(double opacity, double step, double expected) => Assert.Equal(expected, PinnedScreenshot.StepOpacity(opacity, step), 6);
+
+    [Fact]
+    public void SaveAsWritesPngOrJpegByNameAndReportsFailures()
+    {
+        using var folder = new TempDirectory();
+        var image = BitmapSource.Create(2, 2, 96, 96, PixelFormats.Bgra32, null, new byte[16], 8);
+
+        Assert.Equal(SaveAsResult.Saved, Screenshots.Write(image, folder.File("bild.png")));
+        Assert.Equal(SaveAsResult.Saved, Screenshots.Write(image, folder.File("bild.JPG")));
+        Assert.Equal(SaveAsResult.Failed, Screenshots.Write(image, Path.Combine(folder.Path, "fehlt", "bild.png")));
+
+        Assert.Equal(new byte[] { 0x89, 0x50 }, File.ReadAllBytes(folder.File("bild.png")).Take(2));
+        Assert.Equal(new byte[] { 0xFF, 0xD8 }, File.ReadAllBytes(folder.File("bild.JPG")).Take(2));
+    }
+
+    [Fact]
+    public void TheFolderIsReadOncePerCaptureNotOnEveryUse()
+    {
+        string previous = CaptureSettings.FileName;
+        using var settings = new TestSettings("[capture]\r\nscreenshot_folder=C:\\Erste\r\n");
+        try
+        {
+            CaptureSettings.UseFile(settings.FileName);
+            new ScreenshotStore().NewPath(DateTime.Now);   // a capture reads the settings
+            File.WriteAllText(settings.FileName, "[capture]\r\nscreenshot_folder=C:\\Zweite\r\n", Encoding.Unicode);
+
+            Assert.Equal("C:\\Erste", Screenshots.Folder);   // the card, the editor and pins keep the capture's folder
+
+            Assert.StartsWith("C:\\Zweite\\", new ScreenshotStore().NewPath(DateTime.Now));
+            Assert.Equal("C:\\Zweite", Screenshots.Folder);
+        }
+        finally
+        {
+            CaptureSettings.UseFile(previous);
+            Screenshots.ReadFolder();
+        }
+    }
 }
